@@ -1,8 +1,19 @@
 import pandas as pd
 import numpy as np
+import trackpy as tp
 
 
-DAT = pd.read_csv("../sample_output/full_tracked.csv")
+tracking_time = 0.036   #s --> maybe should change according to exposue 
+
+pixel_size = 0.18333
+
+microns_per_pixel   = pixel_size
+frame_per_sec       = float(tracking_time)
+
+
+DAT = pd.read_csv("../sample_output/small_full_tracked.csv")
+
+max_lagtime = DAT["duration"].max()
 
 def image_loader_video(video):
     from skimage import io
@@ -10,7 +21,7 @@ def image_loader_video(video):
 #    images_1 = TiffStack(video) 
     return np.asarray(im)
 
-VID = image_loader_video("../sample_vids/Process_8967_488_first5.tif")
+VID = image_loader_video("../sample_small/Process_8967_488_first5.tif")
 
 
 lip_int_size = 9   #originally 14 for first attempts
@@ -125,5 +136,47 @@ def clean(i_pos, j_pos, video, frame):
     out = (out, np.median(video[frame, i_inds, j_inds][smallmask]))
     return out
 
-def apply_clean(row):
+def apply_df(row):
     return clean(row['y'], row['x'], VID, row['frame'])
+
+def apply_numpy(row):
+    return clean(row[0], row[1], VID, row[2])
+
+
+
+from functools import partial
+
+def mp_msd(groupbby_tup, **msd_kwargs):
+    return groupbby_tup[0], tp.msd(groupbby_tup[1], **msd_kwargs)
+
+def mp_imsd(traj, mpp, fps, max_lagtime=100, statistic='msd', pos_columns=None, pool = None):
+    if pool is None:
+        ids = []
+        msds = []
+        for pid, ptraj in traj.groupby('particle'):
+            msds.append(tp.msd(ptraj, mpp, fps, max_lagtime, False, pos_columns))
+            ids.append(pid)
+    else:
+        results = pool.map(partial(mp_msd, mpp = mpp, fps = fps,
+                           max_lagtime = max_lagtime, detail = False,
+                           pos_columns = pos_columns), traj.groupby('particle'))
+
+        # results = pool.map(I, traj.groupby('particle'))
+        # return results
+        ids, msds = zip(*results)
+    results = tp.motion.pandas_concat(msds, keys=ids)
+    results = results.swaplevel(0, 1)[statistic].unstack()
+    lagt = results.index.values.astype('float64')/float(fps)
+    results.set_index(lagt, inplace=True)
+    results.index.name = 'lag time [s]'
+    return results
+
+def msd_df(df, pool = None):
+    max_lagtime = max(df['duration'])
+    microns_per_pixel   = pixel_size
+    frame_per_sec       = float(tracking_time)
+
+    df_msd = mp_imsd(df, microns_per_pixel, frame_per_sec, max_lagtime=max_lagtime, pool = pool)
+    return df_msd
+
+f = lambda x : x**2

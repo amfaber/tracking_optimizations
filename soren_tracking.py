@@ -13,7 +13,10 @@ import scipy
 import scipy.ndimage as ndimage
 from skimage import measure
 from skimage.color import rgb2gray 
-import probfit 
+import probfit
+import multiprocessing as mp
+from contextlib import nullcontext
+from functools import partial
   
 #from pims import TiffStack
 import time
@@ -38,6 +41,10 @@ tracking_time = 0.036   #s --> maybe should change according to exposue
 
 pixel_size = 0.18333    #µm 60x is 18333 nm
 
+n_processes = 8
+n_processes_tp = n_processes
+# n_processes_tp = 1
+
 
 def image_loader_video(video):
     from skimage import io
@@ -54,6 +61,9 @@ def crop_img(img):
     y_min = 0
     y_max = 1200 
     return img[y_min:y_max,x_min:x_max]
+
+def mp_msd(groupbby_tup, **msd_kwargs):
+    return groupbby_tup[0], tp.msd(groupbby_tup[1], **msd_kwargs)
 
 def crop_vid(video):
     """
@@ -160,10 +170,61 @@ def step_tracker(df):
     df['y_step'] = y_step 
     df['steplength'] = steps 
 
-    return   df   
+    return df   
+sqrt_BG_size = int(np.ceil(np.sqrt(lip_BG_size)))
 
+def getinds2(smallmask, i_pos, j_pos, video):
+    i_lower = int(i_pos) - sqrt_BG_size + 1
+    j_lower = int(j_pos) - sqrt_BG_size + 1
+    i_upper = int(i_pos) + sqrt_BG_size + 1
+    j_upper = int(j_pos) + sqrt_BG_size + 1
+    out_of_bounds = i_lower < 0 or j_lower < 0 or\
+                    i_upper > video.shape[1] or\
+                    j_upper > video.shape[2]
+    if out_of_bounds:
+        i_inds = slice(max(i_lower, 0),
+                        min(i_upper, video.shape[1]))
+        j_inds = slice(max(j_lower, 0),
+                        min(j_upper, video.shape[2]))
+        smallmask_i_lower = max(-i_lower, 0)
+        smallmask_j_lower = max(-j_lower, 0)
+        smallmask_i_upper = min(video.shape[1]-i_upper, 0)
+        smallmask_j_upper = min(video.shape[2]-j_upper, 0)
+        smallmask_i_upper = None if smallmask_i_upper == 0 else smallmask_i_upper
+        smallmask_j_upper = None if smallmask_j_upper == 0 else smallmask_j_upper
+        smallmaskslice = slice(smallmask_i_lower, smallmask_i_upper), slice(smallmask_j_lower, smallmask_j_upper)
+        # print(smallmaskslice)
+        smallmask = smallmask[smallmaskslice]
+    else:
+        i_inds = slice(int(i_pos) - sqrt_BG_size + 1, int(i_pos) + sqrt_BG_size + 1)
+        j_inds = slice(int(j_pos) - sqrt_BG_size + 1, int(j_pos) + sqrt_BG_size + 1)
+    # i_inds, j_inds = j_inds, i_inds
+    return i_inds, j_inds, smallmask
 
-def signal_extractor_no_pos(video, full_tracked, red_blue,roi_size,bg_size):  # change so taht red initial is after appearance timing
+def clean(i_pos, j_pos, video, frame):
+    frame = int(frame )
+    all_is, all_js = np.ogrid[-sqrt_BG_size-(i_pos%1)+1:+sqrt_BG_size-(i_pos%1)+1,
+                    -sqrt_BG_size-(j_pos%1)+1:+sqrt_BG_size-(j_pos%1)+1]
+    all_r2s = all_is**2 + all_js**2
+    sig = all_r2s <= lip_int_size
+    bg = all_r2s <= lip_BG_size
+    bg = np.logical_xor(bg, sig)
+
+    i_inds, j_inds, smallmask = getinds2(sig, i_pos, j_pos, video)
+    out = np.sum(video[frame, i_inds, j_inds][smallmask])
+    i_inds, j_inds, smallmask = getinds2(bg, i_pos, j_pos, video)
+    out = (out, np.median(video[frame, i_inds, j_inds][smallmask]))
+    return out
+
+def apply_clean(row):
+    global video
+    return clean(row['y'], row['x'], video, row['frame'])
+
+def apply_numpy(row):
+    global video
+    return clean(row[1], row[0], video, row[2])
+
+def signal_extractor_no_pos(video, full_tracked, red_blue,roi_size,bg_size, pool = None):  # change so taht red initial is after appearance timing
     lip_int_size= roi_size
     lip_BG_size = bg_size
     def cmask(index, array, BG_size, int_size):
@@ -181,28 +242,16 @@ def signal_extractor_no_pos(video, full_tracked, red_blue,roi_size,bg_size):  # 
     full_tracked = full_tracked.sort_values(['frame'], ascending=True)
     
 
-    def df_extractor2(row):
-
-        b, a = row['x'], row['y'] #b,a
-        frame = int(row['frame'])
-        array = video[frame]
-        nx, ny = array.shape
-        y, x = np.ogrid[-a:nx - a, -b:ny - b]
-        r2 = x * x + y * y
-        # mask = x * x + y * y <= lip_int_size  # radius squared - but making sure we dont do the calculation in the function - slow
-        mask2 = r2 <= lip_int_size  # to make a "gab" between BG and roi
-        BG_mask = (r2 <= lip_BG_size)
-        BG_mask = np.bitwise_xor(BG_mask, mask2)
-        
-
-        return np.sum((array[mask2])), np.median(((array[BG_mask]))) # added np in sum
-
     size_maker = np.ones(video[0].shape)
     ind = 25, 25  # dont ask - leave it here, it just makes sure the below runs
     mask_size, BG_size = cmask(ind, size_maker, lip_BG_size, lip_int_size)
     mask_size = np.sum(mask_size)
 
-    a = full_tracked.apply(df_extractor2, axis=1)
+    if pool is None:
+        a = full_tracked.apply(apply_clean, axis=1)
+    else:
+        print("Using pool")
+        a = pool.map(apply_numpy, full_tracked[['x', 'y', 'frame']].to_numpy())
     # a = df_extractor2(final_df, video)
 
     intensity = []
@@ -226,15 +275,18 @@ def signal_extractor_no_pos(video, full_tracked, red_blue,roi_size,bg_size):  # 
 
     return full_tracked
    
-
-def tracker(video,mean_multiplier, sep, replicate, save_path):
-    mean = np.mean(video[0])
+import sys
+def tracker(videoinp, mean_multiplier, sep, replicate, save_path):
+    global video
+    mean = np.mean(videoinp[0])
     #video = np.asarray(video) #dont use?
     #video_mean = np.median(video,axis = 0) #dont use 
     #video = video -video_mean # dont use 
     
-    video = ndimage.gaussian_filter(video, sigma=(0,0.5,0.5), order=0) #dont use 
-    
+    video = ndimage.gaussian_filter(videoinp, sigma=(0,0.5,0.5), order=0) #dont use 
+    # with mp.get_context('fork').Pool(1) as p:
+    #     print(p.map(get_vid, [1]))
+    # sys.exit()
     # ----- USE THIS WHEN AVG SUBSTRACKTING -----
     #mean_vid = np.mean(video,axis = 0) #finds avg video, use only when tracking in same layer in shor period of time 
     #sub_vid = video - mean_vid     
@@ -242,47 +294,74 @@ def tracker(video,mean_multiplier, sep, replicate, save_path):
     
     #video = sub_vid
     
-    full = tp.batch(video, object_size,invert=False, minmass =mean*mean_multiplier, separation= sep, processes = 1); # mac har problemer med multiprocessing, derfor processing = 1
-                                                                                                                    # processes = 8 burde kunne køre på erda. (8 kerner)
+    full = tp.batch(video, object_size,invert=False, minmass =mean*mean_multiplier,
+                    separation= sep, processes = n_processes_tp); # mac har problemer med multiprocessing, derfor processing = 1
+                                                               # processes = 8 burde kunne køre på erda. (8 kerner)
     #check for subpixel accuracy
     tp.subpx_bias(full)
     plt.savefig(save_path+str(replicate)+'subpix.png')
     # plt.show()
     
+
+    def mp_imsd(traj, mpp, fps, max_lagtime=100, statistic='msd', pos_columns=None, pool = None):
+        if pool is None:
+            ids = []
+            msds = []
+            for pid, ptraj in traj.groupby('particle'):
+                msds.append(tp.msd(ptraj, mpp, fps, max_lagtime, False, pos_columns))
+                ids.append(pid)
+        else:
+            results = pool.map(partial(mp_msd, mpp = mpp, fps = fps,
+                            max_lagtime = max_lagtime, detail = False,
+                            pos_columns = pos_columns), traj.groupby('particle'))
+
+            # results = pool.map(I, traj.groupby('particle'))
+            # return results
+            ids, msds = zip(*results)
+        results = tp.motion.pandas_concat(msds, keys=ids)
+        results = results.swaplevel(0, 1)[statistic].unstack()
+        lagt = results.index.values.astype('float64')/float(fps)
+        results.set_index(lagt, inplace=True)
+        results.index.name = 'lag time [s]'
+        return results
     
-    full = signal_extractor_no_pos(video, full, 'red',lip_int_size,lip_BG_size)
-    
-    full_tracked = tp.link_df(full, search_range, memory=memory) #5 pixel search range, memory =2 
-    full_tracked = tp.filter_stubs(full_tracked, duration_filter) # filter aour short stuff
-    
-    
-    full_tracked = step_tracker(full_tracked) 
-    full_tracked['particle'] = full_tracked['particle'].transform(int)
-    
-    #full_tracked['particle'] = full_tracked['particle'].transform(str)
-    #print(full_tracked.groupby('particle')['particle'])
-    full_tracked['duration'] = full_tracked.groupby('particle')['particle'].transform(len)
-    #full_tracked['frame'] = full_tracked['frame']+1 #made so there is no frame 0
-    
-    
-    #full_tracked['particle'] = full_tracked['particle'].transform(int)
-    #full_tracked = full_tracked.sort_values(['frame'], ascending=True) 
-     #this should be used
-       
-    def msd_df(df):
-        max_lagtime = max(df['duration'])
-        microns_per_pixel   = pixel_size
-        frame_per_sec       = float(tracking_time)
-        df_msd = tp.imsd(df, microns_per_pixel, frame_per_sec, max_lagtime=max_lagtime)
-        return df_msd
-    
-    msd_df = msd_df(full_tracked)
+    if n_processes > 1:
+        context_man = mp.get_context("fork").Pool(n_processes)
+    else:
+        context_man = nullcontext()
+
+    with context_man as pool:
+        full = signal_extractor_no_pos(video, full, 'red',lip_int_size,lip_BG_size, pool = pool)
+        full_tracked = tp.link_df(full, search_range, memory=memory) #5 pixel search range, memory =2 
+        full_tracked = tp.filter_stubs(full_tracked, duration_filter) # filter aour short stuff
+        
+        
+        full_tracked = step_tracker(full_tracked)
+        full_tracked['particle'] = full_tracked['particle'].transform(int)
+        
+        #full_tracked['particle'] = full_tracked['particle'].transform(str)
+        #print(full_tracked.groupby('particle')['particle'])
+        full_tracked['duration'] = full_tracked.groupby('particle')['particle'].transform(len)
+        #full_tracked['frame'] = full_tracked['frame']+1 #made so there is no frame 0
+        
+        
+        #full_tracked['particle'] = full_tracked['particle'].transform(int)
+        #full_tracked = full_tracked.sort_values(['frame'], ascending=True) 
+        #this should be used
+        
+        
+        
+        msd_df = mp_imsd(full_tracked, pixel_size, float(tracking_time),
+        max_lagtime = full_tracked["duration"].max(), pool = pool)
+
     msd_df=msd_df.stack().reset_index()
     msd_df.columns = ['time', 'particle','msd']
     #msd_df =  full_tracked
     return full_tracked, msd_df 
 
-
+def get_vid(*args):
+    global video
+    return video.shape
 def runner_tracker(video_location, experiment_type, save_path, replicate): 
     
     video = image_loader_video(video_location)
