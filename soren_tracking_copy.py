@@ -38,6 +38,7 @@ tracking_time = 0.036   #s --> maybe should change according to exposue
 
 pixel_size = 0.18333    #µm 60x is 18333 nm
 
+n_processes = 8
 
 def image_loader_video(video):
     from skimage import io
@@ -242,7 +243,7 @@ def tracker(video,mean_multiplier, sep, replicate, save_path):
     
     #video = sub_vid
     
-    full = tp.batch(video, object_size,invert=False, minmass =mean*mean_multiplier, separation= sep, processes = 1); # mac har problemer med multiprocessing, derfor processing = 1
+    full = tp.batch(video, object_size,invert=False, minmass =mean*mean_multiplier, separation= sep, processes = n_processes); # mac har problemer med multiprocessing, derfor processing = 1
                                                                                                                     # processes = 8 burde kunne køre på erda. (8 kerner)
     #check for subpixel accuracy
     tp.subpx_bias(full)

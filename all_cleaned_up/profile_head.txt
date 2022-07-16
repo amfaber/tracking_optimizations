@@ -1,0 +1,9 @@
+Sat Jul 16 17:28:42 2022    profile.pstats
+
+         25218686 function calls (25019317 primitive calls) in 52.291 seconds
+
+   Ordered by: cumulative time
+   List reduced from 15090 to 1 due to restriction <1>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+   2338/1    0.022    0.000   52.292   52.292 {built-in method builtins.exec}

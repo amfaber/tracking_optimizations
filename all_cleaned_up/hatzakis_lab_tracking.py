@@ -1,150 +1,58 @@
 import numpy as np
 import pandas as pd
 import trackpy as tp
-# import matplotlib  as mpl
 import matplotlib.pyplot as plt
-# from skimage.feature import peak_local_max
 from scipy import ndimage
-# from skimage.feature import blob_log
-# from skimage import feature
-# from scipy.stats.stats import pearsonr 
-# import os
-# import scipy
 import scipy.ndimage as ndimage
-# from skimage import measure
-# from skimage.color import rgb2gray 
-import probfit
 import multiprocessing as mp
 from contextlib import nullcontext
 from functools import partial
-  
-#from pims import TiffStack
 import time
-# import matplotlib.patches 
-from skimage import util, filters
-# from skimage import morphology, util, filters
-import time
-
-
-mean_multiplier = 0.8
-
-sep = 5                 #pixel seperation, ahould be close t search_range
-object_size = 9         # 5 originally 
-lip_int_size = 9        #originally 14 for first attemps
-lip_BG_size = 60        # originally 50 for first attemps
+import yaml
+import os
 
 # Tracking parameters
-memory = 1              #frame
-search_range = 5        # pixels
+class Params:
+    defaults = {
+        'mean_multiplier': 0.8,
+        'sep': 5,
+        'object_size': 9,
+        'lip_int_size': 9,
+        'lip_BG_size': 60,
+        'memory': 1,
+        'search_range': 5,
+        'duration_filter': 20,
+        'tracking_time': 0.036,
+        'pixel_size': 0.18333,
+        'n_processes': 8,
+        'n_processes_tp': 8,
+        'save_path': None,
+        'exp_type_folders': None,
+        'exp_types': None,
+        }
+    
+    def __init__(self, parampath, **kwargs):
+        self.__dict__.update(self.defaults)
+        if parampath is not None:
+            with open(parampath, 'r') as f:
+                self.__dict__.update(yaml.safe_load(f))
+        self.__dict__.update(kwargs)
 
-duration_filter = 0    # frames, originally 5
-
-tracking_time = 0.036   #s --> maybe should change according to exposue 
-
-pixel_size = 0.18333    #µm 60x is 18333 nm
-
-n_processes = 8
-n_processes_tp = n_processes
-# n_processes_tp = 1
 
 
 def image_loader_video(video):
     from skimage import io
     im = io.imread(video)
-#    images_1 = TiffStack(video) 
     return np.asarray(im)
-
-def crop_img(img):
-    """
-    Crop the image to select the region of interest
-    """
-    x_min = 0
-    x_max = 1200
-    y_min = 0
-    y_max = 1200 
-    return img[y_min:y_max,x_min:x_max]
 
 def mp_msd(groupbby_tup, **msd_kwargs):
     return groupbby_tup[0], tp.msd(groupbby_tup[1], **msd_kwargs)
 
-def crop_vid(video):
-    """
-    Crop the image to select the region of interest
-    """
-    x_min = 0
-    x_max = 1200
-    y_min = 0
-    y_max = 1200 
-
-    return video[:,y_min:y_max,x_min:x_max]
-
-def preprocess_foam(img):
-    """
-    Apply image processing functions to return a binary image
-    
-    """
-    #img = crop(img)
-    # Apply thresholds
-    
-    adaptive_thresh = filters.threshold_local(img,91)
-    idx = img > adaptive_thresh
-    idx2 = img < adaptive_thresh
-    img[idx] = 0
-    img[idx2] = 201
-    
-    img = ndimage.binary_dilation(img)
-    img = ndimage.binary_dilation(img).astype(img.dtype)
-    img = ndimage.binary_dilation(img).astype(img.dtype) 
-    img = ndimage.binary_dilation(img).astype(img.dtype)
-    img = ndimage.binary_dilation(img).astype(img.dtype)
-    
-
-    return util.img_as_int(img)
-
-#plt.imshow(preprocess_foam(img))
-#pixel_val = preprocess_foam(img)
-
-#print(pixel_val[20])
-#list_zero = []
-
-#for i in pixel_val[20].tolist():
-
-    #if i == 0:
-        
-        #list_zero.append(i)
-#print(len(list_zero))
 
 
-def find_d_single_from_df(r):
-    from probfit import BinnedLH, Chi2Regression, Extended,BinnedChi2,UnbinnedLH,gaussian
-    import iminuit as Minuit
-    r = np.asarray(r)
-    def f1(r,D):
-        if D> 0:
-            return (r/(2.*D*tracking_time))*np.exp(-((r**2)/(4.*D*tracking_time))) # remember to update time
-        else:
-            return 0
-    compdf1 = probfit.functor.AddPdfNorm(f1)
-    
-    ulh1 = UnbinnedLH(compdf1, r, extended=False)
-    import iminuit
-    m1 = iminuit.Minuit(ulh1, D=1., limit_D = (0,5),pedantic= False,print_level = 0)
-    m1.migrad(ncall=10000)
-    return m1.values['D']
-     
-
-
-def step_tracker(df):
-    microns_per_pixel = pixel_size
+def step_tracker(df, params):
+    microns_per_pixel = params.pixel_size
     steps = []
-    msd = []
-    lag = []
-    
-    #x_temp = df['x'].astype(int)
-    #y_temp = df['y'].astype(int)
-    #pixel_list = pixel_val[y_temp,x_temp]
-    
-    #df['pixel_val'] = pixel_list
     
     df['x'] = df['x'] * microns_per_pixel 
     df['y'] = df['y'] * microns_per_pixel 
@@ -172,63 +80,62 @@ def step_tracker(df):
     df['y_step'] = y_step 
     df['steplength'] = steps 
 
-    return df   
-sqrt_BG_size = int(np.ceil(np.sqrt(lip_BG_size)))
+    return df
 
-def getinds2(smallmask, i_pos, j_pos, video):
-    i_lower = int(i_pos) - sqrt_BG_size + 1
-    j_lower = int(j_pos) - sqrt_BG_size + 1
-    i_upper = int(i_pos) + sqrt_BG_size + 1
-    j_upper = int(j_pos) + sqrt_BG_size + 1
-    out_of_bounds = i_lower < 0 or j_lower < 0 or\
-                    i_upper > video.shape[1] or\
-                    j_upper > video.shape[2]
-    if out_of_bounds:
-        i_inds = slice(max(i_lower, 0),
-                        min(i_upper, video.shape[1]))
-        j_inds = slice(max(j_lower, 0),
-                        min(j_upper, video.shape[2]))
-        smallmask_i_lower = max(-i_lower, 0)
-        smallmask_j_lower = max(-j_lower, 0)
-        smallmask_i_upper = min(video.shape[1]-i_upper, 0)
-        smallmask_j_upper = min(video.shape[2]-j_upper, 0)
-        smallmask_i_upper = None if smallmask_i_upper == 0 else smallmask_i_upper
-        smallmask_j_upper = None if smallmask_j_upper == 0 else smallmask_j_upper
-        smallmaskslice = slice(smallmask_i_lower, smallmask_i_upper), slice(smallmask_j_lower, smallmask_j_upper)
-        # print(smallmaskslice)
-        smallmask = smallmask[smallmaskslice]
-    else:
-        i_inds = slice(int(i_pos) - sqrt_BG_size + 1, int(i_pos) + sqrt_BG_size + 1)
-        j_inds = slice(int(j_pos) - sqrt_BG_size + 1, int(j_pos) + sqrt_BG_size + 1)
-    # i_inds, j_inds = j_inds, i_inds
-    return i_inds, j_inds, smallmask
 
-def clean(i_pos, j_pos, video, frame):
-    frame = int(frame )
+def get_intensity_and_background(i_pos, j_pos, video, frame, params):
+    sqrt_BG_size = int(np.ceil(np.sqrt(params.lip_BG_size)))
+    def getinds(smallmask, i_pos, j_pos, video):
+        i_lower = int(i_pos) - sqrt_BG_size + 1
+        j_lower = int(j_pos) - sqrt_BG_size + 1
+        i_upper = int(i_pos) + sqrt_BG_size + 1
+        j_upper = int(j_pos) + sqrt_BG_size + 1
+        out_of_bounds = i_lower < 0 or j_lower < 0 or\
+                        i_upper > video.shape[1] or\
+                        j_upper > video.shape[2]
+        if out_of_bounds:
+            i_inds = slice(max(i_lower, 0),
+                            min(i_upper, video.shape[1]))
+            j_inds = slice(max(j_lower, 0),
+                            min(j_upper, video.shape[2]))
+            smallmask_i_lower = max(-i_lower, 0)
+            smallmask_j_lower = max(-j_lower, 0)
+            smallmask_i_upper = min(video.shape[1]-i_upper, 0)
+            smallmask_j_upper = min(video.shape[2]-j_upper, 0)
+            smallmask_i_upper = None if smallmask_i_upper == 0 else smallmask_i_upper
+            smallmask_j_upper = None if smallmask_j_upper == 0 else smallmask_j_upper
+            smallmaskslice = slice(smallmask_i_lower, smallmask_i_upper), slice(smallmask_j_lower, smallmask_j_upper)
+            # print(smallmaskslice)
+            smallmask = smallmask[smallmaskslice]
+        else:
+            i_inds = slice(int(i_pos) - sqrt_BG_size + 1, int(i_pos) + sqrt_BG_size + 1)
+            j_inds = slice(int(j_pos) - sqrt_BG_size + 1, int(j_pos) + sqrt_BG_size + 1)
+        # i_inds, j_inds = j_inds, i_inds
+        return i_inds, j_inds, smallmask
+    
+    frame = int(frame)
     all_is, all_js = np.ogrid[-sqrt_BG_size-(i_pos%1)+1:+sqrt_BG_size-(i_pos%1)+1,
                     -sqrt_BG_size-(j_pos%1)+1:+sqrt_BG_size-(j_pos%1)+1]
     all_r2s = all_is**2 + all_js**2
-    sig = all_r2s <= lip_int_size
-    bg = all_r2s <= lip_BG_size
+    sig = all_r2s <= params.lip_int_size
+    bg = all_r2s <= params.lip_BG_size
     bg = np.logical_xor(bg, sig)
 
-    i_inds, j_inds, smallmask = getinds2(sig, i_pos, j_pos, video)
+    i_inds, j_inds, smallmask = getinds(sig, i_pos, j_pos, video)
     out = np.sum(video[frame, i_inds, j_inds][smallmask])
-    i_inds, j_inds, smallmask = getinds2(bg, i_pos, j_pos, video)
+    i_inds, j_inds, smallmask = getinds(bg, i_pos, j_pos, video)
     out = (out, np.median(video[frame, i_inds, j_inds][smallmask]))
     return out
 
 def share_video_with_subprocesses(raw_array, shape):
     global video
-    # print("new process")
     video = np.asarray(raw_array).reshape(shape)
 
 
-def apply_numpy(row):
-    # global video
-    return clean(row[1], row[0], video, row[2])
+def wrap_int_bg(row, params):
+    return get_intensity_and_background(row[1], row[0], video, row[2], params)
 
-def signal_extractor_no_pos(video, full_tracked, red_blue,roi_size,bg_size, pool = None):  # change so taht red initial is after appearance timing
+def signal_extractor_no_pos(video, full_tracked, red_blue,roi_size,bg_size, params, pool = None):  # change so taht red initial is after appearance timing
     lip_int_size= roi_size
     lip_BG_size = bg_size
     def cmask(index, array, BG_size, int_size):
@@ -242,7 +149,6 @@ def signal_extractor_no_pos(video, full_tracked, red_blue,roi_size,bg_size, pool
         BG_mask = np.bitwise_xor(BG_mask, mask2)
         return (sum((array[mask]))), np.median(((array[BG_mask])))
     
-    #print(full_tracked)
     full_tracked = full_tracked.sort_values(['frame'], ascending=True)
     
 
@@ -252,11 +158,9 @@ def signal_extractor_no_pos(video, full_tracked, red_blue,roi_size,bg_size, pool
     mask_size = np.sum(mask_size)
 
     if pool is None:
-        a = full_tracked.apply(lambda row: clean(row['y'], row['x'], video, row['frame']), axis=1)
+        a = full_tracked.apply(lambda row: get_intensity_and_background(row['y'], row['x'], video, row['frame']), axis=1)
     else:
-        # print("Using pool")
-        a = pool.map(apply_numpy, full_tracked[['x', 'y', 'frame']].to_numpy())
-    # a = df_extractor2(final_df, video)
+        a = pool.map(partial(wrap_int_bg, params = params), full_tracked[['x', 'y', 'frame']].to_numpy())
 
     intensity = []
     bg = []
@@ -281,12 +185,8 @@ def signal_extractor_no_pos(video, full_tracked, red_blue,roi_size,bg_size, pool
 
 
 
-def tracker(videoinp, mean_multiplier, sep, replicate, save_path):
-    # global video
+def tracker(videoinp, mean_multiplier, sep, replicate, save_path, params):
     mean = np.mean(videoinp[0])
-    #video = np.asarray(video) #dont use?
-    #video_mean = np.median(video,axis = 0) #dont use 
-    #video = video -video_mean # dont use 
     
     video = ndimage.gaussian_filter(videoinp, sigma=(0,0.5,0.5), order=0) #dont use 
 
@@ -297,8 +197,8 @@ def tracker(videoinp, mean_multiplier, sep, replicate, save_path):
     
     #video = sub_vid
     
-    full = tp.batch(video, object_size,invert=False, minmass =mean*mean_multiplier,
-                    separation= sep, processes = n_processes_tp); # mac har problemer med multiprocessing, derfor processing = 1
+    full = tp.batch(video, params.object_size,invert=False, minmass =mean*mean_multiplier,
+                    separation= sep, processes = params.n_processes_tp); # mac har problemer med multiprocessing, derfor processing = 1
                                                                # processes = 8 burde kunne køre på erda. (8 kerner)
     #check for subpixel accuracy
     tp.subpx_bias(full)
@@ -317,9 +217,7 @@ def tracker(videoinp, mean_multiplier, sep, replicate, save_path):
             results = pool.map(partial(mp_msd, mpp = mpp, fps = fps,
                             max_lagtime = max_lagtime, detail = False,
                             pos_columns = pos_columns), traj.groupby('particle'))
-
-            # results = pool.map(I, traj.groupby('particle'))
-            # return results
+            
             ids, msds = zip(*results)
         results = tp.motion.pandas_concat(msds, keys=ids)
         results = results.swaplevel(0, 1)[statistic].unstack()
@@ -328,54 +226,40 @@ def tracker(videoinp, mean_multiplier, sep, replicate, save_path):
         results.index.name = 'lag time [s]'
         return results
         
-    if n_processes > 1:
+    if params.n_processes > 1:
         start = time.time()
         raw_array_video = mp.RawArray(np.ctypeslib.as_ctypes_type(video.dtype), video.size)
         np_for_copying = np.asarray(raw_array_video).reshape(video.shape)
         np.copyto(np_for_copying, video)
         end = time.time()
         # print("Time to copy video: ", end-start)
-        context_man = mp.get_context("spawn").Pool(n_processes, initializer = share_video_with_subprocesses, initargs = (raw_array_video, video.shape))
+        context_man = mp.get_context("spawn").Pool(params.n_processes, initializer = share_video_with_subprocesses, initargs = (raw_array_video, video.shape))
     else:
         context_man = nullcontext()
 
     with context_man as pool:
-        full = signal_extractor_no_pos(video, full, 'red',lip_int_size,lip_BG_size, pool = pool)
-        full_tracked = tp.link_df(full, search_range, memory=memory) #5 pixel search range, memory =2 
-        full_tracked = tp.filter_stubs(full_tracked, duration_filter) # filter aour short stuff
+        full = signal_extractor_no_pos(video, full, 'red', params.lip_int_size, params.lip_BG_size, params = params, pool = pool)
+        full_tracked = tp.link_df(full, params.search_range, memory=params.memory) #5 pixel search range, memory =2 
+        full_tracked = tp.filter_stubs(full_tracked, params.duration_filter) # filter aour short stuff
         
         
-        full_tracked = step_tracker(full_tracked)
+        full_tracked = step_tracker(full_tracked, params)
         full_tracked['particle'] = full_tracked['particle'].transform(int)
         
-        #full_tracked['particle'] = full_tracked['particle'].transform(str)
-        #print(full_tracked.groupby('particle')['particle'])
         full_tracked['duration'] = full_tracked.groupby('particle')['particle'].transform(len)
-        #full_tracked['frame'] = full_tracked['frame']+1 #made so there is no frame 0
         
-        
-        #full_tracked['particle'] = full_tracked['particle'].transform(int)
-        #full_tracked = full_tracked.sort_values(['frame'], ascending=True) 
-        #this should be used
-        
-        
-        
-        msd_df = mp_imsd(full_tracked, pixel_size, float(tracking_time),
+        msd_df = mp_imsd(full_tracked, params.pixel_size, float(params.tracking_time),
         max_lagtime = full_tracked["duration"].max(), pool = pool)
 
     msd_df=msd_df.stack().reset_index()
     msd_df.columns = ['time', 'particle','msd']
-    #msd_df =  full_tracked
     return full_tracked, msd_df 
 
-def runner_tracker(video_location, experiment_type, save_path, replicate): 
+def runner_tracker(video_location, experiment_type, save_path, replicate, params): 
     
     video = image_loader_video(video_location)
-    #video = crop_vid(video)
     
-    #video = video[:,500:1000,200:800] #crop video =video[:,y_min_cut:y_max_cut,x_min_cut:x_max_cut]
-    
-    full_tracked, msd_df = tracker(video,mean_multiplier, sep, replicate, save_path)    
+    full_tracked, msd_df = tracker(video, params.mean_multiplier, params.sep, replicate, save_path, params)    
     
     msd_df['experiment_type'] = str(experiment_type)
     msd_df['replicate'] = str(replicate)
@@ -431,3 +315,33 @@ def create_list_of_vids(path, exp):
     relica_list = np.arange(len(files))
     type_list = [str(exp)] * len(files)
     return files,relica_list,type_list
+
+def main(parampath = None, **kwargs):
+    if parampath is None:
+        parampath = "params.yml" if os.path.exists("params.yml") else None
+    params = Params(parampath, **kwargs)
+
+    assert params.exp_type_folders is not None, "Please specify experiment folders"
+    assert params.save_path is not None, "Please specify a save path"
+    assert params.exp_types is not None, "Please specify experiment names"
+
+
+    list_of_vids = []
+    type_list = []
+    replica_list = []
+
+    for main_folder in range(len(params.exp_type_folders)):
+        file_paths,relica_number,exp_type = create_list_of_vids(params.exp_type_folders[main_folder],params.exp_types[main_folder])
+        list_of_vids.extend(file_paths)
+        type_list.extend(exp_type)
+        replica_list.extend(relica_number)
+
+    print(list_of_vids)
+    
+    for i in range(len(list_of_vids)):
+        save_path1 = params.save_path
+        path = list_of_vids[i]
+        lipase = type_list[i]
+        replica = replica_list[i]
+        runner_tracker(path,lipase,save_path1,replica, params)
+    create_big_df(params.save_path) # saving data

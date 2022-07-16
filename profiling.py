@@ -11,7 +11,7 @@ lip_BG_size = 60        # originally 50 for first attemps
 memory = 1              #frame
 search_range = 5        # pixels
 
-duration_filter = 0    # frames, originally 5
+duration_filter = 20    # frames, originally 5
 
 tracking_time = 0.036   #s --> maybe should change according to exposue 
 
