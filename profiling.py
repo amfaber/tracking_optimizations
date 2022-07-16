@@ -25,27 +25,27 @@ save_path =  'sample_output/'        # where to save .csv
 
 
 # -------------------------------- Running ------------------------------------ #
-
-list_of_vids = []
-type_list = []
-replica_list = []
-
-
-for main_folder in range(len(exp_type_folders)):
-    file_paths,relica_number,exp_type = create_list_of_vids(exp_type_folders[main_folder],exp_types[main_folder])
-    list_of_vids.extend(file_paths)
-    type_list.extend(exp_type)
-    replica_list.extend(relica_number)  
-
-print(list_of_vids)
+if __name__ == '__main__':
+    list_of_vids = []
+    type_list = []
+    replica_list = []
 
 
-for i in range(len(list_of_vids)):
-    save_path1 = save_path
-    path = list_of_vids[i]
-    lipase = type_list[i]
-    replica = replica_list[i]
-    runner_tracker(path,lipase,save_path1,replica)
+    for main_folder in range(len(exp_type_folders)):
+        file_paths,relica_number,exp_type = create_list_of_vids(exp_type_folders[main_folder],exp_types[main_folder])
+        list_of_vids.extend(file_paths)
+        type_list.extend(exp_type)
+        replica_list.extend(relica_number)  
+
+    print(list_of_vids)
 
 
-create_big_df(save_path) # saving data
+    for i in range(len(list_of_vids)):
+        save_path1 = save_path
+        path = list_of_vids[i]
+        lipase = type_list[i]
+        replica = replica_list[i]
+        runner_tracker(path,lipase,save_path1,replica)
+
+
+    create_big_df(save_path) # saving data

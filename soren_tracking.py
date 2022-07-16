@@ -1,18 +1,18 @@
 import numpy as np
 import pandas as pd
 import trackpy as tp
-import matplotlib  as mpl
+# import matplotlib  as mpl
 import matplotlib.pyplot as plt
-from skimage.feature import peak_local_max
+# from skimage.feature import peak_local_max
 from scipy import ndimage
-from skimage.feature import blob_log
-from skimage import feature
-from scipy.stats.stats import pearsonr 
-import os
-import scipy
+# from skimage.feature import blob_log
+# from skimage import feature
+# from scipy.stats.stats import pearsonr 
+# import os
+# import scipy
 import scipy.ndimage as ndimage
-from skimage import measure
-from skimage.color import rgb2gray 
+# from skimage import measure
+# from skimage.color import rgb2gray 
 import probfit
 import multiprocessing as mp
 from contextlib import nullcontext
@@ -20,8 +20,10 @@ from functools import partial
   
 #from pims import TiffStack
 import time
-import matplotlib.patches 
-from skimage import morphology, util, filters
+# import matplotlib.patches 
+from skimage import util, filters
+# from skimage import morphology, util, filters
+import time
 
 
 mean_multiplier = 0.8
@@ -216,12 +218,14 @@ def clean(i_pos, j_pos, video, frame):
     out = (out, np.median(video[frame, i_inds, j_inds][smallmask]))
     return out
 
-def apply_clean(row):
+def share_video_with_subprocesses(raw_array, shape):
     global video
-    return clean(row['y'], row['x'], video, row['frame'])
+    print("new process")
+    video = np.asarray(raw_array).reshape(shape)
+
 
 def apply_numpy(row):
-    global video
+    # global video
     return clean(row[1], row[0], video, row[2])
 
 def signal_extractor_no_pos(video, full_tracked, red_blue,roi_size,bg_size, pool = None):  # change so taht red initial is after appearance timing
@@ -248,7 +252,7 @@ def signal_extractor_no_pos(video, full_tracked, red_blue,roi_size,bg_size, pool
     mask_size = np.sum(mask_size)
 
     if pool is None:
-        a = full_tracked.apply(apply_clean, axis=1)
+        a = full_tracked.apply(lambda row: clean(row['y'], row['x'], video, row['frame']), axis=1)
     else:
         print("Using pool")
         a = pool.map(apply_numpy, full_tracked[['x', 'y', 'frame']].to_numpy())
@@ -274,19 +278,18 @@ def signal_extractor_no_pos(video, full_tracked, red_blue,roi_size,bg_size, pool
         full_tracked['green_int_corrected'] = (full_tracked['green_int']) - (full_tracked['green_bg']*mask_size)
 
     return full_tracked
-   
-import sys
+
+
+
 def tracker(videoinp, mean_multiplier, sep, replicate, save_path):
-    global video
+    # global video
     mean = np.mean(videoinp[0])
     #video = np.asarray(video) #dont use?
     #video_mean = np.median(video,axis = 0) #dont use 
     #video = video -video_mean # dont use 
     
     video = ndimage.gaussian_filter(videoinp, sigma=(0,0.5,0.5), order=0) #dont use 
-    # with mp.get_context('fork').Pool(1) as p:
-    #     print(p.map(get_vid, [1]))
-    # sys.exit()
+
     # ----- USE THIS WHEN AVG SUBSTRACKTING -----
     #mean_vid = np.mean(video,axis = 0) #finds avg video, use only when tracking in same layer in shor period of time 
     #sub_vid = video - mean_vid     
@@ -324,9 +327,13 @@ def tracker(videoinp, mean_multiplier, sep, replicate, save_path):
         results.set_index(lagt, inplace=True)
         results.index.name = 'lag time [s]'
         return results
-    
+        
     if n_processes > 1:
-        context_man = mp.get_context("fork").Pool(n_processes)
+        start = time.time()
+        raw_array_video = mp.RawArray("d", video.flatten())
+        end = time.time()
+        print("Time to copy video: ", end-start)
+        context_man = mp.get_context("spawn").Pool(n_processes, initializer = share_video_with_subprocesses, initargs = (raw_array_video, video.shape))
     else:
         context_man = nullcontext()
 
@@ -359,9 +366,6 @@ def tracker(videoinp, mean_multiplier, sep, replicate, save_path):
     #msd_df =  full_tracked
     return full_tracked, msd_df 
 
-def get_vid(*args):
-    global video
-    return video.shape
 def runner_tracker(video_location, experiment_type, save_path, replicate): 
     
     video = image_loader_video(video_location)
