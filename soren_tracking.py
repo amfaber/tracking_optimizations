@@ -220,7 +220,7 @@ def clean(i_pos, j_pos, video, frame):
 
 def share_video_with_subprocesses(raw_array, shape):
     global video
-    print("new process")
+    # print("new process")
     video = np.asarray(raw_array).reshape(shape)
 
 
@@ -254,7 +254,7 @@ def signal_extractor_no_pos(video, full_tracked, red_blue,roi_size,bg_size, pool
     if pool is None:
         a = full_tracked.apply(lambda row: clean(row['y'], row['x'], video, row['frame']), axis=1)
     else:
-        print("Using pool")
+        # print("Using pool")
         a = pool.map(apply_numpy, full_tracked[['x', 'y', 'frame']].to_numpy())
     # a = df_extractor2(final_df, video)
 
@@ -330,9 +330,11 @@ def tracker(videoinp, mean_multiplier, sep, replicate, save_path):
         
     if n_processes > 1:
         start = time.time()
-        raw_array_video = mp.RawArray("d", video.flatten())
+        raw_array_video = mp.RawArray(np.ctypeslib.as_ctypes_type(video.dtype), video.size)
+        np_for_copying = np.asarray(raw_array_video).reshape(video.shape)
+        np.copyto(np_for_copying, video)
         end = time.time()
-        print("Time to copy video: ", end-start)
+        # print("Time to copy video: ", end-start)
         context_man = mp.get_context("spawn").Pool(n_processes, initializer = share_video_with_subprocesses, initargs = (raw_array_video, video.shape))
     else:
         context_man = nullcontext()
@@ -400,8 +402,8 @@ def create_big_df(save_path):
     
     tracks_csv = []
     msd_csv = []
-    df_new_full = pd.DataFrame()
-    df_new_msd = pd.DataFrame()
+    df_new_full = []
+    df_new_msd = []
     for filepath in files:
         if filepath.find('MSD')      != -1:
             msd_csv.append(filepath)
@@ -410,12 +412,14 @@ def create_big_df(save_path):
             
     for path in tracks_csv:
         df = pd.read_csv(str(path), low_memory=False, sep = ',') 
-        df_new_full = df_new_full.append(df, ignore_index = True)
-        
+        df_new_full.append(df)
+    df_new_full = pd.concat(df_new_full, ignore_index = True)
+
     for path in msd_csv:
         df = pd.read_csv(str(path), low_memory=False, sep = ',') 
-        df_new_msd = df_new_msd.append(df, ignore_index = True)
-    
+        df_new_msd.append(df)
+    df_new_msd = pd.concat(df_new_msd, ignore_index = True)
+
     df_new_full.to_csv(str(save_path+'all_tracked.csv'), header=True, index=None, sep=',', mode='w')
     df_new_msd.to_csv(str(save_path+'all_msd.csv'), header=True, index=None, sep=',', mode='w')
 
