@@ -10,7 +10,8 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            "justMyCode": true
+            "justMyCode": true,
+            "cwd": "C:\\Users\\andre\\Documents\\tracking_optimizations\\emily_tracking",
         }
     ]
 }

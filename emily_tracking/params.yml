@@ -1,0 +1,19 @@
+exp_types:
+ - 'HEK_RC_NovoEarly_488_30min'
+exp_type_folders:
+ - '../sample_vids/'
+
+save_path: ../sample_output/
+
+mean_multiplier: 0.8
+sep: 5                 #pixel seperation, ahould be close t search_range
+object_size: 9         # 5 originally 
+lip_int_size: 9        #originally 14 for first attemps
+lip_BG_size: 60        # originally 50 for first attemps
+memory: 1              #frame
+search_range: 5        # pixels
+duration_filter: 20    # frames, originally 5
+tracking_time: 0.036   #s --> maybe should change according to exposue 
+pixel_size: 0.18333    #µm 60x is 18333 nm
+n_processes: 8     #Number of processes for multiprocessing. Set to None to use all available cores
+n_processes_tp: 8

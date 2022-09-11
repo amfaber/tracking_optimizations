@@ -23,7 +23,6 @@ from glob import glob
 from tqdm import tqdm
 from skimage import io
 from tifffile import imsave
-from scipy.optimize import minimize
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import minimize
@@ -73,7 +72,7 @@ def image_loader_video(video):
     images_1 = io.imread(video)
     return np.asarray(images_1)
 
-def signal_extractor_no_pos(video, final_df, red_blue,roi_size,bg_size,gap_size):  # change so taht red initial is after appearance timing
+def signal_extractor_no_pos(video, final_df, red_blue, roi_size, bg_size, gap_size):  # change so taht red initial is after appearance timing
 
     global lip_int_size
     global lip_BG_size
@@ -146,14 +145,12 @@ def signal_extractor_no_pos(video, final_df, red_blue,roi_size,bg_size,gap_size)
 
         nx, ny = array.shape
         y, x = np.ogrid[-a:nx - a, -b:ny - b]
-        mask = x * x + y * y <= lip_int_size  # radius squared - but making sure we dont do the calculation in the function - slow
-        mask2 = x * x + y * y <= lip_int_size+gap_size  # to make a "gab" between BG and roi
-        BG_mask = (x * x + y * y <= lip_BG_size)
+        r2 = x * x + y * y
+        mask = r2 <= lip_int_size  # radius squared - but making sure we dont do the calculation in the function - slow
+        mask2 = r2 <= lip_int_size+gap_size  # to make a "gab" between BG and roi
+        BG_mask = (r2 <= lip_BG_size)
         """Henrik added multiplication with get_bck_pixels"""
         BG_mask = np.bitwise_xor(BG_mask, mask2)#*bck_array #SSRB added 16-03-2021
-
-
-#quantile = 0.5 = median for BG, try to change
 
         return np.sum((array[mask])), np.quantile(((array[BG_mask])),0.50),np.mean((array[mask])),np.mean((array[BG_mask])) # added np in sum
 
@@ -176,6 +173,8 @@ def signal_extractor_no_pos(video, final_df, red_blue,roi_size,bg_size,gap_size)
         intensity.append(i)
         mean.append(m)
         b_mean.append(bm)
+    
+
     if red_blue == 'blue' or red_blue == 'Blue':
         final_df['blue_int'] = intensity
         final_df['blue_int_mean'] = mean
@@ -187,12 +186,10 @@ def signal_extractor_no_pos(video, final_df, red_blue,roi_size,bg_size,gap_size)
     elif red_blue == 'red' or red_blue == 'Red':
         final_df['red_int'] = intensity
         final_df['red_int_mean'] = mean
-
         final_df['red_bg'] = bg
         final_df['red_bg_mean'] = b_mean
         final_df['red_int_corrected'] = (final_df['red_int']) - (final_df['red_bg']*mask_size)
         final_df['red_int_gausscorrected'] = (final_df['red_int']) - (final_df['background']*mask_size)
-
     else:
         final_df['green_int'] = intensity
         final_df['green_int_mean'] = mean
@@ -307,22 +304,29 @@ def fit_random_pixel(movie, plot=False):
     return (res, stats.chi2.sf(res.fun, np.sum(counts > 3) - 3))
 
 
-def Correct_illumination_profile(photon_movie, counter, save_path):
+def Correct_illumination_profile(photon_movie, counter, save_path, inplace = True):
     save_path = Path(save_path)
     from skimage.filters import gaussian
-    import torch
+    # import torch
     meanmov = np.mean(photon_movie, axis=0)
     gauss_meanmov = gaussian(meanmov, 30)
-    cuda_gauss = torch.tensor(gauss_meanmov).to("cuda")
-    cuda_gauss = cuda_gauss / cuda_gauss.max()
-    # gauss_meanmov = gauss_meanmov / gauss_meanmov.max()
-
-    # scaled_movie = photon_movie / gauss_meanmov
-    scaled_movie = torch.tensor(photon_movie).to("cuda") / cuda_gauss
-    scaled_movie.numpy()
+    # cuda = False
+    # if cuda:
+    #     cuda_gauss = torch.tensor(gauss_meanmov, requires_grad = False).to("cuda")
+    #     cuda_gauss = cuda_gauss / cuda_gauss.max()
+    #     scaled_movie = torch.tensor(photon_movie, requires_grad = False).to("cuda") / cuda_gauss
+    #     scaled_movie = scaled_movie.cpu().numpy()
+    # else:
+    gauss_meanmov = gauss_meanmov / gauss_meanmov.max()
+    if inplace:
+        out = photon_movie
+    else:
+        out = None
+    out = np.divide(photon_movie, gauss_meanmov, out = out)
     plot=False
 
     if plot:
+
         ind = np.random.randint(len(photon_movie))
         fig, ax = plt.subplots(1, 3, figsize=(9, 4.5))
         ax[0].imshow(
@@ -345,7 +349,8 @@ def Correct_illumination_profile(photon_movie, counter, save_path):
         ax[2].set(title="Corrected movie")
         fig.tight_layout()
         fig.savefig(save_path / f"{counter}_" / "illumination.pdf")
-    return scaled_movie
+    
+    return out
 
 
 # ----------------------------- Main Function ------------------------------ #
@@ -376,11 +381,13 @@ def extract_traces_average(location, video, no_par_video, save_path):
             np.array([res.x[0] for res, p in pixfits]),
             np.array([p for res, p in pixfits]),
             )
+            Gs_mean = np.mean(Gs[pvals > 0.01])
+            offs_mean = np.mean(offs[pvals > 0.01])
             with open("random_pix_fits.pkl", "wb") as file:
-                pickle.dump((Gs, offs, phots, pvals), file)
+                pickle.dump((Gs_mean, offs_mean), file)
         else:
             with open("random_pix_fits.pkl", "rb") as file:
-                Gs, offs, phots, pvals = pickle.load(file)
+                Gs_mean, offs_mean = pickle.load(file)
     ####
 
 
@@ -390,37 +397,28 @@ def extract_traces_average(location, video, no_par_video, save_path):
 
         if not os.path.exists(save_path / f"{counter}_"):                      # creates a folder for saving the stuff in if it does not exist
             os.makedirs(save_path / f"{counter}_")
-
-        video = image_loader_video(video)
+        
+        data_type = np.float64
+        video = image_loader_video(video).astype(dtype = data_type)
         loc = image_loader_video(loc)
+        ####only detect on first 500 frames. added 16/7-21
+        video_still= np.mean(loc,axis = 0) #mean of all frames in video, we detect on an average still image of all videos
+        del loc
+        mean=np.mean(video_still) #mean of pixel value
 
-        #Move to the other function:
-        #imsave(str(main_save_path+'norm.tif'),video[:1000]) #saves normal video
-
-        import scipy.ndimage as ndimage
+        f = tp.locate(video_still, diameter, minmass=mean * mean_multiplier, separation=sep) #11 is diameter of roi used for position determination, odd number
 
         # should not be needed for Sara
-        #video = ndimage.gaussian_filter(video,sigma = (3,0,0),order = 0) #smooth 3 sigma in z, try to change this
-        print(f"1 {time()-start}")
-        photon_movie = (video - np.mean(offs[pvals > 0.01])) / np.mean(Gs[pvals > 0.01])
-        print(f"2 {time()-start}")
+        np.subtract(video, offs_mean.astype(data_type), out = video)
+        np.divide(video, Gs_mean.astype(data_type), out = video)
+        photon_movie = video
+        # photon_movie = (video - offs_mean.astype(data_type)) / Gs_mean.astype(data_type)
         corrected_mov = Correct_illumination_profile(photon_movie, counter, save_path)
-        print(f"3 {time()-start}")
 
 
         #imsave(str(main_save_path+'smoothed.tif'),video[:1000]) #saves smoothed video
 
         ##end move to other function
-        ####only detect on first 500 frames. added 16/7-21
-
-        video_still= np.mean(loc,axis = 0) #mean of all frames in video, we detect on an average still image of all videos
-
-        #mean_multiplier = 0.5
-        mean=np.mean(video_still) #mean of pixel value
-
-
-        # forloop til gøre det per frame
-        f = tp.locate(video_still, diameter, minmass=mean * mean_multiplier, separation=sep) #11 is diameter of roi used for position determination, odd number
 
 #        plt.imshow(video_still)
 #        tp.annotate(f, video_still)
@@ -466,10 +464,13 @@ def extract_traces_average(location, video, no_par_video, save_path):
         f['particle'] = range(len(f))
 
         print ("Found particles: ", len(f))
-        new =  pd.DataFrame()
+        start = time()
+        new = []
         for i in range(len(corrected_mov)):
             f['frame'] = i
-            new= new.append(f, ignore_index = True)
+            new.append(f)
+        new = pd.concat(new, ignore_index = True)
+        print(f"appending: {time() - start}")
 
         new = signal_extractor_no_pos(corrected_mov, new, 'red',lip_int_size,lip_BG_size,gap_size)
         new['video_counter'] = counter

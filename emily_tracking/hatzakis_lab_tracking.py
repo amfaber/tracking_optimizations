@@ -12,6 +12,12 @@ import time
 import yaml
 import os
 import re
+from skimage import io
+from pathlib import Path
+from scipy.optimize import minimize
+from scipy.special import ive
+import scipy.stats as stats
+
 
 # Tracking parameters
 
@@ -31,10 +37,11 @@ class Params:
         'save_path': None,
         'exp_type_folders': None,
         'exp_types': None,
+        'gap_size': 0,
         }
     values = defaults.copy()
 
-    def __init__(self, parampath, **kwargs):
+    def __init__(self, parampath = None, **kwargs):
         super().__setattr__("_path", parampath)
         self.__dict__.update(self.defaults)
         if parampath is not None:
@@ -80,13 +87,16 @@ def isnotebook():
         result = None
     return result
 
-def calibration(video_location, params, save = True, save_location = None):
+def calibration(params, video_location = None, video = None, save = True, save_location = None):
     if isinstance(params, str):
         params = Params(params)
     ipython = isnotebook()
     if ipython is not None:
         ipython.run_line_magic("matplotlib", "")
-    video = image_loader_video(video_location)
+    
+    if video_location is not None:
+        video = image_loader_video(video_location)
+    
     run = True
     mean_multiplier = params.mean_multiplier
     sep = params.sep
@@ -132,7 +142,6 @@ def calibration(video_location, params, save = True, save_location = None):
 
 
 def image_loader_video(video):
-    from skimage import io
     im = io.imread(video)
     return np.asarray(im)
 
@@ -174,7 +183,7 @@ def step_tracker(df, params):
     return df
 
 
-def get_intensity_and_background(i_pos, j_pos, video, frame, params):
+def get_intensity_and_background(i_pos, j_pos, video, frame, params, return_means = False):
     sqrt_BG_size = int(np.ceil(np.sqrt(params.lip_BG_size)))
     def getinds(smallmask, i_pos, j_pos, video):
         i_lower = int(i_pos) - sqrt_BG_size + 1
@@ -209,26 +218,33 @@ def get_intensity_and_background(i_pos, j_pos, video, frame, params):
                     -sqrt_BG_size-(j_pos%1)+1:+sqrt_BG_size-(j_pos%1)+1]
     all_r2s = all_is**2 + all_js**2
     sig = all_r2s <= params.lip_int_size
-    bg = all_r2s <= params.lip_BG_size
-    bg = np.logical_xor(bg, sig)
+    if params.gap_size != 0:
+        bg = np.logical_xor(all_r2s <= params.lip_BG_size, all_r2s <= params.lip_int_size + params.gap_size)
+    else:
+        bg = np.logical_xor(all_r2s <= params.lip_BG_size, sig)
+
 
     i_inds, j_inds, smallmask = getinds(sig, i_pos, j_pos, video)
-    out = np.sum(video[frame, i_inds, j_inds][smallmask])
+    signal = video[frame, i_inds, j_inds][smallmask]
     i_inds, j_inds, smallmask = getinds(bg, i_pos, j_pos, video)
-    out = (out, np.median(video[frame, i_inds, j_inds][smallmask]))
+    background = video[frame, i_inds, j_inds][smallmask]
+
+    out = (np.sum(signal), np.median(background))
+    if return_means:
+        out = (*out, np.mean(signal), np.mean(background))
     return out
 
 def share_video_with_subprocesses(raw_array, shape):
-    global video
-    video = np.asarray(raw_array).reshape(shape)
+    global _video
+    _video = np.asarray(raw_array).reshape(shape)
 
 
-def wrap_int_bg(row, params):
-    return get_intensity_and_background(row[1], row[0], video, row[2], params)
+def wrap_int_bg(row, params, **kwargs):
+    return get_intensity_and_background(row[1], row[0], _video, row[2], params, **kwargs)
 
-def signal_extractor_no_pos(video, full_tracked, red_blue,roi_size,bg_size, params, pool = None):  # change so taht red initial is after appearance timing
-    lip_int_size= roi_size
-    lip_BG_size = bg_size
+def signal_extractor_no_pos(video, full_tracked, red_blue, params, pool = None, include_means = False):  # change so taht red initial is after appearance timing
+    lip_int_size = params.lip_int_size 
+    lip_BG_size = params.lip_BG_size
     def cmask(index, array, BG_size, int_size):
         a, b = index
         nx, ny = array.shape
@@ -249,34 +265,54 @@ def signal_extractor_no_pos(video, full_tracked, red_blue,roi_size,bg_size, para
     mask_size = np.sum(mask_size)
 
     if pool is None:
-        a = full_tracked.apply(lambda row: get_intensity_and_background(row['y'], row['x'], video, row['frame']), axis=1)
+        a = full_tracked.apply(lambda row: get_intensity_and_background(
+                row['y'], row['x'], video, row['frame'], params, return_means = include_means), axis=1)
     else:
-        a = pool.map(partial(wrap_int_bg, params = params), full_tracked[['x', 'y', 'frame']].to_numpy())
+        a = pool.map(partial(wrap_int_bg, params = params, return_means = include_means),
+                full_tracked[['x', 'y', 'frame']].to_numpy())
 
     intensity = []
     bg = []
+    if include_means:
+        means = []
+        background_means = []
     for line in a:
-        i, b = line
+        if include_means:
+            i, b, mean, background_mean = line
+            means.append(mean)
+            background_means.append(background_mean)
+        else:
+            i, b = line
         bg.append(b)
         intensity.append(i)
-    if red_blue == 'blue' or red_blue == 'Blue':
-        full_tracked['blue_int'] = intensity
-        full_tracked['blue_bg'] = bg
-        full_tracked['blue_int_corrected'] = (full_tracked['blue_int']) - (full_tracked['blue_bg']*mask_size)
-    elif red_blue == 'red' or red_blue == 'Red':
-        full_tracked['red_int'] = intensity
-        full_tracked['red_bg'] = bg
-        full_tracked['red_int_corrected'] = (full_tracked['red_int']) - (full_tracked['red_bg']*mask_size)
-    else:
-        full_tracked['green_int'] = intensity
-        full_tracked['green_bg'] = bg
-        full_tracked['green_int_corrected'] = (full_tracked['green_int']) - (full_tracked['green_bg']*mask_size)
+    
+    red_blue = red_blue.lower()
+
+    full_tracked[f'{red_blue}_int'] = intensity
+    full_tracked[f'{red_blue}_bg'] = bg
+    full_tracked[f'{red_blue}_int_corrected'] = (full_tracked[f'{red_blue}_int']) - (full_tracked[f'{red_blue}_bg']*mask_size)
+    if "background" in full_tracked:
+        full_tracked[f'{red_blue}_int_gausscorrected'] = (full_tracked[f'{red_blue}_int']) - (full_tracked['background']*mask_size)
+    if include_means:
+        full_tracked[f'{red_blue}_int_mean'] = means
+        full_tracked[f'{red_blue}_bg_mean'] = background_means
 
     return full_tracked
 
+def create_pool_context(n_processes, video, initializer = share_video_with_subprocesses):
+    if n_processes > 1:
+        print("")
+        raw_array_video = mp.RawArray(np.ctypeslib.as_ctypes_type(video.dtype), video.size)
+        np_for_copying = np.asarray(raw_array_video).reshape(video.shape)
+        np.copyto(np_for_copying, video)
+        # print("Time to copy video: ", end-start)
+        context_man = mp.get_context("spawn").Pool(n_processes, initializer = initializer,
+                initargs = (raw_array_video, video.shape))
+    else:
+        context_man = nullcontext()
+    return context_man
 
-
-def tracker(videoinp, mean_multiplier, sep, replicate, save_path, params):
+def tracker(videoinp, replicate, params):
     mean = np.mean(videoinp[0])
     
     video = ndimage.gaussian_filter(videoinp, sigma=(0,0.5,0.5), order=0) #dont use
@@ -289,12 +325,12 @@ def tracker(videoinp, mean_multiplier, sep, replicate, save_path, params):
     
     #video = sub_vid
     
-    full = tp.batch(video, params.object_size,invert=False, minmass =mean*mean_multiplier,
-                    separation= sep, processes = params.n_processes); # mac har problemer med multiprocessing, derfor processing = 1
+    full = tp.batch(video, params.object_size, invert = False, minmass = mean*params.mean_multiplier,
+                    separation = params.sep, processes = params.n_processes); # mac har problemer med multiprocessing, derfor processing = 1
                                                                # processes = 8 burde kunne køre på erda. (8 kerner)
     #check for subpixel accuracy
     tp.subpx_bias(full)
-    plt.savefig(save_path+str(replicate)+'subpix.png')
+    plt.savefig(Path(params.save_path) / f'{replicate}subpix.png')
     # plt.show()
     
 
@@ -318,19 +354,10 @@ def tracker(videoinp, mean_multiplier, sep, replicate, save_path, params):
         results.index.name = 'lag time [s]'
         return results
         
-    if params.n_processes > 1:
-        start = time.time()
-        raw_array_video = mp.RawArray(np.ctypeslib.as_ctypes_type(video.dtype), video.size)
-        np_for_copying = np.asarray(raw_array_video).reshape(video.shape)
-        np.copyto(np_for_copying, video)
-        end = time.time()
-        # print("Time to copy video: ", end-start)
-        context_man = mp.get_context("spawn").Pool(params.n_processes, initializer = share_video_with_subprocesses, initargs = (raw_array_video, video.shape))
-    else:
-        context_man = nullcontext()
+    context_man = create_pool_context(params.n_processes, video)
 
     with context_man as pool:
-        full = signal_extractor_no_pos(video, full, 'red', params.lip_int_size, params.lip_BG_size, params = params, pool = pool)
+        full = signal_extractor_no_pos(video, full, 'red', params = params, pool = pool)
         full_tracked = tp.link_df(full, params.search_range, memory=params.memory) #5 pixel search range, memory =2 
         full_tracked = tp.filter_stubs(full_tracked, params.duration_filter) # filter aour short stuff
         
@@ -347,11 +374,11 @@ def tracker(videoinp, mean_multiplier, sep, replicate, save_path, params):
     msd_df.columns = ['time', 'particle','msd']
     return full_tracked, msd_df 
 
-def runner_tracker(video_location, experiment_type, save_path, replicate, params): 
+def runner_tracker(video_location, experiment_type, replicate, params): 
     
     video = image_loader_video(video_location)
     
-    full_tracked, msd_df = tracker(video, params.mean_multiplier, params.sep, replicate, save_path, params)    
+    full_tracked, msd_df = tracker(video, replicate, params)    
     
     msd_df['experiment_type'] = str(experiment_type)
     msd_df['replicate'] = str(replicate)
@@ -368,8 +395,8 @@ def runner_tracker(video_location, experiment_type, save_path, replicate, params
     
     full_tracked =  full_tracked.sort_values('particle', ascending=True)
     
-    full_tracked.to_csv(str(save_path+'__'+experiment_type+'__'+str(replicate)+'__full_tracked_.csv'), header=True, index=None, sep=',', mode='w')
-    msd_df.to_csv(str(save_path+'__'+experiment_type+'__'+str(replicate)+'__MSD_.csv'), header=True, index=None, sep=',', mode='w')
+    full_tracked.to_csv(str(params.save_path+'__'+experiment_type+'__'+str(replicate)+'__full_tracked_.csv'), header=True, index=None, sep=',', mode='w')
+    msd_df.to_csv(str(params.save_path+'__'+experiment_type+'__'+str(replicate)+'__MSD_.csv'), header=True, index=None, sep=',', mode='w')
     
     
 def create_big_df(save_path):
@@ -429,14 +456,115 @@ def main(parampath = None, calibrate = True, **kwargs):
         replica_list.extend(relica_number)
 
     if calibrate:
-        calibration(list_of_vids[0], params)
+        calibration(params, video_location = list_of_vids[0])
     
     print(list_of_vids)
 
     for i in range(len(list_of_vids)):
-        save_path1 = params.save_path
         path = list_of_vids[i]
         lipase = type_list[i]
         replica = replica_list[i]
-        runner_tracker(path,lipase,save_path1,replica, params)
+        runner_tracker(path, lipase, replica, params)
     create_big_df(params.save_path) # saving data
+
+
+## Functions from stationary savinase / casein tracking
+
+def func(s, E_l, gamma, offset):
+    if s - offset == 0:
+        return np.exp(-E_l)
+    elif s - offset < 0:
+        return 0
+    else:
+        logbessel = np.log(
+            ive(1, 2 * np.sqrt(gamma * (s - offset) * E_l))
+        ) + 2 * np.sqrt(gamma * (s - offset) * E_l)
+        return np.exp(
+            0.5 * np.log(gamma * E_l / (s - offset))
+            + (-E_l - gamma * (s - offset))
+            + logbessel
+        )
+
+
+def fit_random_pixel(movie, plot=False):
+    counts, edges = np.histogram(
+        movie[
+            :,
+            np.random.randint(len(movie[0])),
+            np.random.randint(len(movie[0])),
+        ],
+        bins=100,
+        density=False,
+    )
+    bw = edges[1] - edges[0]
+    centers = edges[:-1] + bw / 2
+
+    def chi2_gain(p):
+        yfit = np.sum(counts) * bw * np.array([func(n, *p) for n in centers])
+        return np.sum((counts[counts > 3] - yfit[counts > 3]) ** 2 / yfit[counts > 3])
+
+    res = minimize(
+        chi2_gain,
+        [5, 1 / 53, 2000],
+        bounds=[[0, None], [1e-9, None], [0, None]],
+    )
+    if plot:
+        plt.bar(centers, counts, bw)
+
+        plt.plot(
+            centers,
+            np.sum(counts) * bw * np.array([func(n, *res.x) for n in centers]),
+            color="C1",
+        )
+    return (res, stats.chi2.sf(res.fun, np.sum(counts > 3) - 3))
+
+
+def Correct_illumination_profile(photon_movie, counter, save_path, inplace = True):
+    save_path = Path(save_path)
+    from skimage.filters import gaussian
+    # import torch
+    meanmov = np.mean(photon_movie, axis=0)
+    gauss_meanmov = gaussian(meanmov, 30)
+    # cuda = False
+    # if cuda:
+    #     cuda_gauss = torch.tensor(gauss_meanmov, requires_grad = False).to("cuda")
+    #     cuda_gauss = cuda_gauss / cuda_gauss.max()
+    #     scaled_movie = torch.tensor(photon_movie, requires_grad = False).to("cuda") / cuda_gauss
+    #     scaled_movie = scaled_movie.cpu().numpy()
+    # else:
+    gauss_meanmov = gauss_meanmov / gauss_meanmov.max()
+    if inplace:
+        out = photon_movie
+    else:
+        out = None
+    out = np.divide(photon_movie, gauss_meanmov, out = out)
+    scaled_movie = out
+    plot=False
+
+    if plot:
+
+        ind = np.random.randint(len(photon_movie))
+        fig, ax = plt.subplots(1, 3, figsize=(9, 4.5))
+        ax[0].imshow(
+            photon_movie[ind],
+            vmin=np.percentile(photon_movie[ind], 20),
+            vmax=np.percentile(photon_movie[ind], 99),
+            cmap="Greys_r",
+        )
+        ax[1].imshow(gauss_meanmov)
+        ax[2].imshow(
+            scaled_movie[ind],
+            vmin=np.percentile(photon_movie[ind], 20),
+            vmax=np.percentile(photon_movie[ind], 99),
+            cmap="Greys_r",
+        )
+        for a in ax:
+            a.set(xlabel="Column", ylabel="Row")
+        ax[0].set(title="Original movie")
+        ax[1].set(title="Estimated illumination profile")
+        ax[2].set(title="Corrected movie")
+        fig.tight_layout()
+        fig.savefig(save_path / f"{counter}_" / "illumination.pdf")
+    
+    return out
+
