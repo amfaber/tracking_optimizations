@@ -12,13 +12,12 @@ Created on Mon Nov  1 16:28:39 2021
 # @author: frejabohr
 # """
 #%%
-import os
 
-
+import pickle
+from time import time
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import trackpy as tp
 import uuid
 from glob import glob
 from tqdm import tqdm
@@ -27,21 +26,23 @@ from tifffile import imsave
 from scipy.optimize import minimize
 import numpy as np
 import matplotlib.pyplot as plt
-import random, tifffile, os, copy
 from scipy.optimize import minimize
 from tqdm import tqdm
 from scipy.special import ive
 import scipy.stats as stats
 import multiprocessing as mp
-from functools import partial
 import trackpy as tp
 import pandas as pd
-import scipy
 from skimage import feature
 import scipy.ndimage as ndimage
 from pathlib import Path
+import os
+from functools import partial
+
 
 #%%
+
+
 lip_int_size = 9  #originally 15 for first attemps
 
 ##Not used BG + gap
@@ -309,14 +310,17 @@ def fit_random_pixel(movie, plot=False):
 def Correct_illumination_profile(photon_movie, counter, save_path):
     save_path = Path(save_path)
     from skimage.filters import gaussian
-
+    import torch
     meanmov = np.mean(photon_movie, axis=0)
     gauss_meanmov = gaussian(meanmov, 30)
-    gauss_meanmov = gauss_meanmov / np.max(gauss_meanmov)
+    cuda_gauss = torch.tensor(gauss_meanmov).to("cuda")
+    cuda_gauss = cuda_gauss / cuda_gauss.max()
+    # gauss_meanmov = gauss_meanmov / gauss_meanmov.max()
 
-    scaled_movie = photon_movie / gauss_meanmov
-
-    plot=True
+    # scaled_movie = photon_movie / gauss_meanmov
+    scaled_movie = torch.tensor(photon_movie).to("cuda") / cuda_gauss
+    scaled_movie.numpy()
+    plot=False
 
     if plot:
         ind = np.random.randint(len(photon_movie))
@@ -349,7 +353,7 @@ def Correct_illumination_profile(photon_movie, counter, save_path):
 #Function that extract traces
 #extract_traces_average(video_location,video_signal, no_par_video, save_path)
 
-def extract_traces_average(location, video, no_par_video,save_path):
+def extract_traces_average(location, video, no_par_video, save_path):
     save_path = Path(save_path)
     from tifffile import imsave
     #mean_multiplier = 0.5
@@ -357,24 +361,32 @@ def extract_traces_average(location, video, no_par_video,save_path):
 
 
     ### no particle video
-
-    np_particle_movie = image_loader_video(no_par_video)
-
-    pixfits = [fit_random_pixel(np_particle_movie) for i in tqdm(range(400))] #400 pixels to fit
-
-
-    Gs, offs, phots, pvals = (
-    np.array([1 / res.x[1] for res, p in pixfits]),
-    np.array([res.x[2] for res, p in pixfits]),
-    np.array([res.x[0] for res, p in pixfits]),
-    np.array([p for res, p in pixfits]),)
+    pix_fits = False
+    with mp.Pool(8) as pool:
+        if pix_fits:
+            np_particle_movie = image_loader_video(no_par_video)
+            n_random_pix = 400
+            # pixfits = list(tqdm(pool.imap(partial(fit_random_pixel, np_particle_movie), range(400)), total = 400))
+            pixfits = [fit_random_pixel(np_particle_movie) for i in tqdm(range(400))] #400 pixels to fit
 
 
+            Gs, offs, phots, pvals = (
+            np.array([1 / res.x[1] for res, p in pixfits]),
+            np.array([res.x[2] for res, p in pixfits]),
+            np.array([res.x[0] for res, p in pixfits]),
+            np.array([p for res, p in pixfits]),
+            )
+            with open("random_pix_fits.pkl", "wb") as file:
+                pickle.dump((Gs, offs, phots, pvals), file)
+        else:
+            with open("random_pix_fits.pkl", "rb") as file:
+                Gs, offs, phots, pvals = pickle.load(file)
     ####
 
 
 
     for video,loc in tqdm(zip(video,location)):
+        start = time()
 
         if not os.path.exists(save_path / f"{counter}_"):                      # creates a folder for saving the stuff in if it does not exist
             os.makedirs(save_path / f"{counter}_")
@@ -389,11 +401,11 @@ def extract_traces_average(location, video, no_par_video,save_path):
 
         # should not be needed for Sara
         #video = ndimage.gaussian_filter(video,sigma = (3,0,0),order = 0) #smooth 3 sigma in z, try to change this
-
-
+        print(f"1 {time()-start}")
         photon_movie = (video - np.mean(offs[pvals > 0.01])) / np.mean(Gs[pvals > 0.01])
+        print(f"2 {time()-start}")
         corrected_mov = Correct_illumination_profile(photon_movie, counter, save_path)
-
+        print(f"3 {time()-start}")
 
 
         #imsave(str(main_save_path+'smoothed.tif'),video[:1000]) #saves smoothed video

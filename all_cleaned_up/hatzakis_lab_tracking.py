@@ -135,16 +135,16 @@ def share_video_with_subprocesses(raw_array, shape):
 def wrap_int_bg(row, params):
     return get_intensity_and_background(row[1], row[0], video, row[2], params)
 
-def signal_extractor_no_pos(video, full_tracked, red_blue,roi_size,bg_size, params, pool = None):  # change so taht red initial is after appearance timing
+def signal_extractor_no_pos(video, full_tracked, red_blue,roi_size,bg_size, params, pool = None, gap_size = 0):  # change so taht red initial is after appearance timing
     lip_int_size= roi_size
     lip_BG_size = bg_size
-    def cmask(index, array, BG_size, int_size):
+    def cmask(index, array, BG_size, int_size, gap_size = 0):
         a, b = index
         nx, ny = array.shape
         y, x = np.ogrid[-a:nx - a, -b:ny - b]
         mask = x * x + y * y <= lip_int_size  # radius squared - but making sure we dont do the calculation in the function - slow
-        mask2 = x * x + y * y <= lip_int_size   # to make a "gab" between BG and roi
-    
+        mask2 = x * x + y * y <= lip_int_size + gap_size  # to make a "gab" between BG and roi
+        
         BG_mask = (x * x + y * y <= lip_BG_size)
         BG_mask = np.bitwise_xor(BG_mask, mask2)
         return (sum((array[mask]))), np.median(((array[BG_mask])))
