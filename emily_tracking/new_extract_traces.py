@@ -259,11 +259,17 @@ def extract_traces_average(location, video, no_par_video, save_path, params):
 
         grp = full.groupby('particle')
         import matplotlib
-        my_cmap = matplotlib.cm.Reds.copy()
+        try:
+            my_cmap = matplotlib.cm.Reds.copy()
+        except AttributeError:
+            my_cmap = matplotlib.cm.Reds
         my_cmap.set_under('k', alpha=0)
         my_cmap.set_bad('k', alpha=0)
 
-        my_cmap2 = matplotlib.cm.Greens.copy()
+        try:
+            my_cmap2 = matplotlib.cm.Greens.copy()
+        except AttributeError:
+            my_cmap2 = matplotlib.cm.Greens
         my_cmap2.set_under('k', alpha=0)
         my_cmap2.set_bad('k', alpha=0)
         size_maker = np.ones(loc_averaged_over_frames.shape)
