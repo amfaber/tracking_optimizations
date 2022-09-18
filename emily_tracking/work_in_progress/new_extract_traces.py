@@ -157,13 +157,12 @@ def extract_traces_average(static_paths, dynamic_paths, no_particle_path, save_p
         dynamic_signal_in_static_positions['particle'] = dynamic_signal_in_static_positions["particle"].astype(str) + f"_{this_uuid}"
         static_df["particle"] = static_df["particle"].astype(str) + f"_{this_uuid}"
 
+
         
         dynamic_tracks.to_csv(save_path / f"{counter}_/_dynamic_tracks.csv")
         dynamic_signal_in_static_positions.to_csv(save_path / f"{counter}_/_dynamic_signal_in_static_positions.csv", \
              header=True, index=None, sep=',', mode='w')
         static_df.to_csv(save_path / f"{counter}_/_static_df.csv")
-
-        params.to_yaml(save_path / f"{counter}_/params.yml")
 
         plot_static_particles(static_averaged_over_frames, static_df, counter, save_path)
         plot_hists(dynamic_signal_in_static_positions, counter, save_path)
@@ -180,17 +179,11 @@ def plot_static_particles(static_averaged_over_frames, static_df, counter, save_
 
     plt.close('all')
     
-def plot_dynamic_signal_for_static_particle(
-    dynamic_signal_in_static_positions, 
-    static_averaged_over_frames, 
-    params, 
-    counter, 
-    save_path,
-    particle_uuid = False):
+def plot_dynamic_signal_for_static_particle(dynamic_signal_in_static_positions, static_averaged_over_frames, params, counter, save_path):
 
     for par, dat in dynamic_signal_in_static_positions.groupby('particle'):
 
-        fig,ax = plt.subplots(4,1,figsize = (9,9))
+        fig,ax =plt.subplots(4,1,figsize = (9,9))
 
         ax[0].plot(dat.frame.values, dat.red_int_corrected.values, color = "firebrick", alpha =0.8, label ='Corrected')
 
@@ -214,8 +207,6 @@ def plot_dynamic_signal_for_static_particle(
         ax[3].imshow(np.where(sig_mask[2], 1, np.nan), vmin = 0, vmax = 1, cmap = "Greens", alpha = 0.4)
         ax[3].imshow(np.where(bg_mask[2], 1, np.nan), vmin = 0, vmax = 1, cmap = "Reds", alpha = 0.4)
         fig.tight_layout()
-        if not particle_uuid:
-            par = par.split('_')[0]
         fig.savefig(save_path / f"{counter}_" / f"{par}.png")
         plt.close('all')
 

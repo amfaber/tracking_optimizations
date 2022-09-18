@@ -27,21 +27,21 @@ import hashlib
 
 class Params:
     defaults = {
-        # 'mean_multiplier': 0.8,
-        # 'sep': 5,
-        # 'object_size': 9,
-        # 'lip_int_size': 9,
-        # 'lip_BG_size': 60,
-        # 'memory': 1,
-        # 'search_range': 5,
-        # 'duration_filter': 20,
-        # 'tracking_time': 0.036,
-        # 'pixel_size': 0.18333,
-        # 'n_processes': 8,
-        # 'save_path': None,
-        # 'exp_type_folders': None,
-        # 'exp_types': None,
-        # 'gap_size': 0,
+        'mean_multiplier': 0.8,
+        'sep': 5,
+        'object_size': 9,
+        'lip_int_size': 9,
+        'lip_BG_size': 60,
+        'memory': 1,
+        'search_range': 5,
+        'duration_filter': 20,
+        'tracking_time': 0.036,
+        'pixel_size': 0.18333,
+        'n_processes': 8,
+        'save_path': None,
+        'exp_type_folders': None,
+        'exp_types': None,
+        'gap_size': 0,
         }
     values = defaults.copy()
 
