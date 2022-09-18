@@ -1,23 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Created on Mon Nov  1 16:28:39 2021
-
-@author: SørenBohr
-"""
-
-# """
-# Created on Fri Jul  2 08:48:32 2021
-
-# @author: frejabohr
-# """
-#%%
-import chunk
 import pandas as pd
 import numpy as np
 
-import pickle
-from time import time
 import uuid
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -25,14 +10,11 @@ import multiprocessing as mp
 import trackpy as tp
 from pathlib import Path
 import os
-from functools import partial
-import hashlib
 
 import hatzakis_lab_tracking as hlt
 
 
 
-#%%
 
 params = hlt.Params(
     lip_int_size = 8,  #originally 15 for first attemps
@@ -55,10 +37,6 @@ params = hlt.Params(
 
 
 
-##Not used BG + gap
-
-#15/6-21 changed from 6 to 10
-
 def fix_ax_probs(ax,x_label,y_label):
     ax.set_ylabel(y_label,size = 10)
     ax.set_xlabel(x_label,size = 10)
@@ -69,13 +47,6 @@ def fix_ax_probs(ax,x_label,y_label):
     ax.spines['right'].set_visible(False)
     ax.legend(loc = "upper right",frameon = False)
     return ax
-
-
-
-# ----------------------------- Main Function ------------------------------ #
-
-#Function that extract traces
-#extract_traces_average(video_static,video_signal, no_particle_path, save_path)
 
 
 def extract_traces_average(static_paths, dynamic_paths, no_particle_path, save_path, params):
@@ -103,7 +74,6 @@ def extract_traces_average(static_paths, dynamic_paths, no_particle_path, save_p
         print("Found particles: ", len(static_df))
 
         data_type = np.float64
-        # video = hlt.image_loader_video(video).astype(dtype = data_type)
         chunker = hlt.VideoChunker(dynamic_path,
         gb_limit = 2,
         # n_chunks = 1,
@@ -168,7 +138,6 @@ def extract_traces_average(static_paths, dynamic_paths, no_particle_path, save_p
         plot_static_particles(static_averaged_over_frames, static_df, counter, save_path)
         plot_hists(dynamic_signal_in_static_positions, counter, save_path)
         plot_dynamic_signal_for_static_particle(dynamic_signal_in_static_positions, static_averaged_over_frames, params, counter, save_path)
-
 
 
 def plot_static_particles(static_averaged_over_frames, static_df, counter, save_path):
@@ -239,19 +208,9 @@ def plot_hists(dynamic_signal_in_static_positions, counter, save_path):
 # ----------------------------- Run -------------------------------- #
 
 if __name__ == "__main__":
-    # drive_name = r"D:"
     folder = Path("sample_vids")
-    # no_particle_path = (fr'{drive_name}\Emily\background\Experiment_Process_001_20220823.tif')
     no_particle_path = str(folder / "Experiment_Process_001_20220823.tif")
-
-    # streptavidin, 20 frames videos
-    # video_static = [fr"{drive_name}\Emily\_20220831\Tifs\c_20.tif"]
     video_static = [str(folder / "c_20.tif")]
-
-
-    # protease signal, 2000 frames videos
-    # video_signal = [rf"{drive_name}\Emily\_20220831\Tifs\s_20.tif"]
-    # video_signal = [str(folder / "s_20_first_30_frames.tif")]
     video_signal = [str(folder / "s_20.tif")]
 
     save_path = str(folder / "chunking_new")
