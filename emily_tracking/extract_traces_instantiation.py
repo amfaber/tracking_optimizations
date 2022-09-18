@@ -24,19 +24,15 @@ params = Params(
 
 
 folder = Path("sample_vids")
-# no_particle_path = (fr'{drive_name}\Emily\background\Experiment_Process_001_20220823.tif')
 no_particle_path = str(folder / "Experiment_Process_001_20220823.tif")
 
 # streptavidin, 20 frames videos
-# video_static = [fr"{drive_name}\Emily\_20220831\Tifs\c_20.tif"]
 video_static = [str(folder / "c_20.tif")]
 
 
 # protease signal, 2000 frames videos
-# video_signal = [rf"{drive_name}\Emily\_20220831\Tifs\s_20.tif"]
-# video_signal = [str(folder / "s_20_first_30_frames.tif")]
-video_signal = [str(folder / "s_20.tif")]
+video_dynamic = [str(folder / "s_20.tif")]
 
 save_path = str(folder / "chunking_new")
 if __name__ == "__main__":
-    extr.extract_traces_average(video_static, video_signal, no_particle_path, save_path, params = params)
+    extr.extract_traces_average(video_static, video_dynamic, no_particle_path, save_path, params = params)

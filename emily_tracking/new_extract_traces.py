@@ -37,9 +37,9 @@ params = hlt.Params(
 
 
 
-def fix_ax_probs(ax,x_label,y_label):
-    ax.set_ylabel(y_label,size = 10)
-    ax.set_xlabel(x_label,size = 10)
+def fix_ax_probs(ax, x_label, y_label):
+    ax.set_ylabel(y_label, size = 10)
+    ax.set_xlabel(x_label, size = 10)
     ax.tick_params(axis= "both", which = "major", labelsize = 8)
     ax.tick_params(axis= "both", which = "minor", labelsize = 8)
     ax.grid(False)
