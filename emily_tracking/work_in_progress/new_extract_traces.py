@@ -78,7 +78,7 @@ def fix_ax_probs(ax,x_label,y_label):
 #extract_traces_average(video_static,video_signal, no_particle_path, save_path)
 
 
-def extract_traces_average(static_paths, dynamic_paths, no_particle_path, save_path, params):
+def extract_traces_average(static_paths, dynamic_paths, no_particle_path, save_path, params, calibrate = [False, False], only_calibrate = [False, False]):
     save_path = Path(save_path)
     os.makedirs(save_path, exist_ok = True)
     ### no particle video
@@ -89,9 +89,21 @@ def extract_traces_average(static_paths, dynamic_paths, no_particle_path, save_p
             os.makedirs(save_path / f"{counter}_")
         
         static_video = hlt.image_loader_video(static_path)
-        static_averaged_over_frames= np.mean(static_video, axis = 0) #mean of all frames in dynamic_path, we detect on an average still image of all videos
+        static_averaged_over_frames = np.mean(static_video, axis = 0) #mean of all frames in dynamic_path, we detect on an average still image of all videos
         del static_video
         static_overall_mean = np.mean(static_averaged_over_frames) #mean of pixel value
+
+        if calibrate[0] or only_calibrate[0]:
+            calibrate_params = hlt.Params(
+                object_size = params.static_object_size,
+                sep = params.static_sep,
+                mean_multiplier = params.static_mean_multiplier,
+            )
+            hlt.calibration(calibrate_params, video = static_averaged_over_frames.reshape(1, *static_averaged_over_frames.shape), save = False)
+            params.static_object_size = calibrate_params.object_size
+            params.static_sep = calibrate_params.sep
+            params.static_mean_multiplier = calibrate_params.mean_multiplier
+
 
         static_df = tp.locate(static_averaged_over_frames, params.static_object_size, \
             minmass = static_overall_mean * params.static_mean_multiplier, \
@@ -114,7 +126,21 @@ def extract_traces_average(static_paths, dynamic_paths, no_particle_path, save_p
         chunker.get_illumination_profile_across_chunks()
         dynamic_signal_in_static_positions = []
         dynamic_features = []
+
         for frame_correction, vid_chunk in chunker:
+            if calibrate[1] or only_calibrate[1]:
+                calibrate_params = hlt.Params(
+                    object_size = params.dynamic_object_size,
+                    sep = params.dynamic_sep,
+                    mean_multiplier = params.dynamic_mean_multiplier,
+                )
+                hlt.calibration(calibrate_params, video = vid_chunk[:1, :, :], save = False)
+                params.dynamic_object_size = calibrate_params.object_size
+                params.dynamic_sep = calibrate_params.sep
+                params.dynamic_mean_multiplier = calibrate_params.mean_multiplier
+                if only_calibrate[1]:
+                    return
+            
             dynamic_signal_chunk = []
             dynamic_features.append(
                 tp.batch(

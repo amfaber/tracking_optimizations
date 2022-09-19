@@ -1,8 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+Created on Mon Nov  1 16:28:39 2021
+
+@author: SørenBohr
+"""
+
+# """
+# Created on Fri Jul  2 08:48:32 2021
+
+# @author: frejabohr
+# """
+#%%
+import chunk
 import pandas as pd
 import numpy as np
 
+import pickle
+from time import time
 import uuid
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -10,11 +25,14 @@ import multiprocessing as mp
 import trackpy as tp
 from pathlib import Path
 import os
+from functools import partial
+import hashlib
 
 import hatzakis_lab_tracking as hlt
 
 
 
+#%%
 
 params = hlt.Params(
     lip_int_size = 8,  #originally 15 for first attemps
@@ -37,9 +55,13 @@ params = hlt.Params(
 
 
 
-def fix_ax_probs(ax, x_label, y_label):
-    ax.set_ylabel(y_label, size = 10)
-    ax.set_xlabel(x_label, size = 10)
+##Not used BG + gap
+
+#15/6-21 changed from 6 to 10
+
+def fix_ax_probs(ax,x_label,y_label):
+    ax.set_ylabel(y_label,size = 10)
+    ax.set_xlabel(x_label,size = 10)
     ax.tick_params(axis= "both", which = "major", labelsize = 8)
     ax.tick_params(axis= "both", which = "minor", labelsize = 8)
     ax.grid(False)
@@ -49,7 +71,14 @@ def fix_ax_probs(ax, x_label, y_label):
     return ax
 
 
-def extract_traces_average(static_paths, dynamic_paths, no_particle_path, save_path, params):
+
+# ----------------------------- Main Function ------------------------------ #
+
+#Function that extract traces
+#extract_traces_average(video_static,video_signal, no_particle_path, save_path)
+
+
+def extract_traces_average(static_paths, dynamic_paths, no_particle_path, save_path, params, calibrate = [False, False], only_calibrate = [False, False]):
     save_path = Path(save_path)
     os.makedirs(save_path, exist_ok = True)
     ### no particle video
@@ -60,9 +89,21 @@ def extract_traces_average(static_paths, dynamic_paths, no_particle_path, save_p
             os.makedirs(save_path / f"{counter}_")
         
         static_video = hlt.image_loader_video(static_path)
-        static_averaged_over_frames= np.mean(static_video, axis = 0) #mean of all frames in dynamic_path, we detect on an average still image of all videos
+        static_averaged_over_frames = np.mean(static_video, axis = 0) #mean of all frames in dynamic_path, we detect on an average still image of all videos
         del static_video
         static_overall_mean = np.mean(static_averaged_over_frames) #mean of pixel value
+
+        if calibrate[0] or only_calibrate[0]:
+            calibrate_params = hlt.Params(
+                object_size = params.static_object_size,
+                sep = params.static_sep,
+                mean_multiplier = params.static_mean_multiplier,
+            )
+            hlt.calibration(calibrate_params, video = static_averaged_over_frames.reshape(1, *static_averaged_over_frames.shape), save = False)
+            params.static_object_size = calibrate_params.object_size
+            params.static_sep = calibrate_params.sep
+            params.static_mean_multiplier = calibrate_params.mean_multiplier
+
 
         static_df = tp.locate(static_averaged_over_frames, params.static_object_size, \
             minmass = static_overall_mean * params.static_mean_multiplier, \
@@ -74,6 +115,7 @@ def extract_traces_average(static_paths, dynamic_paths, no_particle_path, save_p
         print("Found particles: ", len(static_df))
 
         data_type = np.float64
+        # video = hlt.image_loader_video(video).astype(dtype = data_type)
         chunker = hlt.VideoChunker(dynamic_path,
         gb_limit = 2,
         # n_chunks = 1,
@@ -84,7 +126,21 @@ def extract_traces_average(static_paths, dynamic_paths, no_particle_path, save_p
         chunker.get_illumination_profile_across_chunks()
         dynamic_signal_in_static_positions = []
         dynamic_features = []
+
         for frame_correction, vid_chunk in chunker:
+            if calibrate[1] or only_calibrate[1]:
+                calibrate_params = hlt.Params(
+                    object_size = params.dynamic_object_size,
+                    sep = params.dynamic_sep,
+                    mean_multiplier = params.dynamic_mean_multiplier,
+                )
+                hlt.calibration(calibrate_params, video = vid_chunk[:1, :, :], save = False)
+                params.dynamic_object_size = calibrate_params.object_size
+                params.dynamic_sep = calibrate_params.sep
+                params.dynamic_mean_multiplier = calibrate_params.mean_multiplier
+                if only_calibrate[1]:
+                    return
+            
             dynamic_signal_chunk = []
             dynamic_features.append(
                 tp.batch(
@@ -127,17 +183,17 @@ def extract_traces_average(static_paths, dynamic_paths, no_particle_path, save_p
         dynamic_signal_in_static_positions['particle'] = dynamic_signal_in_static_positions["particle"].astype(str) + f"_{this_uuid}"
         static_df["particle"] = static_df["particle"].astype(str) + f"_{this_uuid}"
 
+
         
         dynamic_tracks.to_csv(save_path / f"{counter}_/_dynamic_tracks.csv")
         dynamic_signal_in_static_positions.to_csv(save_path / f"{counter}_/_dynamic_signal_in_static_positions.csv", \
              header=True, index=None, sep=',', mode='w')
         static_df.to_csv(save_path / f"{counter}_/_static_df.csv")
 
-        params.to_yaml(save_path / f"{counter}_/params.yml")
-
         plot_static_particles(static_averaged_over_frames, static_df, counter, save_path)
         plot_hists(dynamic_signal_in_static_positions, counter, save_path)
         plot_dynamic_signal_for_static_particle(dynamic_signal_in_static_positions, static_averaged_over_frames, params, counter, save_path)
+
 
 
 def plot_static_particles(static_averaged_over_frames, static_df, counter, save_path):
@@ -149,17 +205,11 @@ def plot_static_particles(static_averaged_over_frames, static_df, counter, save_
 
     plt.close('all')
     
-def plot_dynamic_signal_for_static_particle(
-    dynamic_signal_in_static_positions, 
-    static_averaged_over_frames, 
-    params, 
-    counter, 
-    save_path,
-    particle_uuid = False):
+def plot_dynamic_signal_for_static_particle(dynamic_signal_in_static_positions, static_averaged_over_frames, params, counter, save_path):
 
     for par, dat in dynamic_signal_in_static_positions.groupby('particle'):
 
-        fig,ax = plt.subplots(4,1,figsize = (9,9))
+        fig,ax =plt.subplots(4,1,figsize = (9,9))
 
         ax[0].plot(dat.frame.values, dat.red_int_corrected.values, color = "firebrick", alpha =0.8, label ='Corrected')
 
@@ -183,8 +233,6 @@ def plot_dynamic_signal_for_static_particle(
         ax[3].imshow(np.where(sig_mask[2], 1, np.nan), vmin = 0, vmax = 1, cmap = "Greens", alpha = 0.4)
         ax[3].imshow(np.where(bg_mask[2], 1, np.nan), vmin = 0, vmax = 1, cmap = "Reds", alpha = 0.4)
         fig.tight_layout()
-        if not particle_uuid:
-            par = par.split('_')[0]
         fig.savefig(save_path / f"{counter}_" / f"{par}.png")
         plt.close('all')
 
@@ -208,9 +256,19 @@ def plot_hists(dynamic_signal_in_static_positions, counter, save_path):
 # ----------------------------- Run -------------------------------- #
 
 if __name__ == "__main__":
+    # drive_name = r"D:"
     folder = Path("sample_vids")
+    # no_particle_path = (fr'{drive_name}\Emily\background\Experiment_Process_001_20220823.tif')
     no_particle_path = str(folder / "Experiment_Process_001_20220823.tif")
+
+    # streptavidin, 20 frames videos
+    # video_static = [fr"{drive_name}\Emily\_20220831\Tifs\c_20.tif"]
     video_static = [str(folder / "c_20.tif")]
+
+
+    # protease signal, 2000 frames videos
+    # video_signal = [rf"{drive_name}\Emily\_20220831\Tifs\s_20.tif"]
+    # video_signal = [str(folder / "s_20_first_30_frames.tif")]
     video_signal = [str(folder / "s_20.tif")]
 
     save_path = str(folder / "chunking_new")

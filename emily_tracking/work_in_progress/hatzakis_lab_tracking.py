@@ -1,5 +1,3 @@
-from webbrowser import get
-from xml.etree.ElementInclude import include
 import numpy as np
 import pandas as pd
 import trackpy as tp
@@ -27,21 +25,21 @@ import hashlib
 
 class Params:
     defaults = {
-        'mean_multiplier': 0.8,
-        'sep': 5,
-        'object_size': 9,
-        'lip_int_size': 9,
-        'lip_BG_size': 60,
-        'memory': 1,
-        'search_range': 5,
-        'duration_filter': 20,
-        'tracking_time': 0.036,
-        'pixel_size': 0.18333,
-        'n_processes': 8,
-        'save_path': None,
-        'exp_type_folders': None,
-        'exp_types': None,
-        'gap_size': 0,
+        # 'mean_multiplier': 0.8,
+        # 'sep': 5,
+        # 'object_size': 9,
+        # 'lip_int_size': 9,
+        # 'lip_BG_size': 60,
+        # 'memory': 1,
+        # 'search_range': 5,
+        # 'duration_filter': 20,
+        # 'tracking_time': 0.036,
+        # 'pixel_size': 0.18333,
+        # 'n_processes': 8,
+        # 'save_path': None,
+        # 'exp_type_folders': None,
+        # 'exp_types': None,
+        # 'gap_size': 0,
         }
     values = defaults.copy()
 
@@ -100,42 +98,39 @@ def calibration(params, video_location = None, video = None, save = True, save_l
     
     if video_location is not None:
         video = image_loader_video(video_location)
-    
+
     run = True
     mean_multiplier = params.mean_multiplier
     sep = params.sep
+    object_size = params.object_size
     plt.ion()
     fig, ax = plt.subplots()
     while run:
-        mean = np.mean(video[0]) # find avg image - not sure what this  does ? maybe not 
+        mean = np.mean(video[0])
 
-        # ---- USE FOR AVERAGE SUBTRACTING ----
-        #mean_vid = np.mean(video,axis = 0) #finds avg video, use only when tracking in same layer in shor period of time 
-        #sub_vid = video - mean_vid 
-        
-        # -- Use ALWAYS ---
-        
-        #sub_vid =ndimage.gaussian_filter(sub_vid,sigma =(0,0.5,0.5), order =0) # smoothing
         first_frame = video[0]
         first_frame = ndimage.gaussian_filter(first_frame, sigma = (0.5, 0.5), order =0)
 
         
-        f = tp.locate(first_frame, params.object_size,invert=False, minmass = mean*mean_multiplier, separation = sep)
+        f = tp.locate(first_frame, params.object_size, invert=False, minmass = mean*mean_multiplier, separation = sep)
         tp.annotate(f, first_frame, ax = ax)
-        # plt.show()
+        plt.show()
         plt.pause(0.05)
         print(f"Found: {len(f)} particles")
-        print(f"Current Threshold: {mean_multiplier}\nCurrent Separation: {sep}")
-        raw = input("Enter new threshold, or 'q' to quit and save: ")
+        print(f"Current mean multiplier: {mean_multiplier}\nCurrent separation: {sep}\nCurrent object_size: {object_size}")
+        raw = input("Enter new mean multiplier, or 'q' to quit and save: ")
         if raw == "q":
             run = False
         else:
             mean_multiplier = float(raw)
             sep = input("Enter separation in pixels: ")
             sep = int(sep)
+            object_size = input("Enter object size in pixels (has to be an odd integer): ")
+            object_size = int(object_size)
             ax.clear()
     params.mean_multiplier = mean_multiplier
     params.sep = sep
+    params.object_size = object_size
     if save:
         if save_location:
             params.update_mm_and_sep(save_location)

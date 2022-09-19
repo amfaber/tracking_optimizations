@@ -11,7 +11,8 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "justMyCode": false,
-            "cwd": "C:\\Users\\andre\\Documents\\tracking_optimizations\\emily_tracking",
+            //"cwd": "C:\\Users\\andre\\Documents\\tracking_optimizations\\emily_tracking\\work_in_progress",
+            "cwd": "/Users/amfaber/Documents/tracking_script/emily_tracking/work_in_progress",
         }
     ]
 }
