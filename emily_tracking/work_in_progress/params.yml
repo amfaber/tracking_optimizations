@@ -8,6 +8,7 @@ save_path: ../sample_output/
 mean_multiplier: 0.8
 sep: 5                 #pixel seperation, ahould be close t search_range
 object_size: 9         # 5 originally 
+gap_size: 0
 lip_int_size: 9        #originally 14 for first attemps
 lip_BG_size: 60        # originally 50 for first attemps
 memory: 1              #frame
