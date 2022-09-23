@@ -1,9 +1,10 @@
 from time import time
+whole = time()
+
 import torch_tracking
 import torch
 import numpy as np
 import tifffile
-whole = time()
 class VideoChunker:
     def __init__(self,
      filepath,
@@ -182,6 +183,8 @@ params = Params(
     static_object_size = 11,
 )
 # vid_path = r"C:\Users\andre\Documents\tracking_optimizations\emily_tracking\sample_vids\c_20.tif"
+
+
 vid_path = r"C:\Users\andre\Documents\tracking_optimizations\emily_tracking\sample_vids\s_20.tif"
 chunker = VideoChunker(vid_path,
         gb_limit = 0.7,
@@ -190,8 +193,9 @@ chunker = VideoChunker(vid_path,
 
 
 
-full = time()
+
 device = "cuda"
+full = time()
 for frame_corr, chunk in chunker:
     each = time()
     tvid = torch.tensor(chunk, device = device)

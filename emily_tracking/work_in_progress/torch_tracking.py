@@ -1,3 +1,4 @@
+from operator import index
 import numpy as np
 import pandas as pd
 from trackpy.utils import validate_tuple, default_pos_columns, guess_pos_columns, default_size_columns
@@ -107,7 +108,7 @@ def locate(raw_video, diameter, minmass=None, maxsize=None, separation=None,
     #       refinement ("separation")
     #   - Invalid output of the bandpass step ("smoothing_size")
     margin = torch.tensor([max(rad, sep // 2 - 1, sm // 2) for (rad, sep, sm) in
-                    zip(radius, separation, smoothing_size)]).to(device)
+                    zip(radius, separation, smoothing_size)], device = device)
     # Find features with minimum separation distance of `separation`. This
     # excludes detection of small features close to large, bright features
     # using the `maxsize` argument.
@@ -181,7 +182,7 @@ def bandpass(video, lshort, llong, threshold=None, truncate=4):
     device = video.device
     nframes = video.shape[0]
     video = video.reshape(nframes, 1, *video.shape[1:])
-    filter = torch.full(llong, 1/np.product(llong)).reshape(1, 1, *llong).to(device)
+    filter = torch.full(llong, 1/np.product(llong), device = device).reshape(1, 1, *llong)
     gauss_filter = make_gaussian_filter(lshort, truncate, device)
     result = []
     for frame_start, batch in minibatch(video):
@@ -199,7 +200,7 @@ def bandpass(video, lshort, llong, threshold=None, truncate=4):
 
 def make_gaussian_filter(lshort, truncate, device):
     lws = [int(truncate * lsh + 0.5) for lsh in lshort]
-    grids = [torch.moveaxis(torch.arange(-lw, lw + 1).to(device)[(slice(None), ) + (None,)*(len(lshort)-1)], 0, i) for i, lw in enumerate(lws)]
+    grids = [torch.moveaxis(torch.arange(-lw, lw + 1, device = device)[(slice(None), ) + (None,)*(len(lshort)-1)], 0, i) for i, lw in enumerate(lws)]
     r2 = sum([grid**2 for grid in grids])
     #TODO skewed gaussian support
     res = torch.exp(r2/(-2*lshort[0]**2))
@@ -244,7 +245,7 @@ def grey_dilation(video, separation, percentile=64, margin=None):
 
     pos = candidates[:, 2:]
     # Do not accept peaks near the edges.
-    shape = torch.tensor(video.shape[2:]).to(device)
+    shape = torch.tensor(video.shape[2:], device = device)
     near_edge = ((pos < margin) | (pos > (shape - margin - 1))).any(axis = 1)
     pos = pos[~near_edge]
     exclude_channel = torch.tensor([True, False] + [True]*ndim)
@@ -266,28 +267,29 @@ def _refine(raw_video, video, radius, candidates, max_iterations,
     device = video.device
     radii = torch.tensor(radius, device = device)
     shift_thresh = torch.tensor(shift_thresh, device = device)
-    zero_centered_grids = [torch.moveaxis(torch.arange(-r, r + 1).to(device)[(slice(None), ) + (None,)*(ndim - 1)], 0, i) for i, r in enumerate(radii)]
+    zero_centered_grids = [torch.moveaxis(torch.arange(-r, r + 1, device = device)[(slice(None), ) + (None,)*(ndim - 1)], 0, i) for i, r in enumerate(radii)]
     r2 = sum([grid**2/r**2 for grid, r in zip(zero_centered_grids, radii)])
     mask = r2 <= 1
     
     # grids = [grid + radius for grid, radius in zip(zero_centered_grids, radii)]
     grids = [torch.moveaxis(
-    torch.arange(-radius[dim], radius[dim] + 1)[:, None].to(device)
-     , 0, dim) 
-    for dim in range(ndim)]
-    upper_bound = torch.tensor(video.shape[1:]).to(device) - 1 - radii
+    torch.arange(-radius[dim], radius[dim] + 1, device = device)[:, None], 0, dim) 
+            for dim in range(ndim)]
+    upper_bound = torch.tensor(video.shape[1:], device = device) - 1 - radii
 
 
     total_frames = []
     total_coords = []
     total_masses = []
-    for i, (frame_start, batch_candidates) in enumerate(minibatch(candidates)):
-        pos = batch_candidates[:, 1:].to(device)
+    nan = torch.tensor(float("nan"), device = device)
+    final_coords = torch.full((candidates.shape[0], 2), nan, dtype = torch.float32, device = device)
+    final_masses = torch.full((candidates.shape[0],), nan, dtype = torch.float32, device = device)
+    final_signals = torch.full((candidates.shape[0],), nan, dtype = torch.float32, device = device)
+
+    for i, (index_offset, batch_candidates) in enumerate(minibatch(candidates)):
+
+        pos = batch_candidates[:, 1:]
         frames = batch_candidates[:, 0].reshape(-1, 1, 1)
-        nan = torch.tensor(float("nan")).to(device)
-        final_coords = torch.full((pos.shape[0], 2), nan, dtype = torch.float32, device = device)
-        final_masses = torch.full((pos.shape[0],), nan, dtype = torch.float32, device = device)
-        final_signals = torch.full((pos.shape[0],), nan, dtype = torch.float32, device = device)
 
         not_done = torch.arange(pos.shape[0], device = device)
         make_inds_for_dim = lambda dim, pos: grids[dim] + pos[:, dim].reshape([-1] + [1]*ndim)
@@ -304,7 +306,7 @@ def _refine(raw_video, video, radius, candidates, max_iterations,
             forward_shift = off_center > shift_thresh
             keep_iterating = (back_shift | forward_shift).any(axis = 1)
             if (~keep_iterating).sum() != 0:    
-                newly_done = not_done[~keep_iterating]
+                newly_done = not_done[~keep_iterating] + index_offset
                 final_coords[newly_done] = cm[~keep_iterating] - radii + pos[~keep_iterating]
                 final_masses[newly_done] = masses[~keep_iterating]
                 final_signals[newly_done] = neighborhoods[~keep_iterating].max()
@@ -325,17 +327,17 @@ def _refine(raw_video, video, radius, candidates, max_iterations,
             final_masses[rest] = masses[keep_iterating]
             final_signals[rest] = neighborhoods[keep_iterating].max()
 
-        frames = batch_candidates[:, 0].reshape(-1, 1, 1)
-        total_frames.append(frames)
-        total_coords.append(final_coords)
-        total_masses.append(final_masses)
-    total_frames = torch.concat(total_frames)
-    total_coords = torch.concat(total_coords)
-    total_masses = torch.concat(total_masses)
+    frames = candidates[:, 0].reshape(-1, 1, 1)
+        # total_frames.append(frames)
+        # total_coords.append(final_coords)
+        # total_masses.append(final_masses)
+    # total_frames = torch.concat(total_frames)
+    # total_coords = torch.concat(total_coords)
+    # total_masses = torch.concat(total_masses)
     # final_pixels = torch.round(final_coords).to(int)
     # raw_masses = (raw_video[frames, make_inds_for_dim(0, final_pixels), make_inds_for_dim(1, final_pixels)] * mask).sum(axis = (1,2))
 
-    return torch.column_stack((torch.squeeze(total_frames), total_coords, total_masses))
+    return torch.column_stack((torch.squeeze(frames), final_coords, final_masses))
 
 
 
