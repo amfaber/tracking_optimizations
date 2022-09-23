@@ -182,6 +182,80 @@ def step_tracker(df, params):
     return df
 
 
+def fast_signal_extraction(positions, frames, r, padded_video, params, return_means = False, backend = None, device = None):
+    if backend is None:
+        try:
+            import torch
+            
+            backend = torch
+        except ModuleNotFoundError:
+            try:
+                import bottleneck
+                backend = bottleneck
+            except ModuleNotFoundError:
+                backend = np
+        
+    if backend.__name__ == "torch":
+        using_torch = True
+        ap = backend
+        if device is None:
+            device = "cuda" if ap.cuda.is_available() else "cpu"
+        if not isinstance(padded_video, ap.Tensor):
+            padded_video = ap.tensor(padded_video).to(device)
+    else:
+        using_torch = False
+        ap = np
+    
+    sub_pix = positions % 1
+    pix = positions.astype(int)
+
+    r_ceil = np.ceil(r).astype(int)
+    difference_for_dimension = lambda dim: ap.moveaxis(ap.arange(-r_ceil + 1, r_ceil + 1) - sub_pix[:, dim].reshape(-1, 1, 1), -1, dim + 1)
+    xs = difference_for_dimension(0)
+    ys = difference_for_dimension(1)
+    if using_torch:
+        xs = xs.to(device)
+        ys = ys.to(device)
+    r2 = xs**2 + ys**2
+    inds_for_dimension = lambda dim: ap.moveaxis((
+        ap.arange(-r_ceil + 1, r_ceil + 1)) + pix[:, dim].reshape(-1, 1, 1), -1, dim+1).clip(-1, padded_video.shape[dim + 1] - 1)
+    xinds = inds_for_dimension(0)
+    yinds = inds_for_dimension(1)
+
+    rectangles = padded_video[frames[:, None, None], xinds, yinds]
+
+    sigmasks = r2 <= params.lip_int_size
+    if params.gap_size != 0:
+        bg_inner = r2 <= params.lip_int_size + params.gap_size
+    else:
+        bg_inner = sigmasks
+
+    bgmasks = ap.logical_xor(r2 <= r**2, bg_inner)
+    
+    if using_torch:
+        nan = ap.tensor(float("nan"), dtype = ap.float64).to(device)
+    else:
+        nan = ap.nan
+    
+    signals = ap.where(sigmasks, rectangles, nan).reshape(positions.shape[0], -1)
+    backgrounds = ap.where(bgmasks, rectangles, nan).reshape(positions.shape[0], -1)
+
+    sig_sums = backend.nansum(signals, axis = 1)
+    bg_medians = backend.nanmedian(backgrounds, axis = 1)
+    sig_sizes = backend.nansum(sigmasks.reshape(positions.shape[0], -1), axis = 1)
+    out = [sig_sums, bg_medians, sig_sizes]
+    if return_means:
+        sig_means = sig_sums / sig_sizes
+        if using_torch:
+            bg_sums = backend.nansum(backgrounds, axis = 1)
+            bg_sizes = backend.nansum(bgmasks.reshape(positions.shape[0], -1), axis = 1)
+            bg_means = bg_sums / bg_sizes
+        else:
+            bg_means = backend.nansum(backgrounds, axis = 1)
+        out.extend([sig_means, bg_means])
+    return out
+
+
 def getinds(smallmask, i_pos, j_pos, video_shape, r):
     i_lower = int(i_pos) - r + 1
     j_lower = int(j_pos) - r + 1
@@ -561,7 +635,8 @@ class VideoChunker:
      offset = None,
      division = None,
      transform = None,
-     auto_apply_transform = True
+     auto_apply_transform = True,
+     pad_video = False,
      ):
         self.vid_file = tifffile.TiffFile(filepath).series[0]
         self.frames, self.height, self.width = self.vid_file.shape
@@ -571,6 +646,7 @@ class VideoChunker:
         self.transform = transform
         self.auto_apply_transform = auto_apply_transform
         self.mean_frame = None
+        self.pad_video = True
 
         if dtype is None:
             self.dtype = np.dtype(np.float32) 
@@ -630,8 +706,16 @@ class VideoChunker:
     def __next__(self):
         if self.chunk_idx == self.n_chunks:
             raise StopIteration
+        
         chunk = self.vid_file.asarray(
-            key = slice(self.chunk_idx * self.frames_per_load, (self.chunk_idx+1)*self.frames_per_load)).astype(self.dtype)
+            key = slice(self.chunk_idx * self.frames_per_load, (self.chunk_idx+1)*self.frames_per_load))
+        if self.pad_video:
+            padded = np.full((chunk.shape[0], chunk.shape[1] + 1, chunk.shape[2] + 1), np.nan, dtype = self.dtype)
+            padded[:, :-1, :-1] = chunk
+            chunk = padded[:, :-1, :-1]
+        else:
+            chunk = chunk.astype(self.dtype)
+        
         if self.auto_apply_transform:
             chunk = self.apply_transform(chunk)
             if self.n_chunks == 1:
@@ -676,3 +760,4 @@ def load_or_fit_random_pixels(no_particle_path, save_path, n_processes):
         with open(save_path / "random_pix_fits.pkl", "wb") as file:
             pickle.dump((Gs_mean, offs_mean, movie_hash), file)
     return Gs_mean, offs_mean
+

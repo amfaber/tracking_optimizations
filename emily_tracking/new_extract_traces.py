@@ -12,7 +12,6 @@ Created on Mon Nov  1 16:28:39 2021
 # @author: frejabohr
 # """
 #%%
-import chunk
 import pandas as pd
 import numpy as np
 

@@ -35,4 +35,4 @@ video_dynamic = [str(folder / "s_20.tif")]
 
 save_path = str(folder / "chunking_new")
 if __name__ == "__main__":
-    extr.extract_traces_average(video_static, video_dynamic, no_particle_path, save_path, params = params, only_calibrate = [True]*2)
+    extr.extract_traces_average(video_static, video_dynamic, no_particle_path, save_path, params = params, only_calibrate = [False]*2)
