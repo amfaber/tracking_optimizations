@@ -166,44 +166,40 @@ class Params:
     #         contents = re.sub(r'sep: \d+\.?\d*', 'sep: ' + str(self.sep), contents)
     #         f.seek(0)
     #         f.write(contents)
+if __name__ == "__main__":
+    params = Params(
+        lip_int_size = 8,  #originally 15 for first attemps
+        lip_BG_size = 70,   # originally 40 for first attemps
+        gap_size = 2, # adding gap
+        
+        dynamic_sep = 7,   # afstand mellem centrum af to partikler, 7 er meget lidt så skal være højere ved lavere densitet
+        dynamic_mean_multiplier = 12,  #hvor mange partikler finder den, around 1-3, lavere giver flere partikler
+        dynamic_object_size = 11, #diameter used in tp.locate, odd integer
+        dynamic_search_range = 4,
+        dynamic_memory = 0,
+        
+        static_sep = 8,
+        static_mean_multiplier = 4,
+        static_object_size = 11,
+    )
+    # vid_path = r"C:\Users\andre\Documents\tracking_optimizations\emily_tracking\sample_vids\c_20.tif"
+    vid_path = r"/Users/amfaber/Documents/tracking_script/emily_tracking/sample_vids/s_20.tif"
+    chunker = VideoChunker(vid_path,
+            gb_limit = 0.2,
+            dtype = np.float32,
+            )
 
-params = Params(
-    lip_int_size = 8,  #originally 15 for first attemps
-    lip_BG_size = 70,   # originally 40 for first attemps
-    gap_size = 2, # adding gap
-    
-    dynamic_sep = 7,   # afstand mellem centrum af to partikler, 7 er meget lidt så skal være højere ved lavere densitet
-    dynamic_mean_multiplier = 12,  #hvor mange partikler finder den, around 1-3, lavere giver flere partikler
-    dynamic_object_size = 11, #diameter used in tp.locate, odd integer
-    dynamic_search_range = 4,
-    dynamic_memory = 0,
-    
-    static_sep = 8,
-    static_mean_multiplier = 4,
-    static_object_size = 11,
-)
-# vid_path = r"C:\Users\andre\Documents\tracking_optimizations\emily_tracking\sample_vids\c_20.tif"
 
-
-vid_path = r"C:\Users\andre\Documents\tracking_optimizations\emily_tracking\sample_vids\s_20.tif"
-chunker = VideoChunker(vid_path,
-        gb_limit = 0.7,
-        dtype = np.float32,
+    device = "mps"
+    full = time()
+    for frame_corr, chunk in chunker:
+        each = time()
+        tvid = torch.tensor(chunk, device = device
         )
-
-
-
-
-device = "cuda"
-full = time()
-for frame_corr, chunk in chunker:
-    each = time()
-    tvid = torch.tensor(chunk, device = device)
-    test = torch_tracking.locate(tvid, params.static_object_size, separation = params.static_sep)
-    # print(test)
-    del tvid
-    del chunk
-    torch.cuda.empty_cache()
-    print(f"This iteration took {time() - each}")    
-print(f"All iterations took {time() - full}")
-print(f"Whole script took {time() - whole}")
+        test = torch_tracking.locate(tvid, params.static_object_size, separation = params.static_sep)
+        del tvid
+        del chunk
+        # torch.cuda.empty_cache()
+        print(f"This iteration took {time() - each}")    
+    print(f"All iterations took {time() - full}")
+    print(f"Whole script took {time() - whole}")

@@ -5,6 +5,7 @@ from trackpy.utils import validate_tuple, default_pos_columns, guess_pos_columns
 import warnings
 import torch
 from trackpy.find import where_close
+import sys
 
 # class MiniBatcher:
 #     def __init__(self, tensor, factor = 1):
@@ -22,7 +23,9 @@ from trackpy.find import where_close
 #         end = (self.i+1)*self.step
 #         self.i += 1
 #         return self.tensor[start:end]
-
+# PYTORCH_ENABLE_MPS_FALLBACK=1
+# import os
+# print(os.environ["PYTORCH_ENABLE_MPS_FALLBACK"])
 def minibatch(tensor, factor = 5):
     
     step = np.ceil(tensor.shape[0] / factor).astype(int)
@@ -37,6 +40,7 @@ def locate(raw_video, diameter, minmass=None, maxsize=None, separation=None,
            noise_size=1, smoothing_size=None, threshold=None,
            percentile=64, topn=None, preprocess=True, max_iterations=10, device = None):
     torch.set_grad_enabled(False)
+    print("start")
     device = raw_video.device
     
     # Validate parameters and set defaults.
@@ -86,6 +90,7 @@ def locate(raw_video, diameter, minmass=None, maxsize=None, separation=None,
             threshold = 1
 
     # Determine `video`: the video to find the local maxima on.
+    print("hi2")
     if preprocess:
         video = bandpass(raw_video, noise_size, smoothing_size, threshold)
     else:
@@ -229,12 +234,28 @@ def grey_dilation(video, separation, percentile=64, margin=None):
     # Find the largest box that fits inside the ellipse given by separation
     size = [int(2 * s / np.sqrt(ndim)) for s in separation]
     candidates = []
+
+    if device.type == "mps":
+        mean = video.mean(axis = 0).ravel()
+        mean = mean.to("cpu").numpy()
+        
+        threshold = torch.tensor(np.percentile(mean, percentile, overwrite_input = True).astype(np.float32),
+             device = device)
+        
     for frame_start, batch in minibatch(video):
-        threshold = batch.reshape(*batch.shape[:2], -1).quantile(percentile / 100, dim = -1).reshape([-1] + [1]*(ndim + 1))
+        if device.type != "mps":
+            threshold = batch.quantile(percentile / 100, dim = -1).reshape([-1] + [1]*(ndim + 1))
         padding = (*(np.array(size) // 2).astype(int),)
         dilation = torch.nn.functional.max_pool2d(batch, size, stride = 1, padding = padding)
-        maxima = (batch == dilation) & (batch > threshold)
-        out = torch.nonzero(maxima)
+        maxima = torch.squeeze((batch == dilation) & (batch > threshold))
+        # print(maxima.shape)
+        if device.type == "mps":
+            np_out = np.stack(maxima.cpu().numpy().nonzero(), axis = 1)
+            out = torch.tensor(np_out, device = device)
+            # print(out.shape)
+            # sys.exit()
+        else:
+            out = torch.nonzero(maxima)
         out[:, 0] += frame_start
         candidates.append(out)
     candidates = torch.concat(candidates)
@@ -247,9 +268,10 @@ def grey_dilation(video, separation, percentile=64, margin=None):
     # Do not accept peaks near the edges.
     shape = torch.tensor(video.shape[2:], device = device)
     near_edge = ((pos < margin) | (pos > (shape - margin - 1))).any(axis = 1)
+    print("hi")
     pos = pos[~near_edge]
-    exclude_channel = torch.tensor([True, False] + [True]*ndim)
-    candidates = candidates[~near_edge][:, exclude_channel]
+    # exclude_channel = torch.tensor([True, False] + [True]*ndim)
+    candidates = candidates[~near_edge]#[:, exclude_channel]
     if len(pos) == 0:
         warnings.warn("All local maxima were in the margins.", UserWarning)
         return np.empty((0, ndim))
