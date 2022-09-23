@@ -1,10 +1,12 @@
 from time import time
 whole = time()
-
+import pandas as pd
 import torch_tracking
 import torch
 import numpy as np
 import tifffile
+import trackpy as tp
+
 class VideoChunker:
     def __init__(self,
      filepath,
@@ -26,7 +28,7 @@ class VideoChunker:
         self.transform = transform
         self.auto_apply_transform = auto_apply_transform
         self.mean_frame = None
-        self.pad_video = True
+        self.pad_video = pad_video
 
         if dtype is None:
             self.dtype = np.dtype(np.float32) 
@@ -167,6 +169,7 @@ class Params:
     #         f.seek(0)
     #         f.write(contents)
 if __name__ == "__main__":
+
     params = Params(
         lip_int_size = 8,  #originally 15 for first attemps
         lip_BG_size = 70,   # originally 40 for first attemps
@@ -178,28 +181,47 @@ if __name__ == "__main__":
         dynamic_search_range = 4,
         dynamic_memory = 0,
         
-        static_sep = 8,
+        static_sep = 15,
         static_mean_multiplier = 4,
-        static_object_size = 11,
+        static_object_size = 5,
     )
-    # vid_path = r"C:\Users\andre\Documents\tracking_optimizations\emily_tracking\sample_vids\c_20.tif"
-    vid_path = r"/Users/amfaber/Documents/tracking_script/emily_tracking/sample_vids/s_20.tif"
+    vid_path = r"C:\Users\andre\Documents\tracking_optimizations\emily_tracking\sample_vids\s_20.tif"
+    # vid_path = r"/Users/amfaber/Documents/tracking_script/emily_tracking/sample_vids/s_20.tif"
     chunker = VideoChunker(vid_path,
-            gb_limit = 0.2,
+            gb_limit = 0.7,
             dtype = np.float32,
+            pad_video = True,
             )
 
 
-    device = "mps"
+    device = "cuda"
     full = time()
+    
+    # test_tp = True
+    test_tp = False
+    full_df = []
     for frame_corr, chunk in chunker:
+        # if test_tp:
+        #     tp_df = tp.locate(chunk[0], params.static_object_size, separation = params.static_sep, engine = "python")
+        #     test_tp = False
         each = time()
-        tvid = torch.tensor(chunk, device = device
+        tpadded_vid = torch.tensor(chunk.base, device = device
         )
-        test = torch_tracking.locate(tvid, params.static_object_size, separation = params.static_sep)
+        tvid = tpadded_vid[:, :-1, :-1]
+        test = torch_tracking.locate(tvid, params.static_object_size, separation = params.static_sep, padded_vid = tpadded_vid, params = params,
+         minmass = 300)
+        
+        test["frame"] += frame_corr
+        full_df.append(test)
         del tvid
         del chunk
         # torch.cuda.empty_cache()
-        print(f"This iteration took {time() - each}")    
+        print(f"This iteration took {time() - each}")
+    full_df = pd.concat(full_df)
     print(f"All iterations took {time() - full}")
+    # tp.quiet()
+    tp.link(full_df, params.dynamic_search_range)
+    # import pickle
+    # with open("results.pckl", "wb") as file:
+    #     pickle.dump((full_df, tp_df), file)
     print(f"Whole script took {time() - whole}")

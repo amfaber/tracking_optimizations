@@ -646,7 +646,7 @@ class VideoChunker:
         self.transform = transform
         self.auto_apply_transform = auto_apply_transform
         self.mean_frame = None
-        self.pad_video = True
+        self.pad_video = pad_video
 
         if dtype is None:
             self.dtype = np.dtype(np.float32) 
