@@ -4,6 +4,7 @@ from trackpy.utils import validate_tuple, default_pos_columns, guess_pos_columns
 import warnings
 import torch
 from trackpy.find import where_close
+from time import time
 
 # class MiniBatcher:
 #     def __init__(self, tensor, factor = 1):
@@ -88,7 +89,9 @@ def locate(raw_video, diameter, minmass=None, maxsize=None, separation=None,
 
     # Determine `video`: the video to find the local maxima on.
     if preprocess:
+        now = time()
         video = bandpass(raw_video, noise_size, smoothing_size, threshold)
+        print(f"Preprocessing {time() - now}")
     else:
         video = raw_video
 
@@ -113,11 +116,14 @@ def locate(raw_video, diameter, minmass=None, maxsize=None, separation=None,
     # Find features with minimum separation distance of `separation`. This
     # excludes detection of small features close to large, bright features
     # using the `maxsize` argument.
+    now = time()
     candidates = grey_dilation(video, separation, percentile, margin)
+    print(f"grey_dilation {time() - now}")
     # Refine their locations and characterize mass, size, etc.
-
+    now = time()
     refined_coords = refine_com(raw_video, video, radius, candidates,
                                 max_iterations=max_iterations, padded_video = padded_vid, params = params)
+    print(f"refinement {time() - now}")
     
     # return refined_coords
     if len(refined_coords) == 0:
@@ -191,9 +197,13 @@ def bandpass(video, lshort, llong, threshold=None, truncate=4):
     # nframes = video.shape[0]
     video = torch.unsqueeze(video, 1)
     # video = video.reshape(nframes, 1, *video.shape[1:])
+    now = time()
     filter = torch.full(llong, 1/np.product(llong), device = device).reshape(1, 1, *llong)
+    # print(filter.shape)
     gauss_filter = make_gaussian_filter(lshort, truncate, device)
-    result = []
+    nan = torch.tensor(float("nan"), device = device)
+    result = torch.full((video.shape), nan, device = device)
+    print(f"allocation {time()-now}")
     for frame_start, batch in minibatch(video):
         padder = (*(np.array(llong) // 2),)*2
         padded_video = torch.nn.functional.pad(batch, padder, "replicate")
@@ -202,12 +212,14 @@ def bandpass(video, lshort, llong, threshold=None, truncate=4):
         batch_result -= background
         batch_result = torch.where(batch_result >= threshold, batch_result, 0)
         # batch_result = batch_result.squeeze()
-        result.append(batch_result)
-    result = torch.concat(result)
+        result[frame_start: frame_start + batch_result.shape[0]] = batch_result
+        del padded_video
+    # result = torch.concat(result)
     result = result.squeeze(dim = 1)
     return result
 
 def make_gaussian_filter(lshort, truncate, device):
+    # now = time()
     lws = [int(truncate * lsh + 0.5) for lsh in lshort]
     grids = [torch.moveaxis(torch.arange(-lw, lw + 1, device = device)[(slice(None), ) + (None,)*(len(lshort)-1)], 0, i) for i, lw in enumerate(lws)]
     r2 = sum([grid**2 for grid in grids])
@@ -215,6 +227,7 @@ def make_gaussian_filter(lshort, truncate, device):
     res = torch.exp(r2/(-2*lshort[0]**2))
     res /= res.sum()
     res = res.reshape(1, 1, *res.shape)
+    # print(f"making gaussian {time()-now}")
     return res
 
 def convert_to_int(video):

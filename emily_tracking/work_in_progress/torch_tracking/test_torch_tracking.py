@@ -181,7 +181,7 @@ if __name__ == "__main__":
         dynamic_search_range = 4,
         dynamic_memory = 0,
         
-        static_sep = 15,
+        static_sep = 10,
         static_mean_multiplier = 4,
         static_object_size = 5,
     )
@@ -204,22 +204,22 @@ if __name__ == "__main__":
         # if test_tp:
         #     tp_df = tp.locate(chunk[0], params.static_object_size, separation = params.static_sep, engine = "python")
         #     test_tp = False
-        each = time()
         tpadded_vid = torch.tensor(chunk.base, device = device
         )
         tvid = tpadded_vid[:, :-1, :-1]
+        each = time()
         test = torch_tracking.locate(tvid, params.static_object_size, separation = params.static_sep, padded_vid = tpadded_vid, params = params,
          minmass = 300)
+        print(f"This iteration took {time() - each}")
         
         test["frame"] += frame_corr
         full_df.append(test)
         del tvid
         del chunk
         # torch.cuda.empty_cache()
-        print(f"This iteration took {time() - each}")
     full_df = pd.concat(full_df)
     print(f"All iterations took {time() - full}")
-    # tp.quiet()
+    tp.quiet()
     tp.link(full_df, params.dynamic_search_range)
     # import pickle
     # with open("results.pckl", "wb") as file:
