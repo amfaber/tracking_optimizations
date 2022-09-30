@@ -25,7 +25,7 @@ var<storage, read_write> centers: array<vec2<f32>>;
 var<storage, read_write> masses: array<f32>;
 
 @group(0) @binding(4)
-var<storage, read_write> results: array<vec2<f32>>;
+var<storage, read_write> results: array<f32>;
 
 fn is_max(u: i32, v: i32, kernel_rows: i32, kernel_cols: i32) -> bool {
   let center = processed_buffer[u * params.pic_ncols + v];
@@ -92,7 +92,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   if (is_max(i32(global_id.x), i32(global_id.y), params.constant_nrows, params.constant_ncols)) {
     let walk_out = walk(i32(global_id.x), i32(global_id.y));
     if (walk_out[2] > params.minmass){
-      results[idx] = vec2<f32>(walk_out[0], walk_out[1]);
+      let pic_size = u32(params.pic_nrows * params.pic_ncols);
+      results[idx + pic_size * 0u] = walk_out[2];
+      results[idx + pic_size * 1u] = walk_out[0];
+      results[idx + pic_size * 2u] = walk_out[1];
     }
     // results[idx] = walk(i32(global_id.x), i32(global_id.y));
   }

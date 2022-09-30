@@ -3,7 +3,7 @@ use futures;
 use futures_intrusive;
 type my_dtype = f32;
 use pollster::FutureExt;
-use std::collections::VecDeque;
+use std::{collections::VecDeque, time::Instant};
 use wgpu::{util::DeviceExt, Buffer};
 use crate::kernels;
 use std::collections::HashMap;
@@ -24,6 +24,40 @@ unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
         (p as *const T) as *const u8,
         ::std::mem::size_of::<T>(),
     )
+}
+
+async fn get_work(finished_staging_buffer: &Buffer,
+    device: &wgpu::Device,
+    old_submission: wgpu::SubmissionIndex,
+    wait_gpu_time: &mut f32,
+    output: &mut Vec<Vec<f32>>,
+    pic_size: usize,
+    n_result_columns: u64,
+    ) -> () {
+    let mut buffer_slice = finished_staging_buffer.slice(..);
+    let (sender, receiver) = 
+            futures_intrusive::channel::shared::oneshot_channel();
+    
+    buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
+    let now = Instant::now();
+    device.poll(wgpu::Maintain::WaitForSubmissionIndex(old_submission));
+    (*wait_gpu_time) += now.elapsed().as_millis() as f32 / 1000.;
+    receiver.receive().await.unwrap();
+    let data = buffer_slice.get_mapped_range();
+    let dataf32 = bytemuck::cast_slice::<u8, f32>(&data);
+    let mut result = Vec::new();
+    for i in 0..pic_size{
+        let mass = dataf32[i];
+        if mass != 0.0{
+            result.push(mass);
+            for j in 1..n_result_columns as usize{
+                result.push(dataf32[i + j * pic_size]);
+            }
+        }
+    }
+    output.push(result);
+    drop(data);
+    finished_staging_buffer.unmap();
 }
 
 
@@ -74,15 +108,16 @@ pub async fn execute_gpu<T: Iterator<Item = Vec<my_dtype>>>(mut frames: T, dims:
         });
         shader
     }).collect::<Vec<_>>();
-
-    let slice_size = dims.iter().product::<u32>() as usize * std::mem::size_of::<my_dtype>();
+    let pic_size = dims.iter().product::<u32>() as usize;
+    let n_result_columns = 3;
+    let slice_size = pic_size * std::mem::size_of::<my_dtype>();
     let size = slice_size as wgpu::BufferAddress;
 
     let mut staging_buffers = Vec::new();
     for i in 0..2{
         let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(format!("Staging {}", i).as_str()),
-            size: 2 * size,
+            size: n_result_columns * size,
             usage: wgpu::BufferUsages::MAP_WRITE 
             | wgpu::BufferUsages::COPY_SRC 
             | wgpu::BufferUsages::COPY_DST 
@@ -148,7 +183,7 @@ pub async fn execute_gpu<T: Iterator<Item = Vec<my_dtype>>>(mut frames: T, dims:
 
     let result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: size*2,
+        size: n_result_columns * size,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
@@ -160,7 +195,7 @@ pub async fn execute_gpu<T: Iterator<Item = Vec<my_dtype>>>(mut frames: T, dims:
         circle_dims: [noise_size, noise_size],
         max_iterations: 100,
         shift_threshold: 0.6,
-        minmass: 500.,
+        minmass: 50.,
     };
 
     let param_buffer = unsafe{
@@ -243,10 +278,45 @@ pub async fn execute_gpu<T: Iterator<Item = Vec<my_dtype>>>(mut frames: T, dims:
         });
 
         encoder.copy_buffer_to_buffer(&result_buffer, 0,
-            staging_buffer, 0, 2 * size);
+            staging_buffer, 0, n_result_columns * size);
         
-        queue.submit(Some(encoder.finish()))
+        let index = queue.submit(Some(encoder.finish()));
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.clear_buffer(&result_buffer, 0, None);
+        queue.submit(Some(encoder.finish()));
+        index
     };
+    
+    let mut wait_gpu_time = 0.;
+
+    // let get_work = |finished_staging_buffer: &Buffer| {
+    //     let mut buffer_slice = finished_staging_buffer.slice(..);
+    //     let (sender, receiver) = 
+    //             futures_intrusive::channel::shared::oneshot_channel();
+        
+    //     buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
+    //     let now = Instant::now();
+    //     device.poll(wgpu::Maintain::WaitForSubmissionIndex(old_submission));
+    //     wait_gpu_time += now.elapsed().as_millis() as f32 / 1000.;
+    //     receiver.receive().await.unwrap();
+    //     let data = buffer_slice.get_mapped_range();
+    //     let dataf32 = bytemuck::cast_slice::<u8, f32>(&data);
+    //     let mut result = Vec::new();
+    //     for i in 0..pic_size{
+    //         let mass = dataf32[i];
+    //         println!("mass: {}", mass);
+    //         if mass != 0.0{
+    //             result.push(mass);
+    //             for j in 1..n_result_columns as usize{
+    //                 result.push(dataf32[i + j * pic_size]);
+    //             }
+    //         }
+    //     }
+    //     output.push(result);
+    //     drop(data);
+        
+    // };
 
     let mut output: Vec<Vec<f32>> = Vec::new();
     
@@ -255,41 +325,49 @@ pub async fn execute_gpu<T: Iterator<Item = Vec<my_dtype>>>(mut frames: T, dims:
     in_use_staging_buffers.push_back(staging_buffer);
     let mut old_submission = submit_work(staging_buffer, &frame);
 
+
     for frame in frames{
         let staging_buffer = free_staging_buffers.pop().unwrap();
         in_use_staging_buffers.push_back(staging_buffer);
         let new_submission = submit_work(staging_buffer, &frame);
         
         let finished_staging_buffer = in_use_staging_buffers.pop_front().unwrap();
-        let mut buffer_slice = finished_staging_buffer.slice(..);
-        let (sender, receiver) = 
-                futures_intrusive::channel::shared::oneshot_channel();
         
-        buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
-        device.poll(wgpu::Maintain::WaitForSubmissionIndex(old_submission));
-        receiver.receive().await.unwrap();
-        // device.poll(wgpu::Maintain::Wait);
-        let data = buffer_slice.get_mapped_range();
-        let result: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
-        output.push(result);
-        drop(data);
-        finished_staging_buffer.unmap();
+        get_work(finished_staging_buffer,
+            &device, 
+            old_submission, 
+            &mut wait_gpu_time,
+            &mut output,
+            pic_size,
+            n_result_columns
+        ).await;
+
         free_staging_buffers.push(finished_staging_buffer);
         old_submission = new_submission;
-
     }
+    dbg!(wait_gpu_time);
     let finished_staging_buffer = in_use_staging_buffers.pop_front().unwrap();
-    let mut buffer_slice = finished_staging_buffer.slice(..);
-    let (sender, receiver) = 
-            futures_intrusive::channel::shared::oneshot_channel();
-    buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
-    device.poll(wgpu::Maintain::WaitForSubmissionIndex(old_submission));
-    receiver.receive().await.unwrap();
-    let data = buffer_slice.get_mapped_range();
-    let result: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
-    output.push(result);
-    drop(data);
-    finished_staging_buffer.unmap();
+    
+    get_work(finished_staging_buffer,
+        &device, 
+        old_submission, 
+        &mut wait_gpu_time,
+        &mut output,
+        pic_size,
+        n_result_columns
+    ).await;
+
+    // let mut buffer_slice = finished_staging_buffer.slice(..);
+    // let (sender, receiver) = 
+    //         futures_intrusive::channel::shared::oneshot_channel();
+    // buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
+    // device.poll(wgpu::Maintain::WaitForSubmissionIndex(old_submission));
+    // receiver.receive().await.unwrap();
+    // let data = buffer_slice.get_mapped_range();
+    // let result: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
+    // output.push(result);
+    // drop(data);
+    // finished_staging_buffer.unmap();
     // dbg!(in_use_staging_buffers.len());
     // dbg!(free_staging_buffers.len());
     Ok(output)
