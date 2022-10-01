@@ -3,6 +3,7 @@ use std::time::Instant;
 use wgpu::{self, util::DeviceExt};
 use pollster::FutureExt;
 use futures_intrusive;
+use bencher::black_box;
 
 fn main() {
     let instance = wgpu::Instance::new(wgpu::Backends::all());
@@ -27,9 +28,13 @@ fn main() {
     receiver.receive().block_on().unwrap().unwrap();
     let now = Instant::now();
     let data = buffer_slice.get_mapped_range();
+
     let result = data.to_vec();
     let elapsed = now.elapsed().as_nanos();
     println!("Elapsed: {} ms", elapsed as f64 / 1_000_000.0);
+    for _i in 0..data.len(){
+        black_box(data[_i]);
+    }
     dbg!(cpu_buffer[0]);
     dbg!(result[0]);
 
