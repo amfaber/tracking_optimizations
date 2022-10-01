@@ -24,7 +24,7 @@ fn main() -> anyhow::Result<()> {
     let now_top = Instant::now();
     let path = match args.input{
         Some(input) => input,
-        None => r"C:\Users\andre\Documents\tracking_optimizations\emily_tracking\sample_vids\s_20.tif".to_string()
+        None => "../emily_tracking/sample_vids/s_20.tif".to_string()
     };
     // let path = r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\grey_lion.tiff";
     // let path = r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\tester.tiff";
