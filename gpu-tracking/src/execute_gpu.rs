@@ -73,8 +73,10 @@ pub async fn execute_gpu<T: Iterator<Item = Vec<my_dtype>>>(mut frames: T, dims:
     .block_on()
     .ok_or(anyhow::anyhow!("Couldn't create the adapter"))?;
 
+    let mut desc = wgpu::DeviceDescriptor::default();
+    desc.features = wgpu::Features::MAPPABLE_PRIMARY_BUFFERS;
     let (device, queue) = adapter
-    .request_device(&Default::default(), None)
+    .request_device(&desc, None)
     .block_on()?;
 
     

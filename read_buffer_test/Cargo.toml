@@ -1,0 +1,11 @@
+[package]
+name = "read_buffer_test"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+futures-intrusive = "0.4.0"
+pollster = "0.2.5"
+wgpu = "0.13.1"
