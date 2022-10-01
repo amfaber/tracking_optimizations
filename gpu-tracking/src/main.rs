@@ -42,7 +42,7 @@ fn main() -> anyhow::Result<()> {
     let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).open("test").unwrap();
     // file.write(&results[0].as_bytes()).unwrap();
     // let test = results as *const [u8]; 
-    file.write(&results.as_bytes()).unwrap();
+    file.write(&results[0].as_bytes()).unwrap();
 
     let total = now_top.elapsed().as_millis() as f64 / 1000.;
     dbg!(total);

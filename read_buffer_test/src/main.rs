@@ -17,7 +17,7 @@ fn main() {
     let gpu_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("gpu_buffer"),
         contents: &cpu_buffer,
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::MAP_WRITE,
     });
     queue.submit(None);
     let buffer_slice = gpu_buffer.slice(..);

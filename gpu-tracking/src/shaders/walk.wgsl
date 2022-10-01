@@ -76,8 +76,8 @@ fn walk(u: i32, v: i32) -> vec3<f32> {
     }
   }
   let final_coords = vec2<f32>(
-    f32(u + adjust_u) + center[0] + 1000. * f32(changed),
-    f32(v + adjust_v) + center[1] + 1000. * f32(changed),
+    f32(u + adjust_u) + center[0], // + 1000. * f32(changed),
+    f32(v + adjust_v) + center[1], // + 1000. * f32(changed),
     );
   return vec3<f32>(final_coords[0], final_coords[1], masses[idx]);
 }

@@ -8,7 +8,7 @@ use wgpu::{util::DeviceExt, Buffer};
 use crate::kernels;
 use std::collections::HashMap;
 
-type inner_output = f32;
+type inner_output = Vec<f32>;
 type output_type = Vec<inner_output>;
 
 #[derive(Clone, Copy)]
@@ -59,8 +59,8 @@ fn get_work(finished_staging_buffer: &Buffer,
             }
         }
     }
-    let elapsed = now.elapsed().as_nanos() as inner_output / 1_000_000.;
-    output.push(elapsed);
+    // let elapsed = now.elapsed().as_nanos() as inner_output / 1_000_000.;
+    output.push(result);
     drop(data);
     finished_staging_buffer.unmap();
 }
@@ -126,8 +126,7 @@ pub fn execute_gpu<T: Iterator<Item = Vec<my_dtype>>>(mut frames: T, dims: [u32;
         let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(format!("Staging {}", i).as_str()),
             size: n_result_columns * size,
-            usage: wgpu::BufferUsages::MAP_WRITE 
-            | wgpu::BufferUsages::COPY_SRC 
+            usage: wgpu::BufferUsages::COPY_SRC 
             | wgpu::BufferUsages::COPY_DST 
             | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
