@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use wgpu::{self, util::DeviceExt};
 use pollster::FutureExt;
 use futures_intrusive;
@@ -21,11 +23,13 @@ fn main() {
     let (sender, receiver) = 
             futures_intrusive::channel::shared::oneshot_channel();
     buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
-
     device.poll(wgpu::Maintain::Wait);
     receiver.receive().block_on().unwrap().unwrap();
+    let now = Instant::now();
     let data = buffer_slice.get_mapped_range();
     let result = data.to_vec();
+    let elapsed = now.elapsed().as_nanos();
+    println!("Elapsed: {} ms", elapsed as f64 / 1_000_000.0);
     dbg!(cpu_buffer[0]);
     dbg!(result[0]);
 
