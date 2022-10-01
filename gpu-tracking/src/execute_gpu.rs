@@ -8,6 +8,9 @@ use wgpu::{util::DeviceExt, Buffer};
 use crate::kernels;
 use std::collections::HashMap;
 
+type inner_output = f32;
+type output_type = Vec<inner_output>;
+
 #[derive(Clone, Copy)]
 pub struct Params{
     pub pic_dims: [u32; 2],
@@ -26,11 +29,11 @@ unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
     )
 }
 
-async fn get_work(finished_staging_buffer: &Buffer,
+fn get_work(finished_staging_buffer: &Buffer,
     device: &wgpu::Device,
     old_submission: wgpu::SubmissionIndex,
     wait_gpu_time: &mut f32,
-    output: &mut Vec<Vec<f32>>,
+    output: &mut Vec<inner_output>,
     pic_size: usize,
     n_result_columns: u64,
     ) -> () {
@@ -42,10 +45,11 @@ async fn get_work(finished_staging_buffer: &Buffer,
     let now = Instant::now();
     device.poll(wgpu::Maintain::WaitForSubmissionIndex(old_submission));
     (*wait_gpu_time) += now.elapsed().as_millis() as f32 / 1000.;
-    receiver.receive().await.unwrap();
+    receiver.receive().block_on().unwrap();
     let data = buffer_slice.get_mapped_range();
     let dataf32 = bytemuck::cast_slice::<u8, f32>(&data);
     let mut result = Vec::new();
+    let now = Instant::now();
     for i in 0..pic_size{
         let mass = dataf32[i];
         if mass != 0.0{
@@ -55,13 +59,14 @@ async fn get_work(finished_staging_buffer: &Buffer,
             }
         }
     }
-    output.push(result);
+    let elapsed = now.elapsed().as_nanos() as inner_output / 1_000_000.;
+    output.push(elapsed);
     drop(data);
     finished_staging_buffer.unmap();
 }
 
 
-pub async fn execute_gpu<T: Iterator<Item = Vec<my_dtype>>>(mut frames: T, dims: [u32; 2]) -> anyhow::Result<Vec<Vec<my_dtype>>>{
+pub fn execute_gpu<T: Iterator<Item = Vec<my_dtype>>>(mut frames: T, dims: [u32; 2]) -> output_type{
     let instance = wgpu::Instance::new(wgpu::Backends::all());
 
     let adapter = instance
@@ -71,13 +76,13 @@ pub async fn execute_gpu<T: Iterator<Item = Vec<my_dtype>>>(mut frames: T, dims:
         compatible_surface: None,
     })
     .block_on()
-    .ok_or(anyhow::anyhow!("Couldn't create the adapter"))?;
+    .ok_or(anyhow::anyhow!("Couldn't create the adapter")).unwrap();
 
     let mut desc = wgpu::DeviceDescriptor::default();
     desc.features = wgpu::Features::MAPPABLE_PRIMARY_BUFFERS;
     let (device, queue) = adapter
     .request_device(&desc, None)
-    .block_on()?;
+    .block_on().unwrap();
 
     
     let common_header = include_str!("shaders/params.wgsl");
@@ -114,6 +119,7 @@ pub async fn execute_gpu<T: Iterator<Item = Vec<my_dtype>>>(mut frames: T, dims:
     let n_result_columns = 3;
     let slice_size = pic_size * std::mem::size_of::<my_dtype>();
     let size = slice_size as wgpu::BufferAddress;
+    dbg!(size);
 
     let mut staging_buffers = Vec::new();
     for i in 0..2{
@@ -292,35 +298,8 @@ pub async fn execute_gpu<T: Iterator<Item = Vec<my_dtype>>>(mut frames: T, dims:
     
     let mut wait_gpu_time = 0.;
 
-    // let get_work = |finished_staging_buffer: &Buffer| {
-    //     let mut buffer_slice = finished_staging_buffer.slice(..);
-    //     let (sender, receiver) = 
-    //             futures_intrusive::channel::shared::oneshot_channel();
-        
-    //     buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
-    //     let now = Instant::now();
-    //     device.poll(wgpu::Maintain::WaitForSubmissionIndex(old_submission));
-    //     wait_gpu_time += now.elapsed().as_millis() as f32 / 1000.;
-    //     receiver.receive().await.unwrap();
-    //     let data = buffer_slice.get_mapped_range();
-    //     let dataf32 = bytemuck::cast_slice::<u8, f32>(&data);
-    //     let mut result = Vec::new();
-    //     for i in 0..pic_size{
-    //         let mass = dataf32[i];
-    //         println!("mass: {}", mass);
-    //         if mass != 0.0{
-    //             result.push(mass);
-    //             for j in 1..n_result_columns as usize{
-    //                 result.push(dataf32[i + j * pic_size]);
-    //             }
-    //         }
-    //     }
-    //     output.push(result);
-    //     drop(data);
-        
-    // };
-
-    let mut output: Vec<Vec<f32>> = Vec::new();
+    // let mut output: Vec<Vec<f32>> = Vec::new();
+    let mut output: output_type = Vec::new();
     
     let frame = frames.next().unwrap();
     let staging_buffer = free_staging_buffers.pop().unwrap();
@@ -342,7 +321,7 @@ pub async fn execute_gpu<T: Iterator<Item = Vec<my_dtype>>>(mut frames: T, dims:
             &mut output,
             pic_size,
             n_result_columns
-        ).await;
+        );
 
         free_staging_buffers.push(finished_staging_buffer);
         old_submission = new_submission;
@@ -357,20 +336,7 @@ pub async fn execute_gpu<T: Iterator<Item = Vec<my_dtype>>>(mut frames: T, dims:
         &mut output,
         pic_size,
         n_result_columns
-    ).await;
+    );
 
-    // let mut buffer_slice = finished_staging_buffer.slice(..);
-    // let (sender, receiver) = 
-    //         futures_intrusive::channel::shared::oneshot_channel();
-    // buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
-    // device.poll(wgpu::Maintain::WaitForSubmissionIndex(old_submission));
-    // receiver.receive().await.unwrap();
-    // let data = buffer_slice.get_mapped_range();
-    // let result: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
-    // output.push(result);
-    // drop(data);
-    // finished_staging_buffer.unmap();
-    // dbg!(in_use_staging_buffers.len());
-    // dbg!(free_staging_buffers.len());
-    Ok(output)
+    output
 }

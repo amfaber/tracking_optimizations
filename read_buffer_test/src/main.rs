@@ -13,7 +13,7 @@ fn main() {
         compatible_surface: None,
     }).block_on().unwrap();
     let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor::default(), None).block_on().unwrap();
-    let cpu_buffer = vec![5u8; 1_000_000];
+    let cpu_buffer = vec![5u8; 1048576];
     let gpu_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("gpu_buffer"),
         contents: &cpu_buffer,
