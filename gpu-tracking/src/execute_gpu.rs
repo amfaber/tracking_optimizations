@@ -2,13 +2,14 @@
 use futures;
 use futures_intrusive;
 type my_dtype = f32;
+use ndarray::{ArrayBase, ViewRepr, Array2, ArrayView2, ArrayView3};
 use pollster::FutureExt;
 use std::{collections::VecDeque, time::Instant};
 use wgpu::{util::DeviceExt, Buffer};
-use crate::kernels;
+use crate::{kernels, into_slice::IntoSlice};
 use std::collections::HashMap;
 
-type inner_output = Vec<f32>;
+type inner_output = f32;
 type output_type = Vec<inner_output>;
 
 #[derive(Clone, Copy)]
@@ -36,6 +37,7 @@ fn get_work(finished_staging_buffer: &Buffer,
     output: &mut Vec<inner_output>,
     pic_size: usize,
     n_result_columns: u64,
+    frame_index: usize,
     ) -> () {
     let mut buffer_slice = finished_staging_buffer.slice(..);
     let (sender, receiver) = 
@@ -48,25 +50,27 @@ fn get_work(finished_staging_buffer: &Buffer,
     receiver.receive().block_on().unwrap();
     let data = buffer_slice.get_mapped_range();
     let dataf32 = bytemuck::cast_slice::<u8, f32>(&data);
-    let mut result = Vec::new();
+    // let mut result = Vec::new();
     let now = Instant::now();
     for i in 0..pic_size{
         let mass = dataf32[i];
         if mass != 0.0{
-            result.push(mass);
+            output.push(frame_index as f32);
+            output.push(mass);
             for j in 1..n_result_columns as usize{
-                result.push(dataf32[i + j * pic_size]);
+                output.push(dataf32[i + j * pic_size]);
             }
         }
     }
     // let elapsed = now.elapsed().as_nanos() as inner_output / 1_000_000.;
-    output.push(result);
+    // output.push(result);
     drop(data);
     finished_staging_buffer.unmap();
 }
 
 
-pub fn execute_gpu<T: Iterator<Item = Vec<my_dtype>>>(mut frames: T, dims: [u32; 2]) -> output_type{
+pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(mut frames: T, dims: &[u32; 2]) -> (output_type, (usize, usize)){
+    
     let instance = wgpu::Instance::new(wgpu::Backends::all());
 
     let adapter = instance
@@ -119,7 +123,6 @@ pub fn execute_gpu<T: Iterator<Item = Vec<my_dtype>>>(mut frames: T, dims: [u32;
     let n_result_columns = 3;
     let slice_size = pic_size * std::mem::size_of::<my_dtype>();
     let size = slice_size as wgpu::BufferAddress;
-    dbg!(size);
 
     let mut staging_buffers = Vec::new();
     for i in 0..2{
@@ -196,7 +199,7 @@ pub fn execute_gpu<T: Iterator<Item = Vec<my_dtype>>>(mut frames: T, dims: [u32;
     });
     
     let params = Params{
-        pic_dims: dims,
+        pic_dims: *dims,
         gauss_dims: gaussian_kernel.size,
         constant_dims: constant_kernel.size,
         circle_dims: [noise_size, noise_size],
@@ -270,7 +273,7 @@ pub fn execute_gpu<T: Iterator<Item = Vec<my_dtype>>>(mut frames: T, dims: [u32;
         })).collect::<Vec<_>>();
     
     let submit_work = |staging_buffer: &wgpu::Buffer, frame: &[my_dtype]| {
-        queue.write_buffer(&staging_buffer, 0, bytemuck::cast_slice(&frame[..]));
+        queue.write_buffer(&staging_buffer, 0, bytemuck::cast_slice(frame));
         let mut encoder =
         device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
@@ -301,15 +304,17 @@ pub fn execute_gpu<T: Iterator<Item = Vec<my_dtype>>>(mut frames: T, dims: [u32;
     let mut output: output_type = Vec::new();
     
     let frame = frames.next().unwrap();
+    let mut frame_index = 0;
     let staging_buffer = free_staging_buffers.pop().unwrap();
     in_use_staging_buffers.push_back(staging_buffer);
-    let mut old_submission = submit_work(staging_buffer, &frame);
+    let mut old_submission = submit_work(staging_buffer, frame.into_slice());
 
 
     for frame in frames{
+        let frame = frame;
         let staging_buffer = free_staging_buffers.pop().unwrap();
         in_use_staging_buffers.push_back(staging_buffer);
-        let new_submission = submit_work(staging_buffer, &frame);
+        let new_submission = submit_work(staging_buffer, &frame.into_slice());
         
         let finished_staging_buffer = in_use_staging_buffers.pop_front().unwrap();
         
@@ -319,11 +324,13 @@ pub fn execute_gpu<T: Iterator<Item = Vec<my_dtype>>>(mut frames: T, dims: [u32;
             &mut wait_gpu_time,
             &mut output,
             pic_size,
-            n_result_columns
+            n_result_columns,
+            frame_index,
         );
 
         free_staging_buffers.push(finished_staging_buffer);
         old_submission = new_submission;
+        frame_index += 1;
     }
     dbg!(wait_gpu_time);
     let finished_staging_buffer = in_use_staging_buffers.pop_front().unwrap();
@@ -334,8 +341,21 @@ pub fn execute_gpu<T: Iterator<Item = Vec<my_dtype>>>(mut frames: T, dims: [u32;
         &mut wait_gpu_time,
         &mut output,
         pic_size,
-        n_result_columns
+        n_result_columns,
+        frame_index,
     );
+    let n_result_columns = n_result_columns as usize + 1;
+    let shape = (output.len() / n_result_columns, n_result_columns);
+    (output, shape)
+}
 
-    output
+pub fn execute_ndarray(array: &ArrayView3<my_dtype>) -> Array2<my_dtype> {
+    if !array.is_standard_layout(){
+        panic!("Array is not standard layout");
+    }
+    let axisiter = array.axis_iter(ndarray::Axis(0));
+    let dims = array.shape();
+    let (res, res_dims) = execute_gpu(axisiter, &[dims[1] as u32, dims[2] as u32]);
+    let res = Array2::from_shape_vec(res_dims, res).unwrap();
+    res
 }

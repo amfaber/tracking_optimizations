@@ -5,6 +5,15 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[lib]
+name = "gpu_tracking"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "tracking"
+path = "src/main.rs"
+
+
 [dependencies]
 ndarray = "0.15.6"
 rayon = "1.5.3"
@@ -17,3 +26,5 @@ futures = "0.3.24"
 image = "0.24.4"
 futures-intrusive = "0.4.0"
 clap = { version = "4.0.6", features = ["derive"] }
+pyo3 = { version = "0.17.1", features = ["extension-module"] }
+numpy = "0.17.2"

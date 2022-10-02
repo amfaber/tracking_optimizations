@@ -1,12 +1,18 @@
 [package]
-name = "read_buffer_test"
+name = "rust_ext"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[lib]
+crate-type = ["cdylib"]
+
 [dependencies]
 bencher = "0.1.5"
 futures-intrusive = "0.4.0"
+ndarray = "0.15.6"
+numpy = "0.17.2"
 pollster = "0.2.5"
+pyo3 = { version = "0.17.1", features = ["extension-module"] }
 wgpu = "0.13.1"

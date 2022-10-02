@@ -3,11 +3,10 @@ use pollster::FutureExt;
 use std::io::Write;
 use std::{fs, time::Instant};
 use tiff::decoder::{Decoder, DecodingResult};
-use gpu_tracking::{execute_gpu::execute_gpu};
+use gpu_tracking::{execute_gpu::{execute_gpu, execute_ndarray}};
 use gpu_tracking::decoderiter::IterDecoder;
 use futures;
 use futures_intrusive;
-use image::{self, EncodableLayout};
 pub type my_dtype = f32;
 use std::path;
 use clap::Parser;
@@ -32,36 +31,24 @@ fn main() -> anyhow::Result<()> {
     let mut decoder = Decoder::new(file).expect("Can't create decoder");
     let (width, height) = decoder.dimensions().unwrap();
     let dims = [height, width];
-    // dbg!(dims);
+    // // dbg!(dims);
     let mut decoderiter = IterDecoder::from(decoder);
+    let all_frames = decoderiter.collect::<Vec<_>>();
+    let all_views = all_frames.iter().map(|x| x.view()).collect::<Vec<_>>();
+    let arr = ndarray::stack(ndarray::Axis(0), &all_views).unwrap();
+
     let now = Instant::now();
-    let results = execute_gpu(decoderiter, dims);
+    let test = execute_ndarray(&arr.view());
     let function_time = now.elapsed().as_millis() as f64 / 1000.;
+    // let (results, n_result_columns) = execute_gpu(decoderiter, &dims);
     dbg!(function_time);
+
     
-    let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).open("test").unwrap();
-    // file.write(&results[0].as_bytes()).unwrap();
-    // let test = results as *const [u8]; 
-    file.write(&results[0].as_bytes()).unwrap();
+    // let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).open("test").unwrap();
+    // let raw_bytes = unsafe{std::slice::from_raw_parts(results.as_ptr() as *const u8, results.len() * std::mem::size_of::<my_dtype>())};
+    // file.write_all(raw_bytes).unwrap();
 
-    let total = now_top.elapsed().as_millis() as f64 / 1000.;
-    dbg!(total);
+    // let total = now_top.elapsed().as_millis() as f64 / 1000.;
+    // dbg!(total);
     Ok(())
-}
-
-fn _main(){
-    let path = path::PathBuf::from(r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\src\shaders");
-    let shaders = path.read_dir().expect("Could not read directory")
-    .filter_map(|entry_res| {
-        entry_res.ok().and_then(|entry|{
-            entry.file_name().to_str().and_then(|s| {
-                match !s.starts_with("_") && s.ends_with(".wgsl") {
-                    true => Some(s.to_string()),
-                    false => None,
-                }
-            })
-        })
-    })
-    .collect::<Vec<_>>();
-    dbg!(shaders);
 }
