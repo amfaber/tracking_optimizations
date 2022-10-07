@@ -28,5 +28,36 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
     }
 
 
+
+    #[pyfn(m)]
+    #[pyo3(name = "batch")]
+    fn batch_py<'py>(
+        py: Python<'py>,
+        pyarr: PyReadonlyArray3<my_dtype>,
+        diameter: u32,
+        minmass: Option<my_dtype>,
+        maxsize: Option<my_dtype>,
+        separation: Option<u32>,
+        noise_size: Option<u32>,
+        smoothing_size: Option<u32>,
+        threshold: Option<my_dtype>,
+        invert: Option<bool>,
+        percentile: Option<my_dtype>,
+        topn: Option<u32>,
+        preprocess: Option<bool>,
+        max_iterations: Option<u32>,
+        characterize: Option<bool>,
+        ) -> &'py PyArray2<my_dtype> {
+        
+        
+        
+        
+        let array = pyarr.as_array();
+        let res = execute_gpu::execute_ndarray(&array, TrackingParams::default());
+        res.into_pyarray(py)
+    }
+
+
+
     Ok(())
 }
