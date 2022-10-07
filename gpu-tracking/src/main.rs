@@ -1,4 +1,5 @@
 #![allow(warnings)]
+use gpu_tracking::execute_gpu::TrackingParams;
 use pollster::FutureExt;
 use std::io::Write;
 use std::{fs, time::Instant};
@@ -38,11 +39,10 @@ fn main() -> anyhow::Result<()> {
     let arr = ndarray::stack(ndarray::Axis(0), &all_views).unwrap();
 
     let now = Instant::now();
-    let test = execute_ndarray(&arr.view());
+    let test = execute_ndarray(&arr.view(), TrackingParams::default());
     let function_time = now.elapsed().as_millis() as f64 / 1000.;
-    // let (results, n_result_columns) = execute_gpu(decoderiter, &dims);
     dbg!(function_time);
-
+    
     
     // let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).open("test").unwrap();
     // let raw_bytes = unsafe{std::slice::from_raw_parts(results.as_ptr() as *const u8, results.len() * std::mem::size_of::<my_dtype>())};

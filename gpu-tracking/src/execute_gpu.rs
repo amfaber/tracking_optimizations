@@ -6,14 +6,14 @@ use ndarray::{ArrayBase, ViewRepr, Array2, ArrayView2, ArrayView3};
 use pollster::FutureExt;
 use std::{collections::VecDeque, time::Instant};
 use wgpu::{util::DeviceExt, Buffer};
-use crate::{kernels, into_slice::IntoSlice};
+use crate::{kernels, into_slice::IntoSlice, buffer_setup};
 use std::collections::HashMap;
 
 type inner_output = f32;
 type output_type = Vec<inner_output>;
 
 #[derive(Clone, Copy)]
-pub struct Params{
+pub struct GpuParams{
     pub pic_dims: [u32; 2],
     pub gauss_dims: [u32; 2],
     pub constant_dims: [u32; 2],
@@ -21,6 +21,59 @@ pub struct Params{
     pub max_iterations: u32,
     pub shift_threshold: f32,
     pub minmass: f32,
+}
+
+pub struct Arguments{
+    pub diameter: u32,
+    pub minmass: Option<f32>,
+    pub max_size: Option<f32>,
+    pub separation: Option<u32>,
+    pub noise_size: Option<u32>,
+    pub smoothing_size: Option<u32>,
+    pub threshold: Option<f32>,
+    pub invert: Option<bool>,
+    pub percentile: Option<f32>,
+    pub topn: Option<u32>,
+    pub preprocess: Option<bool>,
+    pub max_iterations: Option<u32>,
+    pub characterize: Option<bool>,
+}
+
+#[derive(Clone, Copy)]
+pub struct TrackingParams{
+    pub diameter: u32,
+    pub minmass: f32,
+    pub max_size: f32,
+    pub separation: u32,
+    pub noise_size: u32,
+    pub smoothing_size: u32,
+    pub threshold: f32,
+    pub invert: bool,
+    pub percentile: f32,
+    pub topn: u32,
+    pub preprocess: bool,
+    pub max_iterations: u32,
+    pub characterize: bool,
+}
+
+impl Default for TrackingParams{
+    fn default() -> Self {
+        TrackingParams{
+            diameter: 9,
+            minmass: 100.0,
+            max_size: 0.0,
+            separation: 10,
+            noise_size: 1,
+            smoothing_size: 9,
+            threshold: 0.0,
+            invert: false,
+            percentile: 64.0,
+            topn: 0,
+            preprocess: true,
+            max_iterations: 10,
+            characterize: false,
+        }
+    }
 }
 
 unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
@@ -69,7 +122,11 @@ fn get_work(finished_staging_buffer: &Buffer,
 }
 
 
-pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(mut frames: T, dims: &[u32; 2]) -> (output_type, (usize, usize)){
+pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
+    mut frames: T,
+    dims: &[u32; 2],
+    tracking_params: TrackingParams,
+    ) -> (output_type, (usize, usize)){
     
     let instance = wgpu::Instance::new(wgpu::Backends::all());
 
@@ -120,101 +177,12 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(mut frames: T, dims: 
         shader
     }).collect::<Vec<_>>();
     let pic_size = dims.iter().product::<u32>() as usize;
-    let n_result_columns = 3;
+    let n_result_columns: u64 = 3;
     let slice_size = pic_size * std::mem::size_of::<my_dtype>();
     let size = slice_size as wgpu::BufferAddress;
-
-    let mut staging_buffers = Vec::new();
-    for i in 0..2{
-        let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(format!("Staging {}", i).as_str()),
-            size: n_result_columns * size,
-            usage: wgpu::BufferUsages::COPY_SRC 
-            | wgpu::BufferUsages::COPY_DST 
-            | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        staging_buffers.push(staging_buffer);
-    }
-    let mut free_staging_buffers = staging_buffers.iter().collect::<Vec<&wgpu::Buffer>>();
-    let mut in_use_staging_buffers = VecDeque::new();
     
-    let frame_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
-
-    let sigma = 1.;
-    let gaussian_kernel = kernels::Kernel::tp_gaussian(sigma, 4.);
-    let gaussian_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: None,
-        contents: bytemuck::cast_slice(&gaussian_kernel.data),
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-    });
-
-    let noise_size = 9u32;
-    let constant_kernel = kernels::Kernel::rolling_average([noise_size, noise_size]);
-    let constant_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: None,
-        contents: bytemuck::cast_slice(&constant_kernel.data),
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-    });
-
-    let processed_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size,
-        usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
     
-    let centers_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: 2 * size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
-    
-    let r = 9;
-    let circle_kernel = kernels::Kernel::circle_mask(r);
-    let circle_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: None,
-        contents: bytemuck::cast_slice(&circle_kernel.data),
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-    });
-
-    let masses_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
-
-    let result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: n_result_columns * size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
-    
-    let params = Params{
-        pic_dims: *dims,
-        gauss_dims: gaussian_kernel.size,
-        constant_dims: constant_kernel.size,
-        circle_dims: [noise_size, noise_size],
-        max_iterations: 100,
-        shift_threshold: 0.6,
-        minmass: 50.,
-    };
-
-    let param_buffer = unsafe{
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Width Buffer"),
-            contents: any_as_u8_slice(&params),
-            usage: wgpu::BufferUsages::UNIFORM
-        })
-    };
+    let buffers = buffer_setup::setup_buffers(&tracking_params, &device, n_result_columns, size, dims);
 
     let compute_pipelines = shaders.iter().map(|shader|{
         device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -233,25 +201,25 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(mut frames: T, dims: 
 
     let bind_group_entries = [
         vec![
-            &param_buffer,
-            &frame_buffer,
-            &gaussian_buffer, 
-            &constant_buffer,
-            &processed_buffer, 
+            &buffers.param_buffer,
+            &buffers.frame_buffer,
+            &buffers.composite_buffer, 
+            // &buffers.constant_buffer,
+            &buffers.processed_buffer, 
         ],
         vec![
-            &param_buffer,    
-            &circle_buffer, 
-            &processed_buffer, 
-            &centers_buffer,
-            &masses_buffer,
+            &buffers.param_buffer,    
+            &buffers.circle_buffer, 
+            &buffers.processed_buffer, 
+            &buffers.centers_buffer,
+            &buffers.masses_buffer,
         ],
         vec![
-            &param_buffer,
-            &processed_buffer, 
-            &centers_buffer,
-            &masses_buffer,
-            &result_buffer,
+            &buffers.param_buffer,
+            &buffers.processed_buffer, 
+            &buffers.centers_buffer,
+            &buffers.masses_buffer,
+            &buffers.result_buffer,
         ],
     ];
 
@@ -278,7 +246,7 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(mut frames: T, dims: 
         device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
         encoder.copy_buffer_to_buffer(staging_buffer, 0,
-            &frame_buffer, 0, size);
+            &buffers.frame_buffer, 0, size);
         
         compute_pipelines.iter().zip(bind_groups.iter()).for_each(|(pipeline, bind_group)|{
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None });
@@ -287,13 +255,13 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(mut frames: T, dims: 
             cpass.dispatch_workgroups(workgroups[0], workgroups[1], 1);
         });
 
-        encoder.copy_buffer_to_buffer(&result_buffer, 0,
+        encoder.copy_buffer_to_buffer(&buffers.result_buffer, 0,
             staging_buffer, 0, n_result_columns * size);
         
         let index = queue.submit(Some(encoder.finish()));
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        encoder.clear_buffer(&result_buffer, 0, None);
+        encoder.clear_buffer(&buffers.result_buffer, 0, None);
         queue.submit(Some(encoder.finish()));
         index
     };
@@ -303,6 +271,8 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(mut frames: T, dims: 
     // let mut output: Vec<Vec<f32>> = Vec::new();
     let mut output: output_type = Vec::new();
     
+    let mut free_staging_buffers = buffers.staging_buffers.iter().collect::<Vec<&wgpu::Buffer>>();
+    let mut in_use_staging_buffers = VecDeque::new();
     let frame = frames.next().unwrap();
     let mut frame_index = 0;
     let staging_buffer = free_staging_buffers.pop().unwrap();
@@ -349,13 +319,13 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(mut frames: T, dims: 
     (output, shape)
 }
 
-pub fn execute_ndarray(array: &ArrayView3<my_dtype>) -> Array2<my_dtype> {
+pub fn execute_ndarray(array: &ArrayView3<my_dtype>, params: TrackingParams) -> Array2<my_dtype> {
     if !array.is_standard_layout(){
         panic!("Array is not standard layout");
     }
     let axisiter = array.axis_iter(ndarray::Axis(0));
     let dims = array.shape();
-    let (res, res_dims) = execute_gpu(axisiter, &[dims[1] as u32, dims[2] as u32]);
+    let (res, res_dims) = execute_gpu(axisiter, &[dims[1] as u32, dims[2] as u32], params);
     let res = Array2::from_shape_vec(res_dims, res).unwrap();
     res
 }

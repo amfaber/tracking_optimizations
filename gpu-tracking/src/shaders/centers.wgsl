@@ -1,17 +1,3 @@
-// struct params{
-//   pic_nrows: i32,
-//   pic_ncols: i32,
-//   gauss_nrows: i32,
-//   gauss_ncols: i32,
-//   constant_nrows: i32,
-//   constant_ncols: i32,
-//   circle_nrows: i32,
-//   circle_ncols: i32,
-//   max_iterations: u32,
-//   threshold: f32,
-//   minmass: f32,
-// }
-
 @group(0) @binding(0)
 var<uniform> params: params;
 
@@ -62,7 +48,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   }
   let idx = global_id.x * u32(params.pic_ncols) + global_id.y;
 
-  let centerout = get_center(i32(global_id.x), i32(global_id.y), params.constant_nrows, params.constant_ncols);
+  let centerout = get_center(i32(global_id.x), i32(global_id.y),
+   params.circle_nrows, params.circle_ncols);
   centers[idx] = vec2<f32>(centerout[0], centerout[1]);
   masses[idx] = centerout[2];
 }
