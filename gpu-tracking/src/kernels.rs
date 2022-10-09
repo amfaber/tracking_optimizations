@@ -58,12 +58,20 @@ impl Kernel{
     pub fn composite_kernel(sigma: my_dtype, size: [u32; 2]) -> Self{
         let mut data = Vec::with_capacity((size[0] * size[1]) as usize);
         let radius = size[0] / 2;
+        let gauss_radius = ((4. * sigma) + 0.5) as i32;
         for i in 0..size[0]{
             for j in 0..size[1]{
-                let x = i as my_dtype - radius as my_dtype;
-                let y = j as my_dtype - radius as my_dtype;
-                let val = (-(x.powi(2) + y.powi(2)) / (2. * sigma.powi(2))).exp();
-                data.push(val);
+                let x = i as i32 - radius as i32;
+                let y = j as i32 - radius as i32;
+                if x.abs() <= gauss_radius && y.abs() <= gauss_radius{
+                    let x = x as my_dtype;
+                    let y = y as my_dtype;
+                    let val = (-(x.powi(2) + y.powi(2)) / (2. * sigma.powi(2))).exp();
+                    data.push(val);
+                }
+                else{
+                    data.push(0.);
+                }
             }
         }
         let mut kernel = Self::new(data, size);
@@ -101,7 +109,7 @@ impl Kernel{
             for j in 0..size[1]{
                 let x = i as my_dtype - radius as my_dtype;
                 let y = j as my_dtype - radius as my_dtype;
-                let val = if x.powi(2) + y.powi(2) <= (radius as my_dtype).powi(2) {1.} else {0.};
+                let val = (x.powi(2) + y.powi(2) <= (radius as my_dtype).powi(2)) as i32 as my_dtype;
                 data.push(val);
             }
         }

@@ -33,20 +33,23 @@ fn main() -> anyhow::Result<()> {
     let (width, height) = decoder.dimensions().unwrap();
     let dims = [height, width];
     // // dbg!(dims);
-    let mut decoderiter = IterDecoder::from(decoder);
-    let all_frames = decoderiter.collect::<Vec<_>>();
-    let all_views = all_frames.iter().map(|x| x.view()).collect::<Vec<_>>();
-    let arr = ndarray::stack(ndarray::Axis(0), &all_views).unwrap();
+    let mut decoderiter = IterDecoder::from(decoder).take(1);
+    // let all_frames = decoderiter.collect::<Vec<_>>();
+    // let all_views = all_frames.iter().map(|x| x.view()).collect::<Vec<_>>();
+    // let arr = ndarray::stack(ndarray::Axis(0), &all_views).unwrap();
+
 
     let now = Instant::now();
-    let test = execute_ndarray(&arr.view(), TrackingParams::default());
+    // let results = execute_ndarray(&arr.view(), TrackingParams::default(), true);
+    let (results, shape) = execute_gpu(&mut decoderiter, &dims, TrackingParams::default(), true);
     let function_time = now.elapsed().as_millis() as f64 / 1000.;
     dbg!(function_time);
     
     
-    // let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).open("test").unwrap();
-    // let raw_bytes = unsafe{std::slice::from_raw_parts(results.as_ptr() as *const u8, results.len() * std::mem::size_of::<my_dtype>())};
-    // file.write_all(raw_bytes).unwrap();
+
+    let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).open("test").unwrap();
+    let raw_bytes = unsafe{std::slice::from_raw_parts(results.as_ptr() as *const u8, results.len() * std::mem::size_of::<my_dtype>())};
+    file.write_all(raw_bytes).unwrap();
 
     // let total = now_top.elapsed().as_millis() as f64 / 1000.;
     // dbg!(total);

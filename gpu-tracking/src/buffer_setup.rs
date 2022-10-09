@@ -27,7 +27,7 @@ pub struct GpuBuffers{
 fn gpuparams_from_tracking_params(params: TrackingParams, pic_dims: [u32; 2]) -> GpuParams {
     let kernel_size = params.smoothing_size;
     let circle_size = params.diameter;
-    let dilation_size = params.separation;
+    let dilation_size = (2. * params.separation as f32 / (2 as f32).sqrt()) as u32;
     GpuParams{
         pic_dims,
         composite_dims: [kernel_size, kernel_size],
@@ -84,13 +84,13 @@ pub fn setup_buffers(tracking_params: &TrackingParams,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
     });
 
-    let noise_size = 9u32;
-    let constant_kernel = kernels::Kernel::rolling_average([noise_size, noise_size]);
-    let constant_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: None,
-        contents: bytemuck::cast_slice(&constant_kernel.data),
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-    });
+    // let noise_size = tracking_params.noise_size;
+    // let constant_kernel = kernels::Kernel::rolling_average([noise_size, noise_size]);
+    // let constant_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    //     label: None,
+    //     contents: bytemuck::cast_slice(&constant_kernel.data),
+    //     usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+    // });
 
     let processed_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
@@ -106,8 +106,8 @@ pub fn setup_buffers(tracking_params: &TrackingParams,
         mapped_at_creation: false,
     });
     
-    // let r = params.;
-    let circle_kernel = kernels::Kernel::circle_mask(tracking_params.diameter);
+    let r = tracking_params.diameter / 2;
+    let circle_kernel = kernels::Kernel::circle_mask(r);
     let circle_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
         contents: bytemuck::cast_slice(&circle_kernel.data),

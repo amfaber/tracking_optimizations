@@ -4,7 +4,7 @@ use futures_intrusive;
 type my_dtype = f32;
 use ndarray::{ArrayBase, ViewRepr, Array2, ArrayView2, ArrayView3};
 use pollster::FutureExt;
-use std::{collections::VecDeque, time::Instant};
+use std::{collections::VecDeque, time::Instant, io::{BufRead, Write}, fs};
 use wgpu::{util::DeviceExt, Buffer};
 use crate::{kernels, into_slice::IntoSlice, buffer_setup};
 use std::collections::HashMap;
@@ -12,38 +12,38 @@ use std::collections::HashMap;
 type inner_output = f32;
 type output_type = Vec<inner_output>;
 
-#[derive(Clone, Copy)]
-pub struct GpuParams{
-    pub pic_dims: [u32; 2],
-    pub gauss_dims: [u32; 2],
-    pub constant_dims: [u32; 2],
-    pub circle_dims: [u32; 2],
-    pub max_iterations: u32,
-    pub shift_threshold: f32,
-    pub minmass: f32,
-}
+// #[derive(Clone, Copy)]
+// pub struct GpuParams{
+//     pub pic_dims: [u32; 2],
+//     pub gauss_dims: [u32; 2],
+//     pub constant_dims: [u32; 2],
+//     pub circle_dims: [u32; 2],
+//     pub max_iterations: u32,
+//     pub shift_threshold: f32,
+//     pub minmass: f32,
+// }
 
-pub struct Arguments{
-    pub diameter: u32,
-    pub minmass: Option<f32>,
-    pub max_size: Option<f32>,
-    pub separation: Option<u32>,
-    pub noise_size: Option<u32>,
-    pub smoothing_size: Option<u32>,
-    pub threshold: Option<f32>,
-    pub invert: Option<bool>,
-    pub percentile: Option<f32>,
-    pub topn: Option<u32>,
-    pub preprocess: Option<bool>,
-    pub max_iterations: Option<u32>,
-    pub characterize: Option<bool>,
-}
+// pub struct Arguments{
+//     pub diameter: u32,
+//     pub minmass: Option<f32>,
+//     pub max_size: Option<f32>,
+//     pub separation: Option<u32>,
+//     pub noise_size: Option<u32>,
+//     pub smoothing_size: Option<u32>,
+//     pub threshold: Option<f32>,
+//     pub invert: Option<bool>,
+//     pub percentile: Option<f32>,
+//     pub topn: Option<u32>,
+//     pub preprocess: Option<bool>,
+//     pub max_iterations: Option<u32>,
+//     pub characterize: Option<bool>,
+// }
 
 #[derive(Clone, Copy)]
 pub struct TrackingParams{
     pub diameter: u32,
     pub minmass: f32,
-    pub max_size: f32,
+    pub maxsize: f32,
     pub separation: u32,
     pub noise_size: u32,
     pub smoothing_size: u32,
@@ -60,14 +60,14 @@ impl Default for TrackingParams{
     fn default() -> Self {
         TrackingParams{
             diameter: 9,
-            minmass: 100.0,
-            max_size: 0.0,
-            separation: 10,
+            minmass: 0.,
+            maxsize: 0.0,
+            separation: 11,
             noise_size: 1,
             smoothing_size: 9,
             threshold: 0.0,
             invert: false,
-            percentile: 64.0,
+            percentile: 0.,
             topn: 0,
             preprocess: true,
             max_iterations: 10,
@@ -91,6 +91,7 @@ fn get_work(finished_staging_buffer: &Buffer,
     pic_size: usize,
     n_result_columns: u64,
     frame_index: usize,
+    debug: bool,
     ) -> () {
     let mut buffer_slice = finished_staging_buffer.slice(..);
     let (sender, receiver) = 
@@ -104,16 +105,24 @@ fn get_work(finished_staging_buffer: &Buffer,
     let data = buffer_slice.get_mapped_range();
     let dataf32 = bytemuck::cast_slice::<u8, f32>(&data);
     // let mut result = Vec::new();
-    let now = Instant::now();
-    for i in 0..pic_size{
-        let mass = dataf32[i];
-        if mass != 0.0{
-            output.push(frame_index as f32);
-            output.push(mass);
-            for j in 1..n_result_columns as usize{
-                output.push(dataf32[i + j * pic_size]);
+    match debug{
+        false => {
+            for i in 0..pic_size{
+                let mass = dataf32[i];
+                if mass != 0.0{
+                    output.push(frame_index as f32);
+                    output.push(mass);
+                    for j in 1..n_result_columns as usize{
+                        output.push(dataf32[i + j * pic_size]);
+                    }
+                }
             }
-        }
+        },
+        true => {
+            for i in 0..pic_size*2{
+                output.push(dataf32[i]);
+            }
+        },
     }
     // let elapsed = now.elapsed().as_nanos() as inner_output / 1_000_000.;
     // output.push(result);
@@ -126,6 +135,7 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
     mut frames: T,
     dims: &[u32; 2],
     tracking_params: TrackingParams,
+    debug: bool,
     ) -> (output_type, (usize, usize)){
     
     let instance = wgpu::Instance::new(wgpu::Backends::all());
@@ -177,7 +187,10 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
         shader
     }).collect::<Vec<_>>();
     let pic_size = dims.iter().product::<u32>() as usize;
-    let n_result_columns: u64 = 3;
+    let n_result_columns: u64 = match debug{
+        false => 3,
+        true => 2,
+    };
     let slice_size = pic_size * std::mem::size_of::<my_dtype>();
     let size = slice_size as wgpu::BufferAddress;
     
@@ -203,7 +216,7 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
         vec![
             &buffers.param_buffer,
             &buffers.frame_buffer,
-            &buffers.composite_buffer, 
+            &buffers.composite_buffer,
             // &buffers.constant_buffer,
             &buffers.processed_buffer, 
         ],
@@ -254,8 +267,11 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
             cpass.set_pipeline(pipeline);
             cpass.dispatch_workgroups(workgroups[0], workgroups[1], 1);
         });
-
-        encoder.copy_buffer_to_buffer(&buffers.result_buffer, 0,
+        let output_buffer = match debug {
+            false => &buffers.result_buffer,
+            true => &buffers.result_buffer,
+        };
+        encoder.copy_buffer_to_buffer(output_buffer, 0,
             staging_buffer, 0, n_result_columns * size);
         
         let index = queue.submit(Some(encoder.finish()));
@@ -274,11 +290,21 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
     let mut free_staging_buffers = buffers.staging_buffers.iter().collect::<Vec<&wgpu::Buffer>>();
     let mut in_use_staging_buffers = VecDeque::new();
     let frame = frames.next().unwrap();
+    let frame_slice = frame.into_slice();
+
+    let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).open("inp").unwrap();
+    let raw_bytes = unsafe{std::slice::from_raw_parts(frame_slice.as_ptr() as *const u8, frame_slice.len() * std::mem::size_of::<my_dtype>())};
+    file.write_all(raw_bytes).unwrap();
+    
     let mut frame_index = 0;
     let staging_buffer = free_staging_buffers.pop().unwrap();
     in_use_staging_buffers.push_back(staging_buffer);
     let mut old_submission = submit_work(staging_buffer, frame.into_slice());
 
+    // let stdin = std::io::stdin();
+    // let mut lock = stdin.lock();
+    // let mut _buf = String::new();
+    // lock.read_line(&mut _buf);
 
     for frame in frames{
         let frame = frame;
@@ -296,6 +322,7 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
             pic_size,
             n_result_columns,
             frame_index,
+            debug,
         );
 
         free_staging_buffers.push(finished_staging_buffer);
@@ -313,19 +340,20 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
         pic_size,
         n_result_columns,
         frame_index,
+        debug,
     );
     let n_result_columns = n_result_columns as usize + 1;
     let shape = (output.len() / n_result_columns, n_result_columns);
     (output, shape)
 }
 
-pub fn execute_ndarray(array: &ArrayView3<my_dtype>, params: TrackingParams) -> Array2<my_dtype> {
+pub fn execute_ndarray(array: &ArrayView3<my_dtype>, params: TrackingParams, debug: bool) -> Array2<my_dtype> {
     if !array.is_standard_layout(){
         panic!("Array is not standard layout");
     }
     let axisiter = array.axis_iter(ndarray::Axis(0));
     let dims = array.shape();
-    let (res, res_dims) = execute_gpu(axisiter, &[dims[1] as u32, dims[2] as u32], params);
+    let (res, res_dims) = execute_gpu(axisiter, &[dims[1] as u32, dims[2] as u32], params, debug);
     let res = Array2::from_shape_vec(res_dims, res).unwrap();
     res
 }
