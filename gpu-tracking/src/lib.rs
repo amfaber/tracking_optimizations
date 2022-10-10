@@ -1,5 +1,4 @@
 #![allow(warnings)]
-use pyo3::prelude::*;
 pub mod decoderiter;
 pub mod execute_gpu;
 pub mod kernels;
@@ -7,9 +6,8 @@ pub mod into_slice;
 pub mod slice_wrapper;
 pub type my_dtype = f32;
 pub mod buffer_setup;
+pub mod linking;
 
-use numpy::ndarray::{ArrayD, ArrayViewD, Array2, Array3, ArrayBase};
-use numpy::{IntoPyArray, PyReadonlyArray3, PyArray2, PyArray3};
 use ndarray::prelude::*;
 use ndarray;
 use crate::{execute_gpu::{execute_ndarray, TrackingParams}};
@@ -20,13 +18,20 @@ macro_rules! not_implemented {
             panic!("{} is not implemented", stringify!($name));
         }
     };
-
+    
     ($name:ident, $($names:ident), +) => {
         not_implemented!($name);
         not_implemented!($($names), +);
     };
 }
 
+// #[cfg(feature = "python")]
+use pyo3::prelude::*;
+// #[cfg(feature = "python")]
+use numpy::{ndarray::{ArrayD, ArrayViewD, Array2, Array3, ArrayBase}, PyReadonlyArray2};
+// #[cfg(feature = "python")]
+use numpy::{IntoPyArray, PyReadonlyArray3, PyArray2, PyArray3};
+// #[cfg(feature = "python")]
 #[pymodule]
 fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
     
@@ -107,6 +112,18 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         arr.into_pyarray(py)
         // todo!()
         // res.into_pyarray(py)
+    }
+
+    #[pyfn(m)]
+    #[pyo3(name = "link")]
+    fn link_py<'py>(py: Python<'py>, pyarr: PyReadonlyArray2<my_dtype>,
+        search_range: my_dtype,
+        memory: Option<usize>) -> &'py PyArray2<my_dtype> {
+        let memory = memory.unwrap_or(0);
+        let array = pyarr.as_array();
+        let frame_iter = linking::FrameSubsetter::new(&array, 0, (2, 3));
+        let res = linking::link_all(frame_iter, search_range, memory);
+        res.into_pyarray(py)
     }
 
     Ok(())
