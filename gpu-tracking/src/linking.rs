@@ -1,24 +1,26 @@
 // #![allow(warnings)]
 use ndarray::{Array2, ArrayView2, s};
 use kd_tree;
-use bencher::black_box;
 use std::{collections::{HashMap, HashSet, VecDeque, hash_map::Entry}, default, iter::FromIterator};
-
 type float = f32;
+use typenum;
+use num_traits;
 
 pub struct FrameSubsetter<'a>{
     pub frame_col: usize,
-    pub array: &'a Array2<float>,
+    pub array: &'a ArrayView2<'a, float>,
+    pub positions: (usize, usize),
     idx: usize,
     cur_frame: float,
     // iter: ndarray::iter::Iter<'a, float, >,
 }
 
 impl FrameSubsetter<'_>{
-    pub fn new(array: &Array2<float>, frame_col: usize) -> FrameSubsetter{
+    pub fn new<'a>(array: &'a ArrayView2<'a, float>, frame_col: usize, positions: (usize, usize)) -> FrameSubsetter<'a>{
         FrameSubsetter{
             frame_col,
             array,
+            positions,
             idx: 0,
             cur_frame: 0.0,
         }
@@ -49,7 +51,7 @@ impl<'a> Iterator for FrameSubsetter<'a>{
                     return None;
                 }
             }
-            output.push(([self.array[[self.idx, 0]], self.array[[self.idx, 1]]], self.idx));
+            output.push(([self.array[[self.idx, self.positions.0]], self.array[[self.idx, self.positions.1]]], self.idx));
             self.idx += 1;
         }
     }
@@ -57,8 +59,6 @@ impl<'a> Iterator for FrameSubsetter<'a>{
 
 use kd_tree::{KdPoint, KdTree};
 use std::cmp::Ordering;
-use typenum;
-use num_traits;
 
 trait ReturnDistance<T, N>{
     fn within_radius_rd(&self, query: &impl KdPoint<Scalar = T::Scalar, Dim = N>,
@@ -337,7 +337,7 @@ pub fn link(
     
     (output, unused_sources)
 }
-pub fn link_all<T>(mut frame_iter: T, radius: float, memory: usize) -> Vec<(usize, [float; 2], i32)>
+pub fn link_all<T>(mut frame_iter: T, radius: float, memory: usize) -> Array2<f32>
     where T: Iterator<Item = Vec<([float; 2], usize)>>{
     let mut frame_iter = frame_iter.enumerate();
     let (i, mut prev) = frame_iter.next().unwrap();
@@ -396,15 +396,16 @@ pub fn link_all<T>(mut frame_iter: T, radius: float, memory: usize) -> Vec<(usiz
     .map(|(frame_idx, coords, part_id)| {
         match all_particles.entry(part_id){
             Entry::Occupied(entry) => {
-                (frame_idx, coords, *entry.get())
+                [frame_idx as f32, coords[0], coords[1], *entry.get() as f32]
             },
             Entry::Vacant(entry) => {
                 entry.insert(counter);
                 counter += 1;
-                (frame_idx, coords, counter - 1)
+                [frame_idx as f32, coords[0], coords[1], (counter - 1) as f32]
             }
         }
-    }).collect::<Vec<_>>();
+    }).flatten().collect::<Vec<_>>();
+    let results = ndarray::Array::from_shape_vec((results.len() / 4, 4), results).unwrap();
     results
 
 }
