@@ -33,7 +33,7 @@ fn main() -> anyhow::Result<()> {
     let (width, height) = decoder.dimensions().unwrap();
     let dims = [height, width];
     // // dbg!(dims);
-    let mut decoderiter = IterDecoder::from(decoder).take(1);
+    let mut decoderiter = IterDecoder::from(decoder);
     // let all_frames = decoderiter.collect::<Vec<_>>();
     // let all_views = all_frames.iter().map(|x| x.view()).collect::<Vec<_>>();
     // let arr = ndarray::stack(ndarray::Axis(0), &all_views).unwrap();
@@ -41,7 +41,8 @@ fn main() -> anyhow::Result<()> {
 
     let now = Instant::now();
     // let results = execute_ndarray(&arr.view(), TrackingParams::default(), true);
-    let (results, shape) = execute_gpu(&mut decoderiter, &dims, TrackingParams::default(), true);
+    let debug = false;
+    let (results, shape) = execute_gpu(&mut decoderiter, &dims, TrackingParams::default(), debug);
     let function_time = now.elapsed().as_millis() as f64 / 1000.;
     dbg!(function_time);
     

@@ -83,6 +83,19 @@ impl Kernel{
         kernel
     }
 
+    pub fn gauss_1d(sigma: my_dtype, size: u32) -> Self{
+        let mut data = Vec::with_capacity(size as usize);
+        let radius = size / 2;
+        for i in 0..size{
+            let x = i as my_dtype - radius as my_dtype;
+            let val = (-(x.powi(2)) / (2. * sigma.powi(2))).exp();
+            data.push(val);
+        }
+        let mut kernel = Self::new(data, [size, 1]);
+        kernel.normalize();
+        kernel
+    }
+
     pub fn rolling_average(size: [u32; 2]) -> Self{
         let data = vec![1. / (size[0] * size[1]) as my_dtype; (size[0] * size[1]) as usize];
         let size = size;

@@ -159,7 +159,8 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
     let common_header = include_str!("shaders/params.wgsl");
 
     let shaders = [
-        include_str!("shaders/preprocess.wgsl"),
+        // include_str!("shaders/preprocess.wgsl"),
+        include_str!("shaders/another_backup_preprocess.wgsl"),
         include_str!("shaders/centers.wgsl"),
         include_str!("shaders/walk.wgsl"),
     ];
@@ -197,12 +198,20 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
     
     let buffers = buffer_setup::setup_buffers(&tracking_params, &device, n_result_columns, size, dims);
 
-    let compute_pipelines = shaders.iter().map(|shader|{
+    let pipelines = [
+        // ("rows", &shaders[0]),
+        // ("finish", &shaders[0]),
+        ("main", &shaders[0]),
+        ("main", &shaders[1]),
+        ("main", &shaders[2]),
+    ];
+
+    let compute_pipelines = pipelines.iter().map(|(entrypoint, shader)|{
         device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: None,
         layout: None,
         module: shader,
-        entry_point: "main",
+        entry_point: &entrypoint,
         })
     }).collect::<Vec<_>>();
 
@@ -213,33 +222,46 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
     // let bind_group_layout = compute_pipeline.get_bind_group_layout(0);
 
     let bind_group_entries = [
-        vec![
-            &buffers.param_buffer,
-            &buffers.frame_buffer,
-            &buffers.composite_buffer,
-            // &buffers.constant_buffer,
-            &buffers.processed_buffer, 
+        // vec![
+        //     (0, &buffers.param_buffer),
+        //     (1, &buffers.frame_buffer),
+        //     (2, &buffers.gauss_1d_buffer),
+        //     (3, &buffers.centers_buffer),
+        //     // &buffers.processed_buffer, 
+        // ],
+        // vec![
+        //     (0, &buffers.param_buffer),
+        //     // (1, &buffers.frame_buffer),
+        //     (2, &buffers.gauss_1d_buffer),
+        //     (3, &buffers.centers_buffer),
+        //     (4, &buffers.processed_buffer), 
+        // ],
+        vec![ // another_backup_preprocess.wgsl
+            (0, &buffers.param_buffer),
+            (1, &buffers.frame_buffer),
+            (2, &buffers.composite_buffer),
+            (3, &buffers.processed_buffer), 
         ],
         vec![
-            &buffers.param_buffer,    
-            &buffers.circle_buffer, 
-            &buffers.processed_buffer, 
-            &buffers.centers_buffer,
-            &buffers.masses_buffer,
+            (0, &buffers.param_buffer),    
+            (1, &buffers.circle_buffer), 
+            (2, &buffers.processed_buffer), 
+            (3, &buffers.centers_buffer),
+            (4, &buffers.masses_buffer),
         ],
         vec![
-            &buffers.param_buffer,
-            &buffers.processed_buffer, 
-            &buffers.centers_buffer,
-            &buffers.masses_buffer,
-            &buffers.result_buffer,
+            (0, &buffers.param_buffer),
+            (1, &buffers.processed_buffer), 
+            (2, &buffers.centers_buffer),
+            (3, &buffers.masses_buffer),
+            (4, &buffers.result_buffer),
         ],
     ];
 
     let bind_group_entries = bind_group_entries
-        .iter().map(|group| group.iter().enumerate().map(|(i, &buffer)|
+        .iter().map(|group| group.iter().map(|(i, buffer)|
             wgpu::BindGroupEntry {
-            binding: i as u32,
+            binding: *i as u32,
             resource: buffer.as_entire_binding()}).collect::<Vec<_>>()
         )
         .collect::<Vec<_>>();

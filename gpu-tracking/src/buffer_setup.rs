@@ -16,6 +16,7 @@ pub struct GpuBuffers{
     pub staging_buffers: Vec<Buffer>,
     pub frame_buffer: Buffer,
     pub composite_buffer: Buffer,
+    pub gauss_1d_buffer: Buffer,
     pub processed_buffer: Buffer,
     pub centers_buffer: Buffer,
     pub circle_buffer: Buffer,
@@ -137,10 +138,19 @@ pub fn setup_buffers(tracking_params: &TrackingParams,
         })
     };
 
+    let gauss_1d_kernel = kernels::Kernel::gauss_1d(sigma, params.composite_dims[0]);
+    let gauss_1d_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: bytemuck::cast_slice(&gauss_1d_kernel.data),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+    });
+
+
     GpuBuffers{
         staging_buffers,
         frame_buffer,
         composite_buffer,
+        gauss_1d_buffer,
         processed_buffer,
         centers_buffer,
         circle_buffer,
