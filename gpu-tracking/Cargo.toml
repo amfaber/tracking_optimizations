@@ -18,8 +18,8 @@ image = "0.24.4"
 kd-tree = "*"
 ndarray = "0.15.6"
 ndarray-csv = "0.5.1"
-numpy = { version = "0.17.2", optional = false  }
-pyo3 = { version = "0.17.1", features = ["extension-module"], optional = false }
+numpy = { version = "0.17.2", optional = true  }
+pyo3 = { version = "0.17.1", features = ["extension-module"], optional = true }
 pollster = "0.2.5"
 rayon = "1.5.3"
 tiff = "0.7.3"

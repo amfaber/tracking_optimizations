@@ -42,15 +42,21 @@ fn main() -> anyhow::Result<()> {
     let now = Instant::now();
     // let results = execute_ndarray(&arr.view(), TrackingParams::default(), true);
     let debug = false;
-    let (results, shape) = execute_gpu(&mut decoderiter, &dims, TrackingParams::default(), debug);
+    let params = TrackingParams{
+        diameter: 9,
+        minmass: 600.,
+        separation: 10,
+        ..Default::default()
+    };
+    let (results, shape) = execute_gpu(&mut decoderiter, &dims, params, debug);
     let function_time = now.elapsed().as_millis() as f64 / 1000.;
     dbg!(function_time);
     
     
 
-    let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).open("test").unwrap();
-    let raw_bytes = unsafe{std::slice::from_raw_parts(results.as_ptr() as *const u8, results.len() * std::mem::size_of::<my_dtype>())};
-    file.write_all(raw_bytes).unwrap();
+    // let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).open("test").unwrap();
+    // let raw_bytes = unsafe{std::slice::from_raw_parts(results.as_ptr() as *const u8, results.len() * std::mem::size_of::<my_dtype>())};
+    // file.write_all(raw_bytes).unwrap();
 
     // let total = now_top.elapsed().as_millis() as f64 / 1000.;
     // dbg!(total);

@@ -16,7 +16,7 @@ use crate::{execute_gpu::{execute_ndarray, TrackingParams}};
 #[cfg(feature = "python")]
 use numpy::ndarray::{ArrayD, ArrayViewD, Array2, Array3, ArrayBase};
 #[cfg(feature = "python")]
-use numpy::{IntoPyArray, PyReadonlyArray3, PyArray2, PyArray3};
+use numpy::{IntoPyArray, PyReadonlyArray3, PyReadonlyArray2, PyArray2, PyArray3};
 #[cfg(feature = "python")]
 macro_rules! not_implemented {
     ($name:ident) => {
@@ -64,6 +64,7 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         preprocess: Option<bool>,
         max_iterations: Option<u32>,
         characterize: Option<bool>,
+        filter_close: Option<bool>,
         ) -> &'py PyArray2<my_dtype> {
         
         not_implemented!(maxsize, threshold, invert, percentile,
@@ -82,6 +83,7 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         let preprocess = preprocess.unwrap_or(true);
         let max_iterations = max_iterations.unwrap_or(10);
         let characterize = characterize.unwrap_or(false);
+        let filter_close = filter_close.unwrap_or(true);
 
         let params = TrackingParams {
             diameter,
@@ -97,6 +99,7 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
             preprocess,
             max_iterations,
             characterize,
+            filter_close
         }; 
         
         let array = pyarr.as_array();

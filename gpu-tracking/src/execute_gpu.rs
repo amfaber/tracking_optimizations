@@ -6,8 +6,10 @@ use ndarray::{ArrayBase, ViewRepr, Array2, ArrayView2, ArrayView3};
 use pollster::FutureExt;
 use std::{collections::VecDeque, time::Instant, io::{BufRead, Write}, fs};
 use wgpu::{util::DeviceExt, Buffer};
-use crate::{kernels, into_slice::IntoSlice, buffer_setup};
+use crate::{kernels, into_slice::IntoSlice, buffer_setup, linking::ReturnDistance};
 use std::collections::HashMap;
+use kd_tree;
+use rayon::prelude::*;
 
 type inner_output = f32;
 type output_type = Vec<inner_output>;
@@ -54,6 +56,7 @@ pub struct TrackingParams{
     pub preprocess: bool,
     pub max_iterations: u32,
     pub characterize: bool,
+    pub filter_close: bool,
 }
 
 impl Default for TrackingParams{
@@ -72,6 +75,7 @@ impl Default for TrackingParams{
             preprocess: true,
             max_iterations: 10,
             characterize: false,
+            filter_close: true,
         }
     }
 }
@@ -92,6 +96,8 @@ fn get_work(finished_staging_buffer: &Buffer,
     n_result_columns: u64,
     frame_index: usize,
     debug: bool,
+    separation: my_dtype,
+    filter: bool,
     ) -> () {
     let mut buffer_slice = finished_staging_buffer.slice(..);
     let (sender, receiver) = 
@@ -104,19 +110,91 @@ fn get_work(finished_staging_buffer: &Buffer,
     receiver.receive().block_on().unwrap();
     let data = buffer_slice.get_mapped_range();
     let dataf32 = bytemuck::cast_slice::<u8, f32>(&data);
-    // let mut result = Vec::new();
+    let mut positions = Vec::new();
+    let mut properties = Vec::new();
+    let mut idx = 0usize;
     match debug{
         false => {
             for i in 0..pic_size{
                 let mass = dataf32[i];
                 if mass != 0.0{
-                    output.push(frame_index as f32);
+                    positions.push(([dataf32[i+pic_size], dataf32[i+2*pic_size]], (idx, mass)));
+                    // properties.push(mass);
+                    for j in 3..n_result_columns as usize{
+                        properties.push(dataf32[i + j * pic_size]);
+                    }
+                    idx += 1;
+                }
+            }
+            if filter{
+                // let sep2 = separation.powi(2);
+                let tree = kd_tree::KdTree::build_by_ordered_float(positions);
+                let relevant_points = tree.iter().map(|query| {
+                    let positions = query.0;
+                    let (idx, mass) = query.1;
+                    let neighbors = tree.within_radius(query, separation);
+                    // dbg!(query);
+                    // dbg!(&neighbors);
+                    // let item = neighbor.item;
+                    // let neighbor_positions = item.0;
+                    // let (neighbor_idx, neighbor_mass) = item.1;
+                    let mut keep_point = true;
+                    for neighbor in neighbors{
+                        let (neighbor_idx, neighbor_mass) = neighbor.1;
+                        if neighbor_idx != idx{
+                            if mass < neighbor_mass{
+                                keep_point = false;
+                                break;
+                            } else if mass == neighbor_mass{
+                                if idx > neighbor_idx{
+                                    keep_point = false;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    // if neighbor.squared_distance < sep2{
+                    //     if mass < neighbor_mass{
+                    //         keep_point = false;
+                    //     } else if mass == neighbor_mass{
+                    //         if idx > neighbor_idx{
+                    //             keep_point = false;
+                    //         }
+                    //     }
+                    // }
+                    if keep_point{
+                        Some((idx, positions, mass))
+                    } else {
+                        // dbg!("here");
+                        None
+                    }
+                }).flatten()
+                .collect::<Vec<_>>();
+                // dbg!(relevant_points.len());
+                // dbg!(tree.len());
+                for point in relevant_points{
+                    let (idx, positions, mass) = point;
+                    output.push(frame_index as my_dtype);
                     output.push(mass);
-                    for j in 1..n_result_columns as usize{
-                        output.push(dataf32[i + j * pic_size]);
+                    output.push(positions[0]);
+                    output.push(positions[1]);
+                    for j in 0..n_result_columns as usize - 3{
+                        output.push(properties[idx * (n_result_columns as usize - 3) + j]);
+                    }
+                }
+            } else {
+                for point in positions{
+                    let (positions, (idx, mass)) = point;
+                    output.push(frame_index as my_dtype);
+                    output.push(mass);
+                    output.push(positions[0]);
+                    output.push(positions[1]);
+                    for j in 0..n_result_columns as usize - 3{
+                        output.push(properties[idx * (n_result_columns as usize - 3) + j]);
                     }
                 }
             }
+
         },
         true => {
             for i in 0..pic_size*2{
@@ -125,10 +203,15 @@ fn get_work(finished_staging_buffer: &Buffer,
         },
     }
     // let elapsed = now.elapsed().as_nanos() as inner_output / 1_000_000.;
-    // output.push(result);
+    // result.push(result);
     drop(data);
     finished_staging_buffer.unmap();
+
+
+    
 }
+
+
 
 
 pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
@@ -219,7 +302,6 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
         pipeline.get_bind_group_layout(0)
     }).collect::<Vec<_>>();
 
-    // let bind_group_layout = compute_pipeline.get_bind_group_layout(0);
 
     let bind_group_entries = [
         // vec![
@@ -345,7 +427,10 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
             n_result_columns,
             frame_index,
             debug,
+            tracking_params.separation as f32,
+            tracking_params.filter_close,
         );
+
 
         free_staging_buffers.push(finished_staging_buffer);
         old_submission = new_submission;
@@ -363,7 +448,11 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
         n_result_columns,
         frame_index,
         debug,
+        tracking_params.separation as f32,
+        tracking_params.filter_close,
     );
+
+
     let n_result_columns = n_result_columns as usize + 1;
     let shape = (output.len() / n_result_columns, n_result_columns);
     (output, shape)

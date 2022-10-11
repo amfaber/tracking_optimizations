@@ -1,4 +1,6 @@
 // #![allow(warnings)]
+use kd_tree::{KdPoint, KdTree};
+use std::cmp::Ordering;
 use ndarray::{Array2, ArrayView2, s};
 use kd_tree;
 use std::{collections::{HashMap, HashSet, VecDeque, hash_map::Entry}, default, iter::FromIterator};
@@ -57,10 +59,8 @@ impl<'a> Iterator for FrameSubsetter<'a>{
     }
 }
 
-use kd_tree::{KdPoint, KdTree};
-use std::cmp::Ordering;
 
-trait ReturnDistance<T, N>{
+pub trait ReturnDistance<T, N>{
     fn within_radius_rd(&self, query: &impl KdPoint<Scalar = T::Scalar, Dim = N>,
         radius: T::Scalar,
     ) -> Vec<(&T, T::Scalar)>
