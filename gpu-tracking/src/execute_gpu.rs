@@ -197,7 +197,7 @@ fn get_work(finished_staging_buffer: &Buffer,
 
         },
         true => {
-            for i in 0..pic_size*2{
+            for i in 0..pic_size*n_result_columns as usize{
                 output.push(dataf32[i]);
             }
         },
@@ -242,7 +242,7 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
     let common_header = include_str!("shaders/params.wgsl");
 
     let shaders = [
-        // include_str!("shaders/preprocess.wgsl"),
+        include_str!("shaders/preprocess.wgsl"),
         include_str!("shaders/another_backup_preprocess.wgsl"),
         include_str!("shaders/centers.wgsl"),
         include_str!("shaders/walk.wgsl"),
@@ -273,7 +273,7 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
     let pic_size = dims.iter().product::<u32>() as usize;
     let n_result_columns: u64 = match debug{
         false => 3,
-        true => 2,
+        true => 1,
     };
     let slice_size = pic_size * std::mem::size_of::<my_dtype>();
     let size = slice_size as wgpu::BufferAddress;
@@ -281,13 +281,21 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
     
     let buffers = buffer_setup::setup_buffers(&tracking_params, &device, n_result_columns, size, dims);
 
-    let pipelines = [
-        // ("rows", &shaders[0]),
-        // ("finish", &shaders[0]),
-        ("main", &shaders[0]),
-        ("main", &shaders[1]),
-        ("main", &shaders[2]),
-    ];
+    let pipelines = match debug{
+        false => vec![
+            // ("rows", &shaders[0]),
+            // ("finish", &shaders[0]),
+            ("main", &shaders[1]),
+            ("main", &shaders[2]),
+            ("main", &shaders[3]),
+        ],
+        true => vec![
+            ("rows", &shaders[0]),
+            ("finish", &shaders[0]),
+            // ("main", &shaders[2]),
+            // ("main", &shaders[3]),
+        ],
+    };
 
     let compute_pipelines = pipelines.iter().map(|(entrypoint, shader)|{
         device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -303,42 +311,58 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
     }).collect::<Vec<_>>();
 
 
-    let bind_group_entries = [
-        // vec![
-        //     (0, &buffers.param_buffer),
-        //     (1, &buffers.frame_buffer),
-        //     (2, &buffers.gauss_1d_buffer),
-        //     (3, &buffers.centers_buffer),
-        //     // &buffers.processed_buffer, 
-        // ],
-        // vec![
-        //     (0, &buffers.param_buffer),
-        //     // (1, &buffers.frame_buffer),
-        //     (2, &buffers.gauss_1d_buffer),
-        //     (3, &buffers.centers_buffer),
-        //     (4, &buffers.processed_buffer), 
-        // ],
-        vec![ // another_backup_preprocess.wgsl
-            (0, &buffers.param_buffer),
-            (1, &buffers.frame_buffer),
-            (2, &buffers.composite_buffer),
-            (3, &buffers.processed_buffer), 
+    let bind_group_entries = match debug{
+        false => vec![
+            vec![ // another_backup_preprocess.wgsl
+                (0, &buffers.param_buffer),
+                (1, &buffers.frame_buffer),
+                (2, &buffers.composite_buffer),
+                (3, &buffers.processed_buffer), 
+                ],
+            vec![
+                (0, &buffers.param_buffer),    
+                (1, &buffers.circle_buffer), 
+                (2, &buffers.processed_buffer), 
+                (3, &buffers.centers_buffer),
+                (4, &buffers.masses_buffer),
+            ],
+            vec![
+                (0, &buffers.param_buffer),
+                (1, &buffers.processed_buffer), 
+                (2, &buffers.centers_buffer),
+                (3, &buffers.masses_buffer),
+                (4, &buffers.result_buffer),
+            ],
         ],
-        vec![
-            (0, &buffers.param_buffer),    
-            (1, &buffers.circle_buffer), 
-            (2, &buffers.processed_buffer), 
-            (3, &buffers.centers_buffer),
-            (4, &buffers.masses_buffer),
+        true => vec![
+            vec![
+                (0, &buffers.param_buffer),
+                (1, &buffers.frame_buffer),
+                (2, &buffers.gauss_1d_buffer),
+                (3, &buffers.centers_buffer),
+            ],
+            vec![
+                (0, &buffers.param_buffer),
+                (2, &buffers.gauss_1d_buffer),
+                (4, &buffers.centers_buffer),
+                (5, &buffers.processed_buffer), 
+            ],
+            // vec![
+            //     (0, &buffers.param_buffer),    
+            //     (1, &buffers.circle_buffer), 
+            //     (2, &buffers.processed_buffer), 
+            //     (3, &buffers.centers_buffer),
+            //     (4, &buffers.masses_buffer),
+            // ],
+            // vec![
+            //     (0, &buffers.param_buffer),
+            //     (1, &buffers.processed_buffer), 
+            //     (2, &buffers.centers_buffer),
+            //     (3, &buffers.masses_buffer),
+            //     (4, &buffers.result_buffer),
+            // ],
         ],
-        vec![
-            (0, &buffers.param_buffer),
-            (1, &buffers.processed_buffer), 
-            (2, &buffers.centers_buffer),
-            (3, &buffers.masses_buffer),
-            (4, &buffers.result_buffer),
-        ],
-    ];
+    };
 
     let bind_group_entries = bind_group_entries
         .iter().map(|group| group.iter().map(|(i, buffer)|
@@ -373,7 +397,8 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
         });
         let output_buffer = match debug {
             false => &buffers.result_buffer,
-            true => &buffers.result_buffer,
+            // true => &buffers.result_buffer,
+            true => &buffers.processed_buffer,
         };
         encoder.copy_buffer_to_buffer(output_buffer, 0,
             staging_buffer, 0, n_result_columns * size);

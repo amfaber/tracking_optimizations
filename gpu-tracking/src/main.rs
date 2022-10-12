@@ -16,18 +16,16 @@ use clap::Parser;
 struct Args{
     // #[arg(short, long)]
     input: Option<String>,
+    #[arg(short, long)]
+    debug: Option<bool>,
 }
 
 
 fn main() -> anyhow::Result<()> {
     let args: Args = Args::parse();
     let now_top = Instant::now();
-    let path = match args.input{
-        Some(input) => input,
-        None => "../emily_tracking/sample_vids/s_20.tif".to_string()
-    };
-    // let path = r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\grey_lion.tiff";
-    // let path = r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\tester.tiff";
+    let path = args.input.unwrap_or("../emily_tracking/sample_vids/s_20.tif".to_string());
+    let debug = args.debug.unwrap_or(false);
     let file = fs::File::open(path).expect("didn't find the file");
     let mut decoder = Decoder::new(file).expect("Can't create decoder");
     let (width, height) = decoder.dimensions().unwrap();
@@ -41,12 +39,15 @@ fn main() -> anyhow::Result<()> {
 
     let now = Instant::now();
     // let results = execute_ndarray(&arr.view(), TrackingParams::default(), true);
-    let debug = false;
     let params = TrackingParams{
         diameter: 9,
         minmass: 600.,
         separation: 10,
         ..Default::default()
+    };
+    let mut decoderiter = match debug {
+        true => decoderiter.take(1),
+        false => decoderiter.take(usize::MAX)
     };
     let (results, shape) = execute_gpu(&mut decoderiter, &dims, params, debug);
     let function_time = now.elapsed().as_millis() as f64 / 1000.;
@@ -54,9 +55,9 @@ fn main() -> anyhow::Result<()> {
     
     
 
-    // let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).open("test").unwrap();
-    // let raw_bytes = unsafe{std::slice::from_raw_parts(results.as_ptr() as *const u8, results.len() * std::mem::size_of::<my_dtype>())};
-    // file.write_all(raw_bytes).unwrap();
+    let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).open("test").unwrap();
+    let raw_bytes = unsafe{std::slice::from_raw_parts(results.as_ptr() as *const u8, results.len() * std::mem::size_of::<my_dtype>())};
+    file.write_all(raw_bytes).unwrap();
 
     // let total = now_top.elapsed().as_millis() as f64 / 1000.;
     // dbg!(total);

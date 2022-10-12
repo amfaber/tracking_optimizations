@@ -23,6 +23,8 @@ pub struct GpuBuffers{
     pub masses_buffer: Buffer,
     pub result_buffer: Buffer,
     pub param_buffer: Buffer,
+    pub row_gauss: Buffer,
+    pub row_constant: Buffer,
 }
 
 fn gpuparams_from_tracking_params(params: TrackingParams, pic_dims: [u32; 2]) -> GpuParams {
@@ -145,6 +147,19 @@ pub fn setup_buffers(tracking_params: &TrackingParams,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
     });
 
+    let row_gauss = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+
+    let row_constant = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
 
     GpuBuffers{
         staging_buffers,
@@ -157,5 +172,7 @@ pub fn setup_buffers(tracking_params: &TrackingParams,
         masses_buffer,
         result_buffer,
         param_buffer,
+        row_gauss,
+        row_constant,
     }
 }

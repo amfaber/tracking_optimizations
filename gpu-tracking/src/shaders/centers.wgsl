@@ -49,7 +49,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   let idx = global_id.x * u32(params.pic_ncols) + global_id.y;
 
   let centerout = get_center(i32(global_id.x), i32(global_id.y),
-   params.circle_nrows, params.circle_ncols);
+  params.circle_nrows, params.circle_ncols);
   centers[idx] = vec2<f32>(centerout[0], centerout[1]);
   masses[idx] = centerout[2];
 }
