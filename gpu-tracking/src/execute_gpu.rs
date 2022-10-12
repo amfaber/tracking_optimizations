@@ -4,7 +4,7 @@ use futures_intrusive;
 type my_dtype = f32;
 use ndarray::{ArrayBase, ViewRepr, Array2, ArrayView2, ArrayView3};
 use pollster::FutureExt;
-use std::{collections::VecDeque, time::Instant, io::{BufRead, Write}, fs};
+use std::{collections::VecDeque, time::Instant, io::{BufRead, Write, Read}, fs::{self, File}};
 use wgpu::{util::DeviceExt, Buffer};
 use crate::{kernels, into_slice::IntoSlice, buffer_setup, linking::ReturnDistance};
 use std::collections::HashMap;
@@ -241,12 +241,26 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
     
     let common_header = include_str!("shaders/params.wgsl");
 
+    // let shaders = [
+    //     include_str!("shaders/preprocess.wgsl"),
+    //     include_str!("shaders/another_backup_preprocess.wgsl"),
+    //     include_str!("shaders/centers.wgsl"),
+    //     include_str!("shaders/walk.wgsl"),
+    // ];
+
     let shaders = [
-        include_str!("shaders/preprocess.wgsl"),
-        include_str!("shaders/another_backup_preprocess.wgsl"),
-        include_str!("shaders/centers.wgsl"),
-        include_str!("shaders/walk.wgsl"),
+        "src/shaders/preprocess.wgsl",
+        "src/shaders/another_backup_preprocess.wgsl",
+        "src/shaders/centers.wgsl",
+        "src/shaders/walk.wgsl",
     ];
+
+    let shaders = shaders.iter().map(|shader| {
+        let mut shader_file = File::open(shader).unwrap();
+        let mut shader_string = String::new();
+        shader_file.read_to_string(&mut shader_string).unwrap();
+        shader_string
+    }).collect::<Vec<_>>();
 
     let workgroup_size = [16, 16, 1];
     let workgroups: [u32; 2] = 
@@ -262,7 +276,7 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
     };
 
 
-    let shaders = shaders.iter().map(|&source|{
+    let shaders = shaders.iter().map(|source|{
         let shader_source = preprocess_source(source);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor{
             label: None,
@@ -344,8 +358,8 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
             vec![
                 (0, &buffers.param_buffer),
                 (2, &buffers.gauss_1d_buffer),
-                (4, &buffers.centers_buffer),
-                (5, &buffers.processed_buffer), 
+                (3, &buffers.centers_buffer),
+                (4, &buffers.processed_buffer), 
             ],
             // vec![
             //     (0, &buffers.param_buffer),    

@@ -10,10 +10,10 @@ var<storage, read> gauss1d: array<f32>;
 @group(0) @binding(3)
 var<storage, read_write> temp: array<vec2<f32>>;
 
-@group(0) @binding(4)
-var<storage, read> temp2: array<f32>;
+// @group(0) @binding(4)
+// var<storage, read> temp2: array<f32>;
 
-@group(0) @binding(5)
+@group(0) @binding(4)
 var<storage, read_write> processed_buffer: array<f32>;
 
 
@@ -56,13 +56,13 @@ fn finish(@builtin(global_invocation_id) global_id: vec3<u32>) {
   var pic_idx = pic_u * u_increment + v;
   let pic_size = i32(params.pic_nrows * params.pic_ncols);
   for (var i: i32 = 0; i < kernel_rows; i = i + 1) {
-    gauss_sum += gauss1d[i] * temp2[pic_idx];
-    constant_sum += temp2[pic_idx];
+    gauss_sum += gauss1d[i] * temp[pic_idx][0];
+    constant_sum += temp[pic_idx][1];
     pic_idx += u_increment;
   }
   
   let result = gauss_sum - constant_sum/f32(kernel_rows * kernel_cols);
   // processed_buffer[u * params.pic_ncols + v] = result;
-  processed_buffer[u * params.pic_ncols + v] = temp2[u * params.pic_ncols + v + pic_size];
+  processed_buffer[u * params.pic_ncols + v] = temp[u * params.pic_ncols + v][1];
 }
 
