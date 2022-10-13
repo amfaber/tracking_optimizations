@@ -206,8 +206,6 @@ fn get_work(finished_staging_buffer: &Buffer,
     // result.push(result);
     drop(data);
     finished_staging_buffer.unmap();
-
-
     
 }
 
@@ -248,19 +246,23 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
     //     include_str!("shaders/walk.wgsl"),
     // ];
 
-    let shaders = [
-        "src/shaders/preprocess.wgsl",
-        "src/shaders/another_backup_preprocess.wgsl",
-        "src/shaders/centers.wgsl",
-        "src/shaders/walk.wgsl",
-    ];
+    let shaders = HashMap::from([
+        // ("preprocess", "src/shaders/preprocess.wgsl"),
+        ("proprocess_backup", "src/shaders/another_backup_preprocess.wgsl"),
+        ("centers", "src/shaders/centers.wgsl"),
+        ("max_rows", "src/shaders/max_rows.wgsl"),
+        ("walk", "src/shaders/walk.wgsl"),
+        ("walk_cols", "src/shaders/walk_cols.wgsl"),
+        ("preprocess_rows", "src/shaders/preprocess_rows.wgsl"),
+        ("preprocess_cols", "src/shaders/preprocess_cols.wgsl"),
+    ]);
 
-    let shaders = shaders.iter().map(|shader| {
+    let shaders = shaders.iter().map(|(&name, shader)| {
         let mut shader_file = File::open(shader).unwrap();
         let mut shader_string = String::new();
         shader_file.read_to_string(&mut shader_string).unwrap();
-        shader_string
-    }).collect::<Vec<_>>();
+        (name, shader_string)
+    }).collect::<HashMap<_, _>>();
 
     let workgroup_size = [16, 16, 1];
     let workgroups: [u32; 2] = 
@@ -276,14 +278,14 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
     };
 
 
-    let shaders = shaders.iter().map(|source|{
+    let shaders = shaders.iter().map(|(&name, source)|{
         let shader_source = preprocess_source(source);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor{
             label: None,
             source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
-        shader
-    }).collect::<Vec<_>>();
+        (name, shader)
+    }).collect::<HashMap<_, _>>();
     let pic_size = dims.iter().product::<u32>() as usize;
     let n_result_columns: u64 = match debug{
         false => 3,
@@ -296,123 +298,135 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
     let buffers = buffer_setup::setup_buffers(&tracking_params, &device, n_result_columns, size, dims);
 
     let pipelines = match debug{
-        false => vec![
-            // ("rows", &shaders[0]),
-            // ("finish", &shaders[0]),
-            ("main", &shaders[1]),
-            ("main", &shaders[2]),
-            ("main", &shaders[3]),
-        ],
-        true => vec![
-            ("rows", &shaders[0]),
-            ("finish", &shaders[0]),
-            // ("main", &shaders[2]),
-            // ("main", &shaders[3]),
+        // false => vec![
+        //     // ("rows", &shaders[0]),
+        //     // ("finish", &shaders[0]),
+        //     ("preprocess", 0, &shaders["preprocess_backup"]),
+        //     ("centers", 0, &shaders["centers"]),
+        //     ("walk", 0, &shaders["walk"]),
+        // ],
+        _buf => vec![
+            ("pp_rows", 0, &shaders["preprocess_rows"]),
+            ("pp_cols", 0, &shaders["preprocess_cols"]),
+            ("centers", 0, &shaders["centers"]),
+            ("max_row", 0, &shaders["max_rows"]),
+            ("walk", 0, &shaders["walk_cols"]),
         ],
     };
 
-    let compute_pipelines = pipelines.iter().map(|(entrypoint, shader)|{
-        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+    let compute_pipelines = pipelines.iter().map(|(name, group, shader)|{
+        (*name, device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: None,
         layout: None,
         module: shader,
-        entry_point: &entrypoint,
-        })
-    }).collect::<Vec<_>>();
+        entry_point: "main",
+        }))
+    }).collect::<HashMap<_, _>>();
 
-    let bind_group_layouts = compute_pipelines.iter().map(|pipeline|{
-        pipeline.get_bind_group_layout(0)
-    }).collect::<Vec<_>>();
+    let bind_group_layouts = compute_pipelines.iter()
+    .zip(pipelines.iter())
+    .map(|((&name, pipeline), (entry, group, shader))|{
+        (name, (*group, pipeline.get_bind_group_layout(*group)))
+    }).collect::<HashMap<_, _>>();
 
 
     let bind_group_entries = match debug{
-        false => vec![
-            vec![ // another_backup_preprocess.wgsl
+        // false => HashMap::from([
+        //     ("preprocess", vec![ // another_backup_preprocess.wgsl
+        //         (0, &buffers.param_buffer),
+        //         (1, &buffers.frame_buffer),
+        //         (2, &buffers.composite_buffer),
+        //         (3, &buffers.processed_buffer), 
+        //         ]),
+        //     ("centers", vec![
+        //         (0, &buffers.param_buffer),    
+        //         (1, &buffers.circle_buffer), 
+        //         (2, &buffers.processed_buffer), 
+        //         (3, &buffers.centers_buffer),
+        //         (4, &buffers.masses_buffer),
+        //     ]),
+        //     ("walk", vec![
+        //         (0, &buffers.param_buffer),
+        //         (1, &buffers.processed_buffer), 
+        //         (2, &buffers.centers_buffer),
+        //         (3, &buffers.masses_buffer),
+        //         (4, &buffers.result_buffer),
+        //     ]),
+        // ]),
+        _ => HashMap::from([
+            ("pp_rows", vec![
                 (0, &buffers.param_buffer),
                 (1, &buffers.frame_buffer),
-                (2, &buffers.composite_buffer),
+                (2, &buffers.gauss_1d_buffer),
+                (3, &buffers.centers_buffer),
+            ]),
+            ("pp_cols", vec![
+                (0, &buffers.param_buffer),
+                (1, &buffers.gauss_1d_buffer),
+                (2, &buffers.centers_buffer),
                 (3, &buffers.processed_buffer), 
-                ],
-            vec![
+            ]),
+            ("centers", vec![
                 (0, &buffers.param_buffer),    
                 (1, &buffers.circle_buffer), 
                 (2, &buffers.processed_buffer), 
                 (3, &buffers.centers_buffer),
                 (4, &buffers.masses_buffer),
-            ],
-            vec![
+            ]),
+            ("max_row", vec![
                 (0, &buffers.param_buffer),
                 (1, &buffers.processed_buffer), 
-                (2, &buffers.centers_buffer),
-                (3, &buffers.masses_buffer),
-                (4, &buffers.result_buffer),
-            ],
-        ],
-        true => vec![
-            vec![
+                (2, &buffers.max_rows),
+            ]),
+            ("walk", vec![
                 (0, &buffers.param_buffer),
-                (1, &buffers.frame_buffer),
-                (2, &buffers.gauss_1d_buffer),
+                (1, &buffers.processed_buffer), 
+                (2, &buffers.max_rows),
                 (3, &buffers.centers_buffer),
-            ],
-            vec![
-                (0, &buffers.param_buffer),
-                (2, &buffers.gauss_1d_buffer),
-                (3, &buffers.centers_buffer),
-                (4, &buffers.processed_buffer), 
-            ],
-            // vec![
-            //     (0, &buffers.param_buffer),    
-            //     (1, &buffers.circle_buffer), 
-            //     (2, &buffers.processed_buffer), 
-            //     (3, &buffers.centers_buffer),
-            //     (4, &buffers.masses_buffer),
-            // ],
-            // vec![
-            //     (0, &buffers.param_buffer),
-            //     (1, &buffers.processed_buffer), 
-            //     (2, &buffers.centers_buffer),
-            //     (3, &buffers.masses_buffer),
-            //     (4, &buffers.result_buffer),
-            // ],
-        ],
+                (4, &buffers.masses_buffer),
+                (5, &buffers.result_buffer),
+            ]),
+        ])
     };
 
     let bind_group_entries = bind_group_entries
-        .iter().map(|group| group.iter().map(|(i, buffer)|
+        .iter().map(|(&name, group)| (name, group.iter().map(|(i, buffer)|
             wgpu::BindGroupEntry {
             binding: *i as u32,
-            resource: buffer.as_entire_binding()}).collect::<Vec<_>>()
+            resource: buffer.as_entire_binding()}).collect::<Vec<_>>())
         )
-        .collect::<Vec<_>>();
+        .collect::<HashMap<_, _>>();
     
     
-    let bind_groups = bind_group_layouts.iter().zip(bind_group_entries.iter())
-        .map(|(layout, entries)|
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let bind_groups = bind_group_layouts.iter()//.zip(bind_group_entries.iter())
+        .map(|(&name, (group, layout))|{
+        let entries = &bind_group_entries[name];
+        (name, (*group, device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout,
             entries: &entries[..],
-        })).collect::<Vec<_>>();
+        })))}
+        ).collect::<HashMap<_, _>>();
     
     let submit_work = |staging_buffer: &wgpu::Buffer, frame: &[my_dtype]| {
         queue.write_buffer(&staging_buffer, 0, bytemuck::cast_slice(frame));
         let mut encoder =
         device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
+        
         encoder.copy_buffer_to_buffer(staging_buffer, 0,
             &buffers.frame_buffer, 0, size);
-        
-        compute_pipelines.iter().zip(bind_groups.iter()).for_each(|(pipeline, bind_group)|{
+            
+        compute_pipelines.iter().for_each(|(&name, pipeline)|{
+            let (group, bind_group) = &bind_groups[&name];
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None });
-            cpass.set_bind_group(0, bind_group, &[]);
+            cpass.set_bind_group(*group, bind_group, &[]);
             cpass.set_pipeline(pipeline);
             cpass.dispatch_workgroups(workgroups[0], workgroups[1], 1);
         });
         let output_buffer = match debug {
             false => &buffers.result_buffer,
-            // true => &buffers.result_buffer,
-            true => &buffers.processed_buffer,
+        // true => &buffers.result_buffer,
+            true => &buffers.max_rows,
         };
         encoder.copy_buffer_to_buffer(output_buffer, 0,
             staging_buffer, 0, n_result_columns * size);
@@ -435,13 +449,10 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
     let frame = frames.next().unwrap();
     let frame_slice = frame.into_slice();
 
-    let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).open("inp").unwrap();
-    let raw_bytes = unsafe{std::slice::from_raw_parts(frame_slice.as_ptr() as *const u8, frame_slice.len() * std::mem::size_of::<my_dtype>())};
-    file.write_all(raw_bytes).unwrap();
-    
     let mut frame_index = 0;
     let staging_buffer = free_staging_buffers.pop().unwrap();
     in_use_staging_buffers.push_back(staging_buffer);
+    // device.start_capture();
     let mut old_submission = submit_work(staging_buffer, frame.into_slice());
 
     // let stdin = std::io::stdin();
