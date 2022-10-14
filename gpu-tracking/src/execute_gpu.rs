@@ -114,7 +114,7 @@ fn get_work(finished_staging_buffer: &Buffer,
     let mut properties = Vec::new();
     let mut idx = 0usize;
     match debug{
-        false => {
+        _ => {
             for i in 0..pic_size{
                 let mass = dataf32[i];
                 if mass != 0.0{
@@ -250,6 +250,7 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
         // ("preprocess", "src/shaders/preprocess.wgsl"),
         ("proprocess_backup", "src/shaders/another_backup_preprocess.wgsl"),
         ("centers", "src/shaders/centers.wgsl"),
+        ("centers_outside_parens", "src/shaders/centers.wgsl"),
         ("max_rows", "src/shaders/max_rows.wgsl"),
         ("walk", "src/shaders/walk.wgsl"),
         ("walk_cols", "src/shaders/walk_cols.wgsl"),
@@ -288,7 +289,7 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
     }).collect::<HashMap<_, _>>();
     let pic_size = dims.iter().product::<u32>() as usize;
     let n_result_columns: u64 = match debug{
-        false => 3,
+        _ => 3,
         true => 1,
     };
     let slice_size = pic_size * std::mem::size_of::<my_dtype>();
@@ -305,10 +306,11 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
         //     ("centers", 0, &shaders["centers"]),
         //     ("walk", 0, &shaders["walk"]),
         // ],
-        _buf => vec![
+        _ => vec![
             ("pp_rows", 0, &shaders["preprocess_rows"]),
             ("pp_cols", 0, &shaders["preprocess_cols"]),
-            ("centers", 0, &shaders["centers"]),
+            // ("centers", 0, &shaders["centers"]),
+            ("centers", 0, &shaders["centers_outside_parens"]),
             ("max_row", 0, &shaders["max_rows"]),
             ("walk", 0, &shaders["walk_cols"]),
         ],
@@ -321,12 +323,12 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
         module: shader,
         entry_point: "main",
         }))
-    }).collect::<HashMap<_, _>>();
+    }).collect::<Vec<_>>();
 
     let bind_group_layouts = compute_pipelines.iter()
     .zip(pipelines.iter())
-    .map(|((&name, pipeline), (entry, group, shader))|{
-        (name, (*group, pipeline.get_bind_group_layout(*group)))
+    .map(|((name, pipeline), (entry, group, shader))|{
+        (*name, (*group, pipeline.get_bind_group_layout(*group)))
     }).collect::<HashMap<_, _>>();
 
 
@@ -416,8 +418,8 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
         encoder.copy_buffer_to_buffer(staging_buffer, 0,
             &buffers.frame_buffer, 0, size);
             
-        compute_pipelines.iter().for_each(|(&name, pipeline)|{
-            let (group, bind_group) = &bind_groups[&name];
+        compute_pipelines.iter().for_each(|(name, pipeline)|{
+            let (group, bind_group) = &bind_groups[name];
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None });
             cpass.set_bind_group(*group, bind_group, &[]);
             cpass.set_pipeline(pipeline);
@@ -425,17 +427,17 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
         });
         let output_buffer = match debug {
             false => &buffers.result_buffer,
-        // true => &buffers.result_buffer,
-            true => &buffers.max_rows,
+            // true => &buffers.result_buffer,
+            true => &buffers.result_buffer,
         };
         encoder.copy_buffer_to_buffer(output_buffer, 0,
             staging_buffer, 0, n_result_columns * size);
         
-        let index = queue.submit(Some(encoder.finish()));
-        let mut encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         encoder.clear_buffer(&buffers.result_buffer, 0, None);
-        queue.submit(Some(encoder.finish()));
+        let index = queue.submit(Some(encoder.finish()));
+        // let mut encoder =
+        //     device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        // queue.submit(Some(encoder.finish()));
         index
     };
     
