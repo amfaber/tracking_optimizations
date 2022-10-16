@@ -18,17 +18,19 @@ var<storage, read_write> results: array<f32>;
 
 fn is_max(u: i32, v: i32, kernel_rows: i32, kernel_cols: i32) -> bool {
   let center = processed_buffer[u * params.pic_ncols + v];
-  let pic_u = u - i32(f32(kernel_rows) / 2. - 0.5);
-  var pic_idx = pic_u * params.pic_ncols + v;
-
+  var pic_u = u - i32(f32(kernel_rows) / 2. - 0.5);
+  var pic_idx: i32;
   for (var i: i32 = 0; i < kernel_rows; i = i + 1) {
     // if (pic_u < 0 || pic_u >= params.pic_nrows || pic_v < 0 || pic_v >= params.pic_ncols) {
     //   return false;
     // }
-    if (max_rows[pic_idx] > center) {
-      return false;
+    if (pic_u >= 0 && pic_u < params.pic_nrows){
+      pic_idx = pic_u * params.pic_ncols + v;
+      if (max_rows[pic_idx] > center) {
+        return false;
+      }
     }
-    pic_idx += params.pic_ncols;
+    pic_u += 1;
   }
   return true;
 }

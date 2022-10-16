@@ -1,19 +1,19 @@
 #![allow(warnings)]
 use futures;
-use futures_intrusive;
+use futures_intrusive::{self, channel};
 type my_dtype = f32;
 use ndarray::{ArrayBase, ViewRepr, Array2, ArrayView2, ArrayView3};
 use pollster::FutureExt;
-use std::{collections::VecDeque, time::Instant, io::{BufRead, Write, Read}, fs::{self, File}};
+use std::{collections::VecDeque, time::Instant, io::{BufRead, Write, Read}, fs::{self, File}, sync::mpsc::Sender};
 use wgpu::{util::DeviceExt, Buffer};
-use crate::{kernels, into_slice::IntoSlice, buffer_setup, linking::ReturnDistance};
+use crate::{kernels, into_slice::IntoSlice, buffer_setup, linking::{ReturnDistance, Linker}};
 use std::collections::HashMap;
 use kd_tree;
 use rayon::prelude::*;
 
 type inner_output = f32;
 type output_type = Vec<inner_output>;
-
+type channel_type = Option<(Vec<([f32; 2], (usize, f32))>, Vec<f32>, usize)>;
 // #[derive(Clone, Copy)]
 // pub struct GpuParams{
 //     pub pic_dims: [u32; 2],
@@ -57,6 +57,8 @@ pub struct TrackingParams{
     pub max_iterations: u32,
     pub characterize: bool,
     pub filter_close: bool,
+    pub search_range: Option<my_dtype>,
+    pub memory: Option<usize>,
 }
 
 impl Default for TrackingParams{
@@ -76,6 +78,8 @@ impl Default for TrackingParams{
             max_iterations: 10,
             characterize: false,
             filter_close: true,
+            search_range: None,
+            memory: None,
         }
     }
 }
@@ -91,13 +95,14 @@ fn get_work(finished_staging_buffer: &Buffer,
     device: &wgpu::Device,
     old_submission: wgpu::SubmissionIndex,
     wait_gpu_time: &mut f32,
-    output: &mut Vec<inner_output>,
+    // output: &mut Vec<inner_output>,
     pic_size: usize,
     n_result_columns: u64,
     frame_index: usize,
     debug: bool,
     separation: my_dtype,
     filter: bool,
+    job_sender: &Sender<channel_type>,
     ) -> () {
     let mut buffer_slice = finished_staging_buffer.slice(..);
     let (sender, receiver) = 
@@ -114,102 +119,116 @@ fn get_work(finished_staging_buffer: &Buffer,
     let mut properties = Vec::new();
     let mut idx = 0usize;
     match debug{
-        _ => {
+        false => {
             for i in 0..pic_size{
                 let mass = dataf32[i];
                 if mass != 0.0{
                     positions.push(([dataf32[i+pic_size], dataf32[i+2*pic_size]], (idx, mass)));
-                    // properties.push(mass);
                     for j in 3..n_result_columns as usize{
                         properties.push(dataf32[i + j * pic_size]);
                     }
                     idx += 1;
                 }
             }
-            if filter{
-                // let sep2 = separation.powi(2);
-                let tree = kd_tree::KdTree::build_by_ordered_float(positions);
-                let relevant_points = tree.iter().map(|query| {
-                    let positions = query.0;
-                    let (idx, mass) = query.1;
-                    let neighbors = tree.within_radius(query, separation);
-                    // dbg!(query);
-                    // dbg!(&neighbors);
-                    // let item = neighbor.item;
-                    // let neighbor_positions = item.0;
-                    // let (neighbor_idx, neighbor_mass) = item.1;
-                    let mut keep_point = true;
-                    for neighbor in neighbors{
-                        let (neighbor_idx, neighbor_mass) = neighbor.1;
-                        if neighbor_idx != idx{
-                            if mass < neighbor_mass{
-                                keep_point = false;
-                                break;
-                            } else if mass == neighbor_mass{
-                                if idx > neighbor_idx{
-                                    keep_point = false;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    // if neighbor.squared_distance < sep2{
-                    //     if mass < neighbor_mass{
-                    //         keep_point = false;
-                    //     } else if mass == neighbor_mass{
-                    //         if idx > neighbor_idx{
-                    //             keep_point = false;
-                    //         }
-                    //     }
-                    // }
-                    if keep_point{
-                        Some((idx, positions, mass))
-                    } else {
-                        // dbg!("here");
-                        None
-                    }
-                }).flatten()
-                .collect::<Vec<_>>();
-                // dbg!(relevant_points.len());
-                // dbg!(tree.len());
-                for point in relevant_points{
-                    let (idx, positions, mass) = point;
-                    output.push(frame_index as my_dtype);
-                    output.push(mass);
-                    output.push(positions[0]);
-                    output.push(positions[1]);
-                    for j in 0..n_result_columns as usize - 3{
-                        output.push(properties[idx * (n_result_columns as usize - 3) + j]);
-                    }
-                }
-            } else {
-                for point in positions{
-                    let (positions, (idx, mass)) = point;
-                    output.push(frame_index as my_dtype);
-                    output.push(mass);
-                    output.push(positions[0]);
-                    output.push(positions[1]);
-                    for j in 0..n_result_columns as usize - 3{
-                        output.push(properties[idx * (n_result_columns as usize - 3) + j]);
-                    }
-                }
-            }
-
         },
         true => {
             for i in 0..pic_size*n_result_columns as usize{
-                output.push(dataf32[i]);
+                properties.push(dataf32[i]);
             }
         },
     }
-    // let elapsed = now.elapsed().as_nanos() as inner_output / 1_000_000.;
-    // result.push(result);
+    job_sender.send(Some((positions, properties, frame_index))).unwrap();
+    // post_process(positions, properties, output, frame_index, n_result_columns, filter, separation, debug);
     drop(data);
     finished_staging_buffer.unmap();
     
 }
+// (Vec<([f32; 2], (usize, f32))>,Vec<f32>,Vec<my_dtype>,usize,u64,bool,my_dtype,bool)
+fn post_process(
+    positions: Vec<([f32; 2], (usize, f32))>,
+    properties: Vec<f32>,
+    output: &mut Vec<my_dtype>,
+    frame_index: usize,
+    n_result_columns: u64,
+    filter: bool,
+    separation: my_dtype,
+    debug: bool,
+    linker: Option<&mut Linker>,
+    ) -> () {
+    if debug{
+        output.extend(properties);
+        return;
+    }
+    if filter{
+        let tree = kd_tree::KdTree::build_by_ordered_float(positions);
+        let relevant_points = tree.iter().map(|query| {
+            let positions = query.0;
+            let (idx, mass) = query.1;
+            let neighbors = tree.within_radius(query, separation);
+            let mut keep_point = true;
+            for neighbor in neighbors{
+                let (neighbor_idx, neighbor_mass) = neighbor.1;
+                if neighbor_idx != idx{
+                    if mass < neighbor_mass{
+                        keep_point = false;
+                        break;
+                    } else if mass == neighbor_mass{
+                        if idx > neighbor_idx{
+                            keep_point = false;
+                            break;
+                        }
+                    }
+                }
+            }
+            if keep_point{
+                Some((positions, (idx, mass)))
+            } else {
+                None
+            }
+        }).flatten()
+        .collect::<Vec<_>>();
+        match linker{
+            Some(linker) =>{
+                let part_ids = linker.advance(&relevant_points);
+                for (point, part_id) in relevant_points.iter().zip(part_ids.iter()){
+                    let (positions, (idx, mass)) = point;
+                    output.push(frame_index as my_dtype);
+                    output.push(*mass);
+                    output.push(positions[0]);
+                    output.push(positions[1]);
+                    output.push(*part_id as my_dtype);
+                    for j in 0..n_result_columns as usize - 3{
+                        output.push(properties[*idx * (n_result_columns as usize - 3) + j]);
+                    }
+                }
+            },
+            None => {
+                for point in relevant_points.iter(){
+                    let (positions, (idx, mass)) = point;
+                    output.push(frame_index as my_dtype);
+                    output.push(*mass);
+                    output.push(positions[0]);
+                    output.push(positions[1]);
+                    for j in 0..n_result_columns as usize - 3{
+                        output.push(properties[*idx * (n_result_columns as usize - 3) + j]);
+                    }
+                }
+            }
+        }
 
-
+    } else {
+        for point in positions{
+            let (positions, (idx, mass)) = point;
+            output.push(frame_index as my_dtype);
+            output.push(mass);
+            output.push(positions[0]);
+            output.push(positions[1]);
+            for j in 0..n_result_columns as usize - 3{
+                output.push(properties[idx * (n_result_columns as usize - 3) + j]);
+            }
+        }
+    }
+}
 
 
 pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
@@ -239,18 +258,11 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
     
     let common_header = include_str!("shaders/params.wgsl");
 
-    // let shaders = [
-    //     include_str!("shaders/preprocess.wgsl"),
-    //     include_str!("shaders/another_backup_preprocess.wgsl"),
-    //     include_str!("shaders/centers.wgsl"),
-    //     include_str!("shaders/walk.wgsl"),
-    // ];
 
     let shaders = HashMap::from([
-        // ("preprocess", "src/shaders/preprocess.wgsl"),
         ("proprocess_backup", "src/shaders/another_backup_preprocess.wgsl"),
         ("centers", "src/shaders/centers.wgsl"),
-        ("centers_outside_parens", "src/shaders/centers.wgsl"),
+        ("centers_outside_parens", "src/shaders/centers_outside_parens.wgsl"),
         ("max_rows", "src/shaders/max_rows.wgsl"),
         ("walk", "src/shaders/walk.wgsl"),
         ("walk_cols", "src/shaders/walk_cols.wgsl"),
@@ -289,8 +301,8 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
     }).collect::<HashMap<_, _>>();
     let pic_size = dims.iter().product::<u32>() as usize;
     let n_result_columns: u64 = match debug{
-        _ => 3,
-        true => 1,
+        false => 3,
+        true => 2,
     };
     let slice_size = pic_size * std::mem::size_of::<my_dtype>();
     let size = slice_size as wgpu::BufferAddress;
@@ -428,23 +440,47 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
         let output_buffer = match debug {
             false => &buffers.result_buffer,
             // true => &buffers.result_buffer,
-            true => &buffers.result_buffer,
+            true => &buffers.centers_buffer,
         };
         encoder.copy_buffer_to_buffer(output_buffer, 0,
             staging_buffer, 0, n_result_columns * size);
         
-        encoder.clear_buffer(&buffers.result_buffer, 0, None);
         let index = queue.submit(Some(encoder.finish()));
-        // let mut encoder =
-        //     device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        // queue.submit(Some(encoder.finish()));
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.clear_buffer(&buffers.result_buffer, 0, None);
+        queue.submit(Some(encoder.finish()));
         index
     };
     
     let mut wait_gpu_time = 0.;
 
-    // let mut output: Vec<Vec<f32>> = Vec::new();
-    let mut output: output_type = Vec::new();
+    let (inp_sender,
+        inp_receiver) = std::sync::mpsc::channel::<channel_type>();
+    let handle = {
+        let filter = tracking_params.filter_close;
+        let separation = tracking_params.separation as my_dtype;
+        // let mut linker = match tracking_params.search_range{
+        //     Some(range) => Some(Linker::new(range, tracking_params.memory.unwrap_or(0))),
+        //     None => None,
+        // };
+        let mut linker = tracking_params.search_range
+        .map(|range| Linker::new(range, tracking_params.memory.unwrap_or(0)));
+
+        std::thread::spawn(move ||{
+            let mut output: output_type = Vec::new();
+            loop{
+                match inp_receiver.recv().unwrap(){
+                    None => break,
+                    Some(inp) => {
+                        let (positions, properties, frame_index) = inp;
+                        post_process(positions, properties, &mut output, frame_index, n_result_columns, filter, separation, debug, linker.as_mut())
+                    }
+                }
+            }
+            output
+        })
+    };
     
     let mut free_staging_buffers = buffers.staging_buffers.iter().collect::<Vec<&wgpu::Buffer>>();
     let mut in_use_staging_buffers = VecDeque::new();
@@ -474,13 +510,14 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
             &device, 
             old_submission, 
             &mut wait_gpu_time,
-            &mut output,
+            // &mut output,
             pic_size,
             n_result_columns,
             frame_index,
             debug,
             tracking_params.separation as f32,
             tracking_params.filter_close,
+            &inp_sender,
         );
 
 
@@ -488,24 +525,28 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
         old_submission = new_submission;
         frame_index += 1;
     }
-    dbg!(wait_gpu_time);
     let finished_staging_buffer = in_use_staging_buffers.pop_front().unwrap();
     
     get_work(finished_staging_buffer,
         &device, 
         old_submission, 
         &mut wait_gpu_time,
-        &mut output,
+        // &mut output,
         pic_size,
         n_result_columns,
         frame_index,
         debug,
         tracking_params.separation as f32,
         tracking_params.filter_close,
+        &inp_sender,
     );
+    dbg!(wait_gpu_time);
+    inp_sender.send(None);
+    let output = handle.join().unwrap();
 
+    let mut n_result_columns = n_result_columns as usize + 1;
+    if tracking_params.search_range.is_some(){ n_result_columns += 1; }
 
-    let n_result_columns = n_result_columns as usize + 1;
     let shape = (output.len() / n_result_columns, n_result_columns);
     (output, shape)
 }

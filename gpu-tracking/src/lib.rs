@@ -16,7 +16,7 @@ use crate::{execute_gpu::{execute_ndarray, TrackingParams}};
 #[cfg(feature = "python")]
 use numpy::ndarray::{ArrayD, ArrayViewD, Array2, Array3, ArrayBase};
 #[cfg(feature = "python")]
-use numpy::{IntoPyArray, PyReadonlyArray3, PyReadonlyArray2, PyArray2, PyArray3};
+use numpy::{IntoPyArray, PyReadonlyArray3, PyReadonlyArray2, PyArray2, PyArray3, PyArray1};
 #[cfg(feature = "python")]
 macro_rules! not_implemented {
     ($name:ident) => {
@@ -65,6 +65,8 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         max_iterations: Option<u32>,
         characterize: Option<bool>,
         filter_close: Option<bool>,
+        search_range: Option<my_dtype>,
+        memory: Option<usize>,
         ) -> &'py PyArray2<my_dtype> {
         
         not_implemented!(maxsize, threshold, invert, percentile,
@@ -85,6 +87,8 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         let characterize = characterize.unwrap_or(false);
         let filter_close = filter_close.unwrap_or(true);
 
+        // neither search_range nor memory are unwrapped as linking is optional on the Rust side.
+
         let params = TrackingParams {
             diameter,
             minmass,
@@ -99,7 +103,9 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
             preprocess,
             max_iterations,
             characterize,
-            filter_close
+            filter_close,
+            search_range,
+            memory,
         }; 
         
         let array = pyarr.as_array();
@@ -121,11 +127,11 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
     #[pyo3(name = "link")]
     fn link_py<'py>(py: Python<'py>, pyarr: PyReadonlyArray2<my_dtype>,
         search_range: my_dtype,
-        memory: Option<usize>) -> &'py PyArray2<my_dtype> {
+        memory: Option<usize>) -> &'py PyArray1<usize> {
         let memory = memory.unwrap_or(0);
         let array = pyarr.as_array();
         let frame_iter = linking::FrameSubsetter::new(&array, 0, (2, 3));
-        let res = linking::link_all(frame_iter, search_range, memory);
+        let res = linking::linker_all(frame_iter, search_range, memory);
         res.into_pyarray(py)
     }
 

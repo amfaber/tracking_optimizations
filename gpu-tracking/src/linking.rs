@@ -1,11 +1,11 @@
 // #![allow(warnings)]
-use kd_tree::{KdPoint, KdTree};
+use kd_tree::{KdPoint, KdTree, KdIndexTree};
 use std::cmp::Ordering;
 use ndarray::{Array2, ArrayView2, s};
 use kd_tree;
 use std::{collections::{HashMap, HashSet, VecDeque, hash_map::Entry}, default, iter::FromIterator};
 type float = f32;
-use typenum;
+use typenum::{self, U2};
 use num_traits;
 
 pub struct FrameSubsetter<'a>{
@@ -31,7 +31,7 @@ impl FrameSubsetter<'_>{
 
 impl<'a> Iterator for FrameSubsetter<'a>{
     // type Item = ArrayView2<'a, float>;
-    type Item = Vec<([float; 2], usize)>; 
+    type Item = Vec<([float; 2])>; 
     fn next(&mut self) -> Option<Self::Item> {
         let prev_idx = self.idx;
         let mut output = Vec::new();
@@ -53,23 +53,57 @@ impl<'a> Iterator for FrameSubsetter<'a>{
                     return None;
                 }
             }
-            output.push(([self.array[[self.idx, self.positions.0]], self.array[[self.idx, self.positions.1]]], self.idx));
+            output.push(([self.array[[self.idx, self.positions.0]], self.array[[self.idx, self.positions.1]]]));
             self.idx += 1;
         }
     }
 }
 
 
-pub trait ReturnDistance<T, N>{
+pub trait ReturnDistance<T, N, R>{
     fn within_radius_rd(&self, query: &impl KdPoint<Scalar = T::Scalar, Dim = N>,
         radius: T::Scalar,
-    ) -> Vec<(&T, T::Scalar)>
+    ) -> Vec<(&R, T::Scalar)>
     where
         T: KdPoint<Dim = N>;
     
 }
 
-impl<T: KdPoint, N: typenum::marker_traits::Unsigned> ReturnDistance<T, N> for KdTree<T>{
+impl<'a, T: KdPoint, N: typenum::marker_traits::Unsigned> ReturnDistance<T, N, usize> for KdIndexTree<'a, T>{
+    fn within_radius_rd(&self, query: &impl KdPoint<Scalar = T::Scalar, Dim = N>,
+        radius: T::Scalar,
+    ) -> Vec<(&usize, <T as KdPoint>::Scalar)>
+    where
+        T: KdPoint<Dim = N>,
+        {
+            let r2 = radius * radius;
+            let mut results = self.within_by_cmp(|item, k| {
+                let coord = item.at(k);
+                if coord < query.at(k) - radius {
+                    Ordering::Less
+                } else if coord > query.at(k) + radius {
+                    Ordering::Greater
+                } else {
+                    Ordering::Equal
+                }
+            });
+            let results = results.into_iter().filter_map(|item| {
+                let mut distance = <T::Scalar as num_traits::Zero>::zero();
+                for k in 0..N::to_usize() {
+                    let diff = self.item(*item).at(k) - query.at(k);
+                    distance += diff * diff;
+                }
+                match distance < r2{
+                    true => Some((item, distance)),
+                    false => None,
+                }
+            }).collect::<Vec<_>>();
+            // todo!()
+            results
+        }
+}
+
+impl<T: KdPoint, N: typenum::marker_traits::Unsigned> ReturnDistance<T, N, T> for KdTree<T>{
     fn within_radius_rd(&self, query: &impl KdPoint<Scalar = T::Scalar, Dim = N>,
         radius: T::Scalar,
     ) -> Vec<(&T, T::Scalar)>
@@ -100,6 +134,7 @@ impl<T: KdPoint, N: typenum::marker_traits::Unsigned> ReturnDistance<T, N> for K
             }).collect::<Vec<_>>();
             // todo!()
             results
+            // todo!()
         }
 }
 
@@ -158,25 +193,114 @@ impl<T> std::ops::Index<usize> for ReuseVecofVec<T>{
     }
 }
 
+pub struct Linker{
+    pub search_range: float,
+    pub memory: usize,
+    pub prev: Vec<([float; 2], usize)>,
+    pub prev_N: usize,
+    pub src_to_dest: ReuseVecofVec<(usize, float)>,
+    pub dest_to_src: ReuseVecofVec<(usize, float)>,
+    pub visited: [Vec<bool>; 2],
+    pub memory_vec: Option<VecDeque<Vec<([float; 2],usize)>>>,
+    pub frame_idx: usize,
+    pub part_idx: usize,
+}
 
-pub fn link(
-    src: Vec<([float; 2], usize)>,
-    dest: Vec<([float; 2], usize)>,
+impl Linker{
+    pub fn new(search_range: float, memory: usize) -> Linker{
+        let mem_init: Option<VecDeque<Vec<([f32; 2],usize)>>> = if memory > 0{
+            let mut init = VecDeque::new();
+            (0..memory).for_each(|_| init.push_back(Vec::new()));
+            Some(init)
+        } else{
+            None
+        };
+
+        Linker{
+            search_range,
+            memory,
+            prev: Vec::new(),
+            prev_N: 0,
+            src_to_dest: ReuseVecofVec::new(),
+            dest_to_src: ReuseVecofVec::new(),
+            visited: [Vec::new(), Vec::new()],
+            memory_vec: mem_init,
+            frame_idx: 0,
+            part_idx: 0,
+        }
+    }
+
+    pub fn advance<T: KdPoint<Scalar = float, Dim = U2>>(&mut self, frame: &[T]) 
+            -> Vec<usize> {
+        // if self.prev.is_none(){
+        //     self.prev = Some(frame.clone());
+        //     self.prev_N = Some(frame.len());
+        //     let output = frame.iter()
+        //     .map(|(pos, ident)| (self.frame_idx, *pos, *ident)).collect::<Vec<_>>();
+        //     return output;
+        // }
+        let N = frame.len();
+        let memory_start_idx = match self.memory_vec{
+            Some(ref memvec) =>{
+                let mut memset: HashSet<_> = HashSet::from_iter(self.prev.iter().map(|ele| ele.1));
+                for entry in memvec.iter().flatten(){
+                    match memset.contains(&(*entry).1){
+                        true => {},
+                        false => {
+                            self.prev.push(*entry);
+                            memset.insert(entry.1);
+                        },
+                    }
+                }
+                Some(self.prev_N)
+            }
+            None => None,
+        };
+        let (result, memory) = 
+            link(&self.prev,
+                &frame,
+                &mut self.src_to_dest,
+                &mut self.dest_to_src,
+                &mut self.visited,
+                memory_start_idx,
+                self.search_range,
+                &mut self.part_idx,
+        );
+        self.prev = frame.iter().zip(result.iter()).map(|(a, b)| ([a.at(0), a.at(1)], *b)).collect::<Vec<_>>();
+        // self.prev = result.clone();
+        match self.memory_vec{
+            Some(ref mut memvec) => {
+                memvec.push_back(memory);
+                memvec.pop_front();
+            }
+            None => {},
+        }
+        self.prev_N = N;
+        result
+    }
+
+}
+
+
+pub fn link<T: KdPoint<Scalar = float, Dim = U2>>(
+    src: &Vec<([float; 2], usize)>,
+    dest: &[T],
     src_to_dest: &mut ReuseVecofVec<(usize, float)>,
     dest_to_src: &mut ReuseVecofVec<(usize, float)>,
     visited: &mut [Vec<bool>; 2],
     memory_start_idx: Option<usize>,
     radius: float,
-    ) -> (Vec<([float; 2], usize)>, Vec<([float; 2], usize)>){
+    counter: &mut usize,
+    ) -> (Vec<usize>, Vec<([float; 2], usize)>){
     
-    let dest_0_idx = dest.iter().enumerate().map(|(i, ele)| (ele.0, i)).collect::<Vec<_>>();
+    // let dest_0_idx = dest.enumerate().map(|(i, ele)| (ele, i)).collect::<Vec<_>>();
 
-    let tree = kd_tree::KdTree::build_by_ordered_float(dest_0_idx);
+    let tree = kd_tree::KdIndexTree::build_by_ordered_float(dest);
     let dest_points_near_source = src.iter().map(|point| tree.within_radius_rd(point, radius));
     // let mut source: Vec<Vec<(usize, float)>> = vec![Vec::new(); src.len()];
     // let mut dest: Vec<Vec<(usize, float)>> = vec![Vec::new(); tree.len()];
     src_to_dest.set_size(src.len());
-    dest_to_src.set_size(tree.len());
+    dest_to_src.set_size(dest.len());
     src_to_dest.clear();
     dest_to_src.clear();
 
@@ -184,8 +308,8 @@ pub fn link(
 
     for (source, dest_points) in dest_points_near_source.enumerate(){
         for dest in dest_points{
-            src_to_dest.push_to(source, (dest.0.1, dest.1));
-            dest_to_src.push_to(dest.0.1, (source, dest.1));
+            src_to_dest.push_to(source, (*dest.0, dest.1));
+            dest_to_src.push_to(*dest.0, (source, dest.1));
         }
     }
     #[inline]
@@ -224,8 +348,8 @@ pub fn link(
         }
     }
 
-    if tree.len() > visited[1].len(){
-        for _ in visited[1].len()..tree.len(){
+    if dest.len() > visited[1].len(){
+        for _ in visited[1].len()..dest.len(){
             visited[1].push(false);
         }
     }
@@ -239,9 +363,9 @@ pub fn link(
     }
     
     let mut paths = Vec::new();
-    let mut output = vec![0usize; tree.len()];
+    let mut output = vec![None; dest.len()];
     // let mut debug = 637usize;
-    for i in 0..tree.len(){
+    for i in 0..dest.len(){
         // if dest[i].1 == debug{
         //     debug = i;
         // }
@@ -249,10 +373,9 @@ pub fn link(
         recurse(&src_to_dest, &dest_to_src, (i, 1), visited, &mut path);
         if path[1].len() == 1{
             if path[0].len() == 0{
-                output[i] = dest[path[1][0]].1;
-                // continue;
+
             } else if path[0].len() == 1{
-                output[i] = src[path[0][0]].1;
+                output[i] = Some(src[path[0][0]].1);
                 // continue;
             }
             else{
@@ -263,21 +386,22 @@ pub fn link(
             paths.push(path);
         }
     }
-
+    #[inline]
     fn recurse2(progress: usize,
         path: &[Vec<usize>; 2],
         score: &mut float,
         best: &mut float,
         used: &mut HashMap<usize, usize>,
-        output: &mut Vec<usize>,
+        output: &mut Vec<Option<usize>>,
         dest_to_src: &ReuseVecofVec<(usize, float)>,
         default_score: float,
         sources: &Vec<([float; 2], usize)>,
-        destinations: &Vec<([float; 2], usize)>,
+        nulls: &mut HashSet<usize>,
+        // destinations: &Vec<([float; 2], T)>,
         ){
         let current_dest = path[1][progress];
         let dest_to_src_with_null = dest_to_src[current_dest].iter()
-            .map(|ele| (sources[ele.0].1, ele.1)).chain(std::iter::once((destinations[current_dest].1, default_score)));
+            .map(|ele| (Some(sources[ele.0].1), ele.1)).chain(std::iter::once((None, default_score)));
         // let mut score = score_ref;
         for src in dest_to_src_with_null{
             if *score > *best{
@@ -286,23 +410,41 @@ pub fn link(
             }
             *score += src.1;
             let src_ident = src.0;
-            if used.contains_key(&src_ident){
-                *score -= src.1;
-                continue;
+            match src_ident{
+                Some(src_ident) => {
+                    if used.contains_key(&src_ident){
+                        *score -= src.1;
+                        continue;
+                    }
+                    used.insert(src_ident, current_dest);
+                },
+                None => {
+                    nulls.insert(current_dest);
+                },
             }
-            used.insert(src_ident, current_dest);
+
             if progress == path[1].len() - 1{
                 if *score < *best{
                     *best = *score;
                     for (key, val) in used.iter(){
                         // assert_eq!(output[*val], -1);
-                        output[*val] = *key;
+                        output[*val] = Some(*key);
+                    }
+                    for val in nulls.iter(){
+                        output[*val] = None;
                     }
                 }
             } else {
-                recurse2(progress + 1, path, score, best, used, output, dest_to_src, default_score, sources, destinations);
+                recurse2(progress + 1, path, score, best, used, output, dest_to_src, default_score, sources, nulls);
             }
-            used.remove(&src_ident);
+            match src_ident{
+                Some(src_ident) => {
+                    used.remove(&src_ident);
+                },
+                None => {
+                    nulls.remove(&current_dest);
+                },
+            }
             *score -= src.1;
         }
         ()
@@ -317,11 +459,20 @@ pub fn link(
         //     }
         // }
         let mut used = HashMap::new();
+        let mut nulls = HashSet::new();
         let score = &mut 0.0;
-        let best = &mut f32::MAX;
+        let best = &mut f32::INFINITY;
         recurse2(0, &path, score, best, &mut used, &mut output,
-            dest_to_src, radius * radius, &src, &dest)
+            dest_to_src, radius * radius, &src, &mut nulls)
     }
+
+    let output = output.into_iter().map(|ele| match ele{ Some(val) => val, None => { let old = *counter; *counter += 1; old } }).collect::<Vec<_>>();
+    // for entry in output.iter_mut(){
+    //     if entry.is_none(){
+    //         *entry = Some(*counter);
+    //         *counter += 1;
+    //     }
+    // }
 
     // let output: Vec<_> = output.iter().map(|ele| *ele as usize).collect();
     let unused_sources = match memory_start_idx{
@@ -332,23 +483,27 @@ pub fn link(
         None => Vec::new(),
     };
 
-    let output = output.iter().zip(dest.iter())
-    .map(|(a, b)| (b.0, *a as usize)).collect::<Vec<_>>();
+    // let output = output.iter().zip(dest)
+    // .map(|(a, b)| (b, a.unwrap())).collect::<Vec<_>>();
     
+    // (output, unused_sources)
     (output, unused_sources)
 }
-pub fn link_all<T>(mut frame_iter: T, radius: float, memory: usize) -> Array2<f32>
-    where T: Iterator<Item = Vec<([float; 2], usize)>>{
+
+pub fn link_all<T>(mut frame_iter: T, radius: float, memory: usize) -> Vec<usize>
+    where T: Iterator<Item = Vec<([float; 2])>>{
     let mut frame_iter = frame_iter.enumerate();
-    let (i, mut prev) = frame_iter.next().unwrap();
-    let mut prev_N = prev.len();
+    let mut prev: Vec<([float; 2], usize)> = Vec::new();
+    // let (i, mut prev) = frame_iter.next().unwrap();
+    let mut prev_N = 0;
     let mut src_to_dest = ReuseVecofVec::new();
     let mut dest_to_src = ReuseVecofVec::new();
     let mut visited = [Vec::new(), Vec::new()];
     let mut memory_vec: VecDeque<Vec<([f32; 2],usize)>> = VecDeque::new();
     (0..memory).for_each(|_| memory_vec.push_back(Vec::new()));
     let mut results = Vec::new();
-    results.extend(prev.iter().map(|(a, b)| (i, *a, *b)));
+    // results.extend(prev.iter().map(|(a, b)| (i, *a, *b)));
+    let mut total_tracks = 0;
 
     for (i, frame) in frame_iter{
         // let new_prev = frame.clone();
@@ -372,16 +527,17 @@ pub fn link_all<T>(mut frame_iter: T, radius: float, memory: usize) -> Array2<f3
         };
         // dbg!(prev.len());
         let (result, memory) = 
-            link(prev,
-                frame,
+            link(&prev,
+                &frame,
                 &mut src_to_dest,
                 &mut dest_to_src,
                 &mut visited,
                 memory_start_idx,
                 radius,
+                &mut total_tracks,
         );
-        prev = result.clone();
-        results.extend(result.into_iter().map(|(a, b)| (i, a, b)));
+        prev = frame.iter().zip(result.iter()).map(|(a, b)| (*a, *b)).collect::<Vec<_>>();
+        results.extend(result.into_iter());
         memory_vec.push_front(memory);
         memory_vec.pop_back();
         prev_N = N;
@@ -390,22 +546,34 @@ pub fn link_all<T>(mut frame_iter: T, radius: float, memory: usize) -> Array2<f3
         // break;
     }
     // dbg!(results);
-    let mut all_particles = HashMap::new();
-    let mut counter = 0;
-    let results = results.into_iter()
-    .map(|(frame_idx, coords, part_id)| {
-        match all_particles.entry(part_id){
-            Entry::Occupied(entry) => {
-                [frame_idx as f32, coords[0], coords[1], *entry.get() as f32]
-            },
-            Entry::Vacant(entry) => {
-                entry.insert(counter);
-                counter += 1;
-                [frame_idx as f32, coords[0], coords[1], (counter - 1) as f32]
-            }
-        }
-    }).flatten().collect::<Vec<_>>();
-    let results = ndarray::Array::from_shape_vec((results.len() / 4, 4), results).unwrap();
+    // let mut all_particles = HashMap::new();
+    // let mut counter = 0;
+    // let results = results.into_iter()
+    // .map(|(frame_idx, coords, part_id)| {
+    //     match all_particles.entry(part_id){
+    //         Entry::Occupied(entry) => {
+    //             [frame_idx as f32, coords[0], coords[1], *entry.get() as f32]
+    //         },
+    //         Entry::Vacant(entry) => {
+    //             entry.insert(counter);
+    //             counter += 1;
+    //             [frame_idx as f32, coords[0], coords[1], (counter - 1) as f32]
+    //         }
+    //     }
+    // }).flatten().collect::<Vec<_>>();
+    // let results = ndarray::Array::from_shape_vec((results.len() / 4, 4), results).unwrap();
     results
 
+}
+
+pub fn linker_all(frame_iter: impl Iterator<Item = Vec<([float; 2])>>, radius: float, memory: usize) -> Vec<usize>{
+
+    let mut linker = Linker::new(radius, memory);
+    let mut results = Vec::new();
+    for frame in frame_iter{
+        let result = linker.advance(&frame);
+        results.extend(result.into_iter());
+    }
+    results
+    // link_all(frame_iter, radius, memory)
 }

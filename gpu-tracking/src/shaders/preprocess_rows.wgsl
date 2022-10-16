@@ -22,13 +22,27 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   var constant_sum = 0.0;
   let kernel_rows = params.composite_ncols;
   let kernel_cols = params.composite_nrows;
-  let pic_v = v - kernel_cols / 2;
-  var pic_idx = u * params.pic_ncols + pic_v;
-  for (var j: i32 = 0; j < kernel_cols; j = j + 1) {
-    gauss_sum += gauss1d[j] * picture[pic_idx];
+  let start_v = v - kernel_cols / 2;
+  var pic_v: i32;
+  var pic_idx: i32;
+  var do_gauss: bool;
+  for (var i: i32 = 0; i < kernel_rows; i = i + 1) {
+    pic_v = start_v + i;
+    do_gauss = true;
+    if (pic_v < 0){
+        pic_v = -pic_v + -1;
+        do_gauss = false;
+      }
+    else if (pic_v >= i32(params.pic_ncols)){
+        pic_v = 2 * i32(params.pic_ncols) - pic_v - 1;
+        do_gauss = false;
+      }
+    pic_idx = u * params.pic_ncols + pic_v;
+    if (do_gauss){
+      gauss_sum += gauss1d[i] * picture[pic_idx];
+    }
     constant_sum += picture[pic_idx];
-    pic_idx += 1;
   }
-  
+
   temp[u * params.pic_ncols + v] = vec2(gauss_sum, constant_sum);
 }

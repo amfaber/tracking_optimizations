@@ -18,6 +18,8 @@ struct Args{
     input: Option<String>,
     #[arg(short, long)]
     debug: Option<bool>,
+    #[arg(short, long)]
+    filter: Option<bool>,
 }
 
 
@@ -26,6 +28,7 @@ fn main() -> anyhow::Result<()> {
     let now_top = Instant::now();
     let path = args.input.unwrap_or("../emily_tracking/sample_vids/s_20.tif".to_string());
     let debug = args.debug.unwrap_or(false);
+    let filter = args.filter.unwrap_or(true);
     let file = fs::File::open(path).expect("didn't find the file");
     let mut decoder = Decoder::new(file).expect("Can't create decoder");
     let (width, height) = decoder.dimensions().unwrap();
@@ -43,6 +46,8 @@ fn main() -> anyhow::Result<()> {
         diameter: 9,
         minmass: 600.,
         separation: 10,
+        filter_close: filter,
+        search_range: Some(9.),
         ..Default::default()
     };
     let mut decoderiter = match debug {
@@ -54,10 +59,11 @@ fn main() -> anyhow::Result<()> {
     dbg!(function_time);
     
     
-
-    let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).open("test").unwrap();
-    let raw_bytes = unsafe{std::slice::from_raw_parts(results.as_ptr() as *const u8, results.len() * std::mem::size_of::<my_dtype>())};
-    file.write_all(raw_bytes).unwrap();
+    if debug{
+        let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).open("test").unwrap();
+        let raw_bytes = unsafe{std::slice::from_raw_parts(results.as_ptr() as *const u8, results.len() * std::mem::size_of::<my_dtype>())};
+        file.write_all(raw_bytes).unwrap();
+    }
 
     // let total = now_top.elapsed().as_millis() as f64 / 1000.;
     // dbg!(total);

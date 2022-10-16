@@ -14,14 +14,15 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>){
   let kernel_rows = params.dilation_nrows;
   let kernel_cols = params.dilation_ncols;
   let center = processed_buffer[u * params.pic_ncols + v];
-  let pic_v = v - i32(f32(kernel_cols) / 2. - 0.5);
-  var pic_idx = u * params.pic_ncols + pic_v;
+  var pic_v = v - i32(f32(kernel_cols) / 2. - 0.5);
+  var pic_idx: i32;
   var maximum = center;
   for (var j: i32 = 0; j < kernel_cols; j = j + 1) {
-    if (processed_buffer[pic_idx] > maximum) {
-        maximum = processed_buffer[pic_idx];
+    if (pic_v >= 0 && pic_v < params.pic_ncols) {
+      pic_idx = u * params.pic_ncols + pic_v;
+      maximum = max(maximum, processed_buffer[pic_idx]);
     }
-    pic_idx += 1;
+    pic_v += 1;
   }
   max_rows[u * params.pic_ncols + v] = maximum;
 }
