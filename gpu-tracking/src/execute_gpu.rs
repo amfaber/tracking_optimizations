@@ -251,6 +251,7 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
 
     let mut desc = wgpu::DeviceDescriptor::default();
     desc.features = wgpu::Features::MAPPABLE_PRIMARY_BUFFERS;
+    desc.limits.max_compute_invocations_per_workgroup = 1024;
     let (device, queue) = adapter
     .request_device(&desc, None)
     .block_on().unwrap();
@@ -277,7 +278,7 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
         (name, shader_string)
     }).collect::<HashMap<_, _>>();
 
-    let workgroup_size = [16, 16, 1];
+    let workgroup_size = [32, 32, 1];
     let workgroups: [u32; 2] = 
         dims.iter().zip(workgroup_size)
         .map(|(&x, size)| (x + size - 1) / size).collect::<Vec<u32>>().try_into().unwrap();
