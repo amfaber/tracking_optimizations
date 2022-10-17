@@ -525,10 +525,13 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
 
         std::thread::spawn(move ||{
             let mut output: output_type = Vec::new();
+            let mut thread_sleep = 0.;
             loop{
+                let now = std::time::Instant::now();
                 match inp_receiver.recv().unwrap(){
                     None => break,
                     Some(inp) => {
+                        thread_sleep += now.elapsed().as_nanos() as f64 / 1e9;
                         let (positions, properties,
                             frame_index, neighborhoods) = inp;
                         
@@ -537,6 +540,7 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
                     }
                 }
             }
+            dbg!(thread_sleep);
             output
         })
     };
