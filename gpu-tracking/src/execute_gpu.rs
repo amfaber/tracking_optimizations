@@ -2,7 +2,7 @@
 use futures;
 use futures_intrusive::{self, channel};
 type my_dtype = f32;
-use ndarray::{ArrayBase, ViewRepr, Array2, ArrayView2, ArrayView3};
+use ndarray::{ArrayBase, ViewRepr, Array2, ArrayView2, ArrayView3, Axis, Array1};
 use pollster::FutureExt;
 use std::{collections::VecDeque, time::Instant, io::{BufRead, Write, Read}, fs::{self, File}, sync::mpsc::Sender};
 use wgpu::{util::DeviceExt, Buffer};
@@ -106,6 +106,7 @@ fn get_work(finished_staging_buffer: &Buffer,
     filter: bool,
     job_sender: &Sender<channel_type>,
     tracking_params: TrackingParams,
+    circle_inds: &Vec<i32>,
     ) -> () {
     let mut buffer_slice = finished_staging_buffer.slice(..);
     let (sender, receiver) = 
@@ -140,11 +141,15 @@ fn get_work(finished_staging_buffer: &Buffer,
                     positions.push(([dataf32[i+pic_size], dataf32[i+2*pic_size]], (idx, mass)));
 
                     if tracking_params.cpu_processed{
-                        for x in -radius..radius+1{
-                            for y in -radius..radius+1{
-                                let curidx = i + (x * dims[1] + y) as usize + processed_offset * pic_size;
-                                neighborhoods.as_mut().unwrap().push(dataf32[curidx]);
-                            }
+                        // for x in -radius..radius+1{
+                        //     for y in -radius..radius+1{
+                        //         let curidx = i + (x * dims[1] + y) as usize + processed_offset * pic_size;
+                        //         neighborhoods.as_mut().unwrap().push(dataf32[curidx]);
+                        //     }
+                        // }
+                        for ind in circle_inds{
+                            let curidx = i + (*ind as usize) + processed_offset * pic_size;
+                            neighborhoods.as_mut().unwrap().push(dataf32[curidx]);
                         }
                     }
                     else{
@@ -180,6 +185,9 @@ fn post_process(
     debug: bool,
     linker: Option<&mut Linker>,
     neighborhoods: Option<Vec<f32>>,
+    neighborhood_size: usize,
+    kernels: &Option<(Array2<f32>, Array2<f32>, Array2<f32>)>,
+    middle_most: usize,
     ) -> () {
     if debug{
         output.extend(properties.unwrap());
@@ -214,7 +222,28 @@ fn post_process(
         }
     }).flatten().collect::<Vec<_>>();
 
-    let neighborhoods = neighborhoods.map(|vec| ndarray::Array::from_shape_vec((N, 9, 9), vec).unwrap());
+    let cpu_properties = match neighborhoods{
+        Some(neighborhoods) => {
+            let neighborhoods = ndarray::Array::from_shape_vec((N, neighborhood_size), neighborhoods).unwrap();
+            let (r2_kernel, sin_kernel, cos_kernel) = kernels.as_ref().unwrap();
+            let Rg = (&neighborhoods * r2_kernel).sum_axis(Axis(1));
+            let sin = (&neighborhoods * sin_kernel).sum_axis(Axis(1)).mapv(|x| x.powi(2));
+            let cos = (&neighborhoods * cos_kernel).sum_axis(Axis(1)).mapv(|x| x.powi(2));
+            let ecc = (sin + cos).mapv(|x| x.sqrt());
+            let middle_most = neighborhoods.axis_iter(Axis(1)).map(|x| x[middle_most]).collect::<Array1<_>>();
+            let signal = neighborhoods.map_axis(Axis(1), |x|
+                x.iter().max_by(|&&a, &b| {
+                    (a).partial_cmp(b).unwrap()
+                }).cloned().unwrap());
+            Some((Rg, ecc, middle_most, signal))
+        // );
+            // dbg!((neighborhoods*r2_kernel).shpe());
+
+        },
+        None => {None},
+    };
+    // let neighborhoods = neighborhoods
+    // .map(|vec| ndarray::Array::from_shape_vec((N, neighborhood_size), vec).unwrap());
     // dbg!(neighborhoods);
 
     match linker{
@@ -227,6 +256,16 @@ fn post_process(
                 output.push(positions[0]);
                 output.push(positions[1]);
                 output.push(*part_id as my_dtype);
+
+                match cpu_properties{
+                    Some((ref Rg, ref ecc, ref middle_most, ref signal)) => {
+                        output.push((Rg[*idx] / mass).sqrt());
+                        output.push(ecc[*idx] / (mass - middle_most[*idx]));
+                        output.push(signal[*idx]);
+                    },
+                    None => {}
+                }
+
                 match properties{
                     Some(ref properties) => {
                         for j in 0..result_read_depth as usize - 3{
@@ -244,6 +283,16 @@ fn post_process(
                 output.push(*mass);
                 output.push(positions[0]);
                 output.push(positions[1]);
+
+                match cpu_properties{
+                    Some((ref Rg, ref ecc, ref middle_most, ref signal)) => {
+                        output.push((Rg[*idx] / mass).sqrt());
+                        output.push(ecc[*idx] / (mass - middle_most[*idx]));
+                        output.push(signal[*idx]);
+                    },
+                    None => {}
+                }
+
                 match properties{
                     Some(ref properties) => {
                         for j in 0..result_read_depth as usize - 3{
@@ -509,21 +558,28 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
         index
     };
     
+    let (circle_inds, middle_most) = kernels::circle_inds(tracking_params.diameter as i32 / 2, [dims[0] as i32, 1]);
     let mut wait_gpu_time = 0.;
 
     let (inp_sender,
         inp_receiver) = std::sync::mpsc::channel::<channel_type>();
+
     let handle = {
         let filter = tracking_params.filter_close;
         let separation = tracking_params.separation as my_dtype;
-        // let mut linker = match tracking_params.search_range{
-        //     Some(range) => Some(Linker::new(range, tracking_params.memory.unwrap_or(0))),
-        //     None => None,
-        // };
+        let neighborhood_size = circle_inds.len();
+        let radius = tracking_params.diameter as i32 / 2;
         let mut linker = tracking_params.search_range
         .map(|range| Linker::new(range, tracking_params.memory.unwrap_or(0)));
 
-        std::thread::spawn(move ||{
+        std::thread::Builder::new().name("post_processor".to_string()).spawn(move ||{
+            let kernels = Some(
+                (
+                    ndarray::Array::from_shape_vec((1, neighborhood_size), kernels::r2_in_circle(radius)).unwrap(),
+                    ndarray::Array::from_shape_vec((1, neighborhood_size), kernels::sin_in_circle(radius)).unwrap(),
+                    ndarray::Array::from_shape_vec((1, neighborhood_size), kernels::cos_in_circle(radius)).unwrap(),
+                )
+            );
             let mut output: output_type = Vec::new();
             let mut thread_sleep = 0.;
             loop{
@@ -536,13 +592,14 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
                             frame_index, neighborhoods) = inp;
                         
                         post_process(positions, properties, &mut output, frame_index,
-                            result_read_depth, filter, separation, debug, linker.as_mut(), neighborhoods);
+                            result_read_depth, filter, separation, debug, linker.as_mut(),
+                            neighborhoods, neighborhood_size, &kernels, middle_most);
                     }
                 }
             }
             dbg!(thread_sleep);
             output
-        })
+        }).unwrap()
     };
     
     let mut free_staging_buffers = buffers.staging_buffers.iter().collect::<Vec<&wgpu::Buffer>>();
@@ -582,6 +639,7 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
             tracking_params.filter_close,
             &inp_sender,
             tracking_params,
+            &circle_inds,
         );
 
 
@@ -604,6 +662,7 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
         tracking_params.filter_close,
         &inp_sender,
         tracking_params,
+        &circle_inds,
     );
     dbg!(wait_gpu_time);
     inp_sender.send(None);

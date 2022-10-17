@@ -584,6 +584,7 @@ dependencies = [
  "ndarray-csv",
  "num-traits",
  "numpy",
+ "ordered-float",
  "pollster",
  "pyo3",
  "rayon",

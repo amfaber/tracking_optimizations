@@ -131,6 +131,57 @@ impl Kernel{
     }
 }
 
+pub fn circle_inds(radius: i32, strides: [i32; 2]) -> (Vec<i32>, usize){
+    let mut inds = Vec::new();
+    let mut middle_most = -1;
+    for i in -radius..radius+1{
+        for j in -radius..radius+1{
+            if i.pow(2) + j.pow(2) <= radius.pow(2){
+                inds.push(i * strides[0] + j * strides[1]);
+            }
+            if i == 0 && j == 0{
+                middle_most = inds.len() as i32 - 1;
+            }
+        }
+    }
+    (inds, middle_most as usize)
+}
 
+pub fn r2_in_circle(radius: i32) -> Vec<my_dtype>{
+    let mut output = Vec::new();
+    for x in -radius..radius+1{
+        for y in -radius..radius+1{
+            let r2 = x.pow(2) + y.pow(2);
+            if r2 <= radius.pow(2){
+                output.push(r2 as my_dtype);
+            }
+        }
+    }
+    output
+}
 
-// pub fn gaussian(sigma: )
+pub fn sin_in_circle(radius: i32) -> Vec<my_dtype>{
+    let mut output = Vec::new();
+    for x in -radius..radius+1{
+        for y in -radius..radius+1{
+            let r2 = x.pow(2) + y.pow(2);
+            if r2 <= radius.pow(2){
+                output.push((2.*(y as my_dtype).atan2(x as my_dtype)).sin());
+            }
+        }
+    }
+    output
+}
+
+pub fn cos_in_circle(radius: i32) -> Vec<my_dtype>{
+    let mut output = Vec::new();
+    for x in -radius..radius+1{
+        for y in -radius..radius+1{
+            let r2 = x.pow(2) + y.pow(2);
+            if r2 <= radius.pow(2){
+                output.push((2.*(y as my_dtype).atan2(x as my_dtype)).cos());
+            }
+        }
+    }
+    output
+}

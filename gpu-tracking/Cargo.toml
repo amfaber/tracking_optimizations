@@ -6,9 +6,6 @@ version = "0.1.0"
 name = "tracking"
 path = "src/main.rs"
 
-[features]
-python = ["pyo3", "numpy"]
-
 [dependencies]
 anyhow = "1.0.65"
 bytemuck = "1.12.1"
@@ -18,18 +15,29 @@ image = "0.24.4"
 kd-tree = "*"
 ndarray = "0.15.6"
 ndarray-csv = "0.5.1"
-numpy = { version = "0.17.2", optional = true  }
-pyo3 = { version = "0.17.1", features = ["extension-module"], optional = true }
+num-traits = "0.2.15"
+ordered-float = "*"
 pollster = "0.2.5"
 rayon = "1.5.3"
 tiff = "0.7.3"
-wgpu = "0.13.1"
-num-traits = "0.2.15"
 typenum = "1.15.0"
+wgpu = "0.13.1"
 
 [dependencies.clap]
 features = ["derive"]
 version = "4.0.6"
+
+[dependencies.numpy]
+optional = true
+version = "0.17.2"
+
+[dependencies.pyo3]
+features = ["extension-module"]
+optional = true
+version = "0.17.1"
+
+[features]
+python = ["pyo3", "numpy"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
