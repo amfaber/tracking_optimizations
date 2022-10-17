@@ -22,6 +22,8 @@ struct Args{
     filter: Option<bool>,
     #[arg(short, long)]
     characterize: Option<bool>,
+    #[arg(short, long)]
+    processed_cpu: Option<bool>,
 }
 
 
@@ -32,6 +34,7 @@ fn main() -> anyhow::Result<()> {
     let debug = args.debug.unwrap_or(false);
     let filter = args.filter.unwrap_or(true);
     let characterize = args.characterize.unwrap_or(true);
+    let processed_cpu = args.processed_cpu.unwrap_or(false);
     let file = fs::File::open(path).expect("didn't find the file");
     let mut decoder = Decoder::new(file).expect("Can't create decoder");
     let (width, height) = decoder.dimensions().unwrap();
@@ -52,6 +55,7 @@ fn main() -> anyhow::Result<()> {
         filter_close: filter,
         search_range: Some(9.),
         characterize: characterize,
+        cpu_processed: processed_cpu,
         ..Default::default()
     };
     let mut decoderiter = match debug {

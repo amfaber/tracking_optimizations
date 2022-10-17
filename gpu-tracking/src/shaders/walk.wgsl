@@ -78,12 +78,11 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     return;
   }
   let idx = global_id.x * u32(params.pic_ncols) + global_id.y;
-
+  let pic_size = u32(params.pic_nrows * params.pic_ncols);
   if (is_max(i32(global_id.x), i32(global_id.y), params.dilation_nrows, params.dilation_ncols)) {
     // results[idx] = 1.;
     let walk_out = walk(i32(global_id.x), i32(global_id.y));
     if (walk_out[2] > params.minmass){
-      let pic_size = u32(params.pic_nrows * params.pic_ncols);
       results[idx + pic_size * 0u] = walk_out[2];
       results[idx + pic_size * 1u] = walk_out[0];
       results[idx + pic_size * 2u] = walk_out[1];

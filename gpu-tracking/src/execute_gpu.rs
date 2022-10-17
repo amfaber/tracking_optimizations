@@ -13,7 +13,7 @@ use rayon::prelude::*;
 
 type inner_output = f32;
 type output_type = Vec<inner_output>;
-type channel_type = Option<(Vec<([f32; 2], (usize, f32))>, Vec<f32>, usize)>;
+type channel_type = Option<(Vec<([f32; 2], (usize, f32))>, Option<Vec<f32>>, usize, Option<Vec<my_dtype>>)>;
 // #[derive(Clone, Copy)]
 // pub struct GpuParams{
 //     pub pic_dims: [u32; 2],
@@ -59,6 +59,7 @@ pub struct TrackingParams{
     pub filter_close: bool,
     pub search_range: Option<my_dtype>,
     pub memory: Option<usize>,
+    pub cpu_processed: bool,
 }
 
 impl Default for TrackingParams{
@@ -80,6 +81,7 @@ impl Default for TrackingParams{
             filter_close: true,
             search_range: None,
             memory: None,
+            cpu_processed: true,
         }
     }
 }
@@ -94,7 +96,7 @@ unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
 fn get_work(finished_staging_buffer: &Buffer,
     device: &wgpu::Device,
     old_submission: wgpu::SubmissionIndex,
-    wait_gpu_time: &mut f32,
+    wait_gpu_time: &mut f64,
     // output: &mut Vec<inner_output>,
     pic_size: usize,
     result_read_depth: u64,
@@ -103,6 +105,7 @@ fn get_work(finished_staging_buffer: &Buffer,
     separation: my_dtype,
     filter: bool,
     job_sender: &Sender<channel_type>,
+    tracking_params: TrackingParams,
     ) -> () {
     let mut buffer_slice = finished_staging_buffer.slice(..);
     let (sender, receiver) = 
@@ -111,21 +114,43 @@ fn get_work(finished_staging_buffer: &Buffer,
     buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
     let now = Instant::now();
     device.poll(wgpu::Maintain::WaitForSubmissionIndex(old_submission));
-    (*wait_gpu_time) += now.elapsed().as_nanos() as f32 / 1_000_000_000.;
+    (*wait_gpu_time) += now.elapsed().as_nanos() as f64 / 1_000_000_000.;
     receiver.receive().block_on().unwrap();
     let data = buffer_slice.get_mapped_range();
     let dataf32 = bytemuck::cast_slice::<u8, f32>(&data);
-    let mut positions = Vec::new();
-    let mut properties = Vec::new();
+    let mut positions = Vec::with_capacity(1000);
+    let mut properties = if tracking_params.cpu_processed || debug {
+        Some(Vec::with_capacity(1000*(result_read_depth-3) as usize))
+    } else {
+        None
+    };
     let mut idx = 0usize;
+    let radius = 4i32;
+    let dims = [512, 512];
+    // let idk = dataf32[0..pic_size].to_vec();
+    
+    let mut neighborhoods = if tracking_params.cpu_processed {Some(Vec::with_capacity(1000 * 81 as usize))} else {None};
+    let processed_offset = result_read_depth as usize;
+    // dbg!(processed_offset);
     match debug{
         false => {
             for i in 0..pic_size{
-                let mass = dataf32[i];
+                let mass = *unsafe{dataf32.get_unchecked(i)};
                 if mass != 0.0{
                     positions.push(([dataf32[i+pic_size], dataf32[i+2*pic_size]], (idx, mass)));
-                    for j in 3..result_read_depth as usize{
-                        properties.push(dataf32[i + j * pic_size]);
+
+                    if tracking_params.cpu_processed{
+                        for x in -radius..radius+1{
+                            for y in -radius..radius+1{
+                                let curidx = i + (x * dims[1] + y) as usize + processed_offset * pic_size;
+                                neighborhoods.as_mut().unwrap().push(dataf32[curidx]);
+                            }
+                        }
+                    }
+                    else{
+                        for j in 3..result_read_depth as usize{
+                            properties.as_mut().unwrap().push(dataf32[i + j * pic_size]);
+                        }
                     }
                     idx += 1;
                 }
@@ -133,11 +158,11 @@ fn get_work(finished_staging_buffer: &Buffer,
         },
         true => {
             for i in 0..pic_size*result_read_depth as usize{
-                properties.push(dataf32[i]);
+                properties.as_mut().unwrap().push(dataf32[i]);
             }
         },
     }
-    job_sender.send(Some((positions, properties, frame_index))).unwrap();
+    job_sender.send(Some((positions, properties, frame_index, neighborhoods))).unwrap();
     // post_process(positions, properties, output, frame_index, result_read_depth, filter, separation, debug);
     drop(data);
     finished_staging_buffer.unmap();
@@ -146,7 +171,7 @@ fn get_work(finished_staging_buffer: &Buffer,
 // (Vec<([f32; 2], (usize, f32))>,Vec<f32>,Vec<my_dtype>,usize,u64,bool,my_dtype,bool)
 fn post_process(
     positions: Vec<([f32; 2], (usize, f32))>,
-    properties: Vec<f32>,
+    properties: Option<Vec<f32>>,
     output: &mut Vec<my_dtype>,
     frame_index: usize,
     result_read_depth: u64,
@@ -154,80 +179,100 @@ fn post_process(
     separation: my_dtype,
     debug: bool,
     linker: Option<&mut Linker>,
+    neighborhoods: Option<Vec<f32>>,
     ) -> () {
     if debug{
-        output.extend(properties);
+        output.extend(properties.unwrap());
         return;
     }
-    if filter{
-        let tree = kd_tree::KdTree::build_by_ordered_float(positions);
-        let relevant_points = tree.iter().map(|query| {
-            let positions = query.0;
-            let (idx, mass) = query.1;
-            let neighbors = tree.within_radius(query, separation);
-            let mut keep_point = true;
-            for neighbor in neighbors{
-                let (neighbor_idx, neighbor_mass) = neighbor.1;
-                if neighbor_idx != idx{
-                    if mass < neighbor_mass{
+    // if filter{
+    let N = positions.len();
+    let tree = kd_tree::KdTree::build_by_ordered_float(positions);
+    let relevant_points = tree.iter().map(|query| {
+        let positions = query.0;
+        let (idx, mass) = query.1;
+        let neighbors = tree.within_radius(query, separation);
+        let mut keep_point = true;
+        for neighbor in neighbors{
+            let (neighbor_idx, neighbor_mass) = neighbor.1;
+            if neighbor_idx != idx{
+                if mass < neighbor_mass{
+                    keep_point = false;
+                    break;
+                } else if mass == neighbor_mass{
+                    if idx > neighbor_idx{
                         keep_point = false;
                         break;
-                    } else if mass == neighbor_mass{
-                        if idx > neighbor_idx{
-                            keep_point = false;
-                            break;
-                        }
-                    }
-                }
-            }
-            if keep_point{
-                Some((positions, (idx, mass)))
-            } else {
-                None
-            }
-        }).flatten()
-        .collect::<Vec<_>>();
-        match linker{
-            Some(linker) =>{
-                let part_ids = linker.advance(&relevant_points);
-                for (point, part_id) in relevant_points.iter().zip(part_ids.iter()){
-                    let (positions, (idx, mass)) = point;
-                    output.push(frame_index as my_dtype);
-                    output.push(*mass);
-                    output.push(positions[0]);
-                    output.push(positions[1]);
-                    output.push(*part_id as my_dtype);
-                    for j in 0..result_read_depth as usize - 3{
-                        output.push(properties[*idx * (result_read_depth as usize - 3) + j]);
-                    }
-                }
-            },
-            None => {
-                for point in relevant_points.iter(){
-                    let (positions, (idx, mass)) = point;
-                    output.push(frame_index as my_dtype);
-                    output.push(*mass);
-                    output.push(positions[0]);
-                    output.push(positions[1]);
-                    for j in 0..result_read_depth as usize - 3{
-                        output.push(properties[*idx * (result_read_depth as usize - 3) + j]);
                     }
                 }
             }
         }
+        if keep_point{
+            Some((positions, (idx, mass)))
+        } else {
+            None
+        }
+    }).flatten().collect::<Vec<_>>();
 
-    } else {
-        for point in positions{
-            let (positions, (idx, mass)) = point;
-            output.push(frame_index as my_dtype);
-            output.push(mass);
-            output.push(positions[0]);
-            output.push(positions[1]);
-            for j in 0..result_read_depth as usize - 3{
-                output.push(properties[idx * (result_read_depth as usize - 3) + j]);
+    let neighborhoods = neighborhoods.map(|vec| ndarray::Array::from_shape_vec((N, 9, 9), vec).unwrap());
+    // dbg!(neighborhoods);
+
+    match linker{
+        Some(linker) =>{
+            let part_ids = linker.advance(&relevant_points);
+            for (point, part_id) in relevant_points.iter().zip(part_ids.iter()){
+                let (positions, (idx, mass)) = point;
+                output.push(frame_index as my_dtype);
+                output.push(*mass);
+                output.push(positions[0]);
+                output.push(positions[1]);
+                output.push(*part_id as my_dtype);
+                match properties{
+                    Some(ref properties) => {
+                        for j in 0..result_read_depth as usize - 3{
+                            output.push(properties[*idx * (result_read_depth as usize - 3) + j]);
+                        }
+                    },
+                    None => {},
+                }
+            }
+        },
+        None => {
+            for point in relevant_points.iter(){
+                let (positions, (idx, mass)) = point;
+                output.push(frame_index as my_dtype);
+                output.push(*mass);
+                output.push(positions[0]);
+                output.push(positions[1]);
+                match properties{
+                    Some(ref properties) => {
+                        for j in 0..result_read_depth as usize - 3{
+                            output.push(properties[*idx * (result_read_depth as usize - 3) + j]);
+                        }
+                    },
+                    None => {},
+                }
             }
         }
     }
+    
+    // } else {
+    //     for point in positions{
+    //         let (positions, (idx, mass)) = point;
+    //         output.push(frame_index as my_dtype);
+    //         output.push(mass);
+    //         output.push(positions[0]);
+    //         output.push(positions[1]);
+    //         match properties{
+    //             Some(ref properties) => {
+    //                 for j in 0..result_read_depth as usize - 3{
+    //                     output.push(properties[idx * (result_read_depth as usize - 3) + j]);
+    //                 }
+    //             },
+    //             None => {},
+    //         }
+    //     }
+    // }
 }
 
 
@@ -452,7 +497,10 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
         };
         encoder.copy_buffer_to_buffer(output_buffer, 0,
             staging_buffer, 0, result_read_depth * size);
-        
+        if tracking_params.cpu_processed {
+            encoder.copy_buffer_to_buffer(&buffers.processed_buffer, 0,
+                &staging_buffer, result_read_depth * size, size);
+        }
         let index = queue.submit(Some(encoder.finish()));
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
@@ -481,8 +529,11 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
                 match inp_receiver.recv().unwrap(){
                     None => break,
                     Some(inp) => {
-                        let (positions, properties, frame_index) = inp;
-                        post_process(positions, properties, &mut output, frame_index, result_read_depth, filter, separation, debug, linker.as_mut())
+                        let (positions, properties,
+                            frame_index, neighborhoods) = inp;
+                        
+                        post_process(positions, properties, &mut output, frame_index,
+                            result_read_depth, filter, separation, debug, linker.as_mut(), neighborhoods);
                     }
                 }
             }
@@ -526,6 +577,7 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
             tracking_params.separation as f32,
             tracking_params.filter_close,
             &inp_sender,
+            tracking_params,
         );
 
 
@@ -547,6 +599,7 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
         tracking_params.separation as f32,
         tracking_params.filter_close,
         &inp_sender,
+        tracking_params,
     );
     dbg!(wait_gpu_time);
     inp_sender.send(None);

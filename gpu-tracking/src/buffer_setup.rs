@@ -62,7 +62,7 @@ pub fn setup_buffers(tracking_params: &TrackingParams,
     for i in 0..2{
         let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(format!("Staging {}", i).as_str()),
-            size: (result_buffer_depth * size) as u64,
+            size: ((result_buffer_depth + tracking_params.cpu_processed as u64) * size) as u64,
             usage: wgpu::BufferUsages::COPY_SRC 
             | wgpu::BufferUsages::COPY_DST 
             | wgpu::BufferUsages::MAP_READ,
