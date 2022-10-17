@@ -55,7 +55,7 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         minmass: Option<my_dtype>,
         maxsize: Option<my_dtype>,
         separation: Option<u32>,
-        noise_size: Option<u32>,
+        noise_size: Option<f32>,
         smoothing_size: Option<u32>,
         threshold: Option<my_dtype>,
         invert: Option<bool>,
@@ -70,13 +70,13 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         ) -> &'py PyArray2<my_dtype> {
         
         not_implemented!(maxsize, threshold, invert, percentile,
-            topn, preprocess, characterize);
+            topn, preprocess);
         
         
         let minmass = minmass.unwrap_or(0.);
         let maxsize = maxsize.unwrap_or(f32::INFINITY);
         let separation = separation.unwrap_or(diameter + 1);
-        let noise_size = noise_size.unwrap_or(1);
+        let noise_size = noise_size.unwrap_or(1.);
         let smoothing_size = smoothing_size.unwrap_or(diameter);
         let threshold = threshold.unwrap_or(1./255.);
         let invert = invert.unwrap_or(false);

@@ -1,8 +1,9 @@
 struct params{
   pic_nrows: i32,
   pic_ncols: i32,
-  composite_nrows: i32,
-  composite_ncols: i32,
+  preprocess_nrows: i32,
+  preprocess_ncols: i32,
+  sigma2: f32,
   // constant_nrows: i32,
   // constant_ncols: i32,
   circle_nrows: i32,

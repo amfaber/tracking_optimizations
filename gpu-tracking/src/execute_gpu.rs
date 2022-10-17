@@ -47,7 +47,7 @@ pub struct TrackingParams{
     pub minmass: f32,
     pub maxsize: f32,
     pub separation: u32,
-    pub noise_size: u32,
+    pub noise_size: f32,
     pub smoothing_size: u32,
     pub threshold: f32,
     pub invert: bool,
@@ -68,7 +68,7 @@ impl Default for TrackingParams{
             minmass: 0.,
             maxsize: 0.0,
             separation: 11,
-            noise_size: 1,
+            noise_size: 1.,
             smoothing_size: 9,
             threshold: 0.0,
             invert: false,
@@ -97,7 +97,7 @@ fn get_work(finished_staging_buffer: &Buffer,
     wait_gpu_time: &mut f32,
     // output: &mut Vec<inner_output>,
     pic_size: usize,
-    n_result_columns: u64,
+    result_read_depth: u64,
     frame_index: usize,
     debug: bool,
     separation: my_dtype,
@@ -111,7 +111,7 @@ fn get_work(finished_staging_buffer: &Buffer,
     buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
     let now = Instant::now();
     device.poll(wgpu::Maintain::WaitForSubmissionIndex(old_submission));
-    (*wait_gpu_time) += now.elapsed().as_millis() as f32 / 1000.;
+    (*wait_gpu_time) += now.elapsed().as_nanos() as f32 / 1_000_000_000.;
     receiver.receive().block_on().unwrap();
     let data = buffer_slice.get_mapped_range();
     let dataf32 = bytemuck::cast_slice::<u8, f32>(&data);
@@ -124,7 +124,7 @@ fn get_work(finished_staging_buffer: &Buffer,
                 let mass = dataf32[i];
                 if mass != 0.0{
                     positions.push(([dataf32[i+pic_size], dataf32[i+2*pic_size]], (idx, mass)));
-                    for j in 3..n_result_columns as usize{
+                    for j in 3..result_read_depth as usize{
                         properties.push(dataf32[i + j * pic_size]);
                     }
                     idx += 1;
@@ -132,13 +132,13 @@ fn get_work(finished_staging_buffer: &Buffer,
             }
         },
         true => {
-            for i in 0..pic_size*n_result_columns as usize{
+            for i in 0..pic_size*result_read_depth as usize{
                 properties.push(dataf32[i]);
             }
         },
     }
     job_sender.send(Some((positions, properties, frame_index))).unwrap();
-    // post_process(positions, properties, output, frame_index, n_result_columns, filter, separation, debug);
+    // post_process(positions, properties, output, frame_index, result_read_depth, filter, separation, debug);
     drop(data);
     finished_staging_buffer.unmap();
     
@@ -149,7 +149,7 @@ fn post_process(
     properties: Vec<f32>,
     output: &mut Vec<my_dtype>,
     frame_index: usize,
-    n_result_columns: u64,
+    result_read_depth: u64,
     filter: bool,
     separation: my_dtype,
     debug: bool,
@@ -197,8 +197,8 @@ fn post_process(
                     output.push(positions[0]);
                     output.push(positions[1]);
                     output.push(*part_id as my_dtype);
-                    for j in 0..n_result_columns as usize - 3{
-                        output.push(properties[*idx * (n_result_columns as usize - 3) + j]);
+                    for j in 0..result_read_depth as usize - 3{
+                        output.push(properties[*idx * (result_read_depth as usize - 3) + j]);
                     }
                 }
             },
@@ -209,8 +209,8 @@ fn post_process(
                     output.push(*mass);
                     output.push(positions[0]);
                     output.push(positions[1]);
-                    for j in 0..n_result_columns as usize - 3{
-                        output.push(properties[*idx * (n_result_columns as usize - 3) + j]);
+                    for j in 0..result_read_depth as usize - 3{
+                        output.push(properties[*idx * (result_read_depth as usize - 3) + j]);
                     }
                 }
             }
@@ -223,8 +223,8 @@ fn post_process(
             output.push(mass);
             output.push(positions[0]);
             output.push(positions[1]);
-            for j in 0..n_result_columns as usize - 3{
-                output.push(properties[idx * (n_result_columns as usize - 3) + j]);
+            for j in 0..result_read_depth as usize - 3{
+                output.push(properties[idx * (result_read_depth as usize - 3) + j]);
             }
         }
     }
@@ -261,7 +261,7 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
 
 
     let shaders = HashMap::from([
-        ("proprocess_backup", "src/shaders/another_backup_preprocess.wgsl"),
+        // ("proprocess_backup", "src/shaders/another_backup_preprocess.wgsl"),
         ("centers", "src/shaders/centers.wgsl"),
         ("centers_outside_parens", "src/shaders/centers_outside_parens.wgsl"),
         ("max_rows", "src/shaders/max_rows.wgsl"),
@@ -278,7 +278,7 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
         (name, shader_string)
     }).collect::<HashMap<_, _>>();
 
-    let workgroup_size = [32, 32, 1];
+    let workgroup_size = [16, 16, 1];
     let workgroups: [u32; 2] = 
         dims.iter().zip(workgroup_size)
         .map(|(&x, size)| (x + size - 1) / size).collect::<Vec<u32>>().try_into().unwrap();
@@ -287,6 +287,9 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
         let mut result = String::new();
         result.push_str(common_header);
         result.push_str(source);
+        if tracking_params.characterize{
+            result = result.replace("//_feat_char_", "");
+        }
         result.replace("@workgroup_size(_)",
         format!("@workgroup_size({}, {}, {})", workgroup_size[0], workgroup_size[1], workgroup_size[2]).as_str())
     };
@@ -301,15 +304,18 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
         (name, shader)
     }).collect::<HashMap<_, _>>();
     let pic_size = dims.iter().product::<u32>() as usize;
-    let n_result_columns: u64 = match debug{
-        false => 3,
+    let result_read_depth: u64 = match debug{
+        false => match tracking_params.characterize{
+            false => 3,
+            true => 7,
+        },
         true => 2,
     };
     let slice_size = pic_size * std::mem::size_of::<my_dtype>();
     let size = slice_size as wgpu::BufferAddress;
     
     
-    let buffers = buffer_setup::setup_buffers(&tracking_params, &device, n_result_columns, size, dims);
+    let buffers = buffer_setup::setup_buffers(&tracking_params, &device, size, dims);
 
     let pipelines = match debug{
         // false => vec![
@@ -322,8 +328,8 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
         _ => vec![
             ("pp_rows", 0, &shaders["preprocess_rows"]),
             ("pp_cols", 0, &shaders["preprocess_cols"]),
-            // ("centers", 0, &shaders["centers"]),
-            ("centers", 0, &shaders["centers_outside_parens"]),
+            ("centers", 0, &shaders["centers"]),
+            // ("centers", 0, &shaders["centers_outside_parens"]),
             ("max_row", 0, &shaders["max_rows"]),
             ("walk", 0, &shaders["walk_cols"]),
         ],
@@ -370,42 +376,43 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
         // ]),
         _ => HashMap::from([
             ("pp_rows", vec![
-                (0, &buffers.param_buffer),
-                (1, &buffers.frame_buffer),
-                (2, &buffers.gauss_1d_buffer),
-                (3, &buffers.centers_buffer),
+                Some((0, &buffers.param_buffer)),
+                Some((1, &buffers.frame_buffer)),
+                // (2, &buffers.gauss_1d_buffer),
+                Some((3, &buffers.centers_buffer)),
             ]),
             ("pp_cols", vec![
-                (0, &buffers.param_buffer),
-                (1, &buffers.gauss_1d_buffer),
-                (2, &buffers.centers_buffer),
-                (3, &buffers.processed_buffer), 
+                Some((0, &buffers.param_buffer)),
+                // (1, &buffers.gauss_1d_buffer),
+                Some((2, &buffers.centers_buffer)),
+                Some((3, &buffers.processed_buffer)), 
             ]),
             ("centers", vec![
-                (0, &buffers.param_buffer),    
-                (1, &buffers.circle_buffer), 
-                (2, &buffers.processed_buffer), 
-                (3, &buffers.centers_buffer),
-                (4, &buffers.masses_buffer),
+                Some((0, &buffers.param_buffer)),    
+                Some((2, &buffers.processed_buffer)), 
+                Some((3, &buffers.centers_buffer)),
+                Some((4, &buffers.masses_buffer)),
+                if (tracking_params.characterize) {Some((5, &buffers.frame_buffer))} else {None},
+                if (tracking_params.characterize) {Some((6, &buffers.result_buffer))} else {None},
             ]),
             ("max_row", vec![
-                (0, &buffers.param_buffer),
-                (1, &buffers.processed_buffer), 
-                (2, &buffers.max_rows),
+                Some((0, &buffers.param_buffer)),
+                Some((1, &buffers.processed_buffer)), 
+                Some((2, &buffers.max_rows)),
             ]),
             ("walk", vec![
-                (0, &buffers.param_buffer),
-                (1, &buffers.processed_buffer), 
-                (2, &buffers.max_rows),
-                (3, &buffers.centers_buffer),
-                (4, &buffers.masses_buffer),
-                (5, &buffers.result_buffer),
+                Some((0, &buffers.param_buffer)),
+                Some((1, &buffers.processed_buffer)), 
+                Some((2, &buffers.max_rows)),
+                Some((3, &buffers.centers_buffer)),
+                Some((4, &buffers.masses_buffer)),
+                Some((5, &buffers.result_buffer)),
             ]),
         ])
     };
 
     let bind_group_entries = bind_group_entries
-        .iter().map(|(&name, group)| (name, group.iter().map(|(i, buffer)|
+        .iter().map(|(&name, group)| (name, group.iter().flatten().map(|(i, buffer)|
             wgpu::BindGroupEntry {
             binding: *i as u32,
             resource: buffer.as_entire_binding()}).collect::<Vec<_>>())
@@ -444,7 +451,7 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
             true => &buffers.centers_buffer,
         };
         encoder.copy_buffer_to_buffer(output_buffer, 0,
-            staging_buffer, 0, n_result_columns * size);
+            staging_buffer, 0, result_read_depth * size);
         
         let index = queue.submit(Some(encoder.finish()));
         let mut encoder =
@@ -475,7 +482,7 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
                     None => break,
                     Some(inp) => {
                         let (positions, properties, frame_index) = inp;
-                        post_process(positions, properties, &mut output, frame_index, n_result_columns, filter, separation, debug, linker.as_mut())
+                        post_process(positions, properties, &mut output, frame_index, result_read_depth, filter, separation, debug, linker.as_mut())
                     }
                 }
             }
@@ -513,7 +520,7 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
             &mut wait_gpu_time,
             // &mut output,
             pic_size,
-            n_result_columns,
+            result_read_depth,
             frame_index,
             debug,
             tracking_params.separation as f32,
@@ -534,7 +541,7 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
         &mut wait_gpu_time,
         // &mut output,
         pic_size,
-        n_result_columns,
+        result_read_depth,
         frame_index,
         debug,
         tracking_params.separation as f32,
@@ -545,10 +552,10 @@ pub fn execute_gpu<'a, T: Iterator<Item = impl IntoSlice>>(
     inp_sender.send(None);
     let output = handle.join().unwrap();
 
-    let mut n_result_columns = n_result_columns as usize + 1;
-    if tracking_params.search_range.is_some(){ n_result_columns += 1; }
+    let mut result_read_depth = result_read_depth as usize + 1;
+    if tracking_params.search_range.is_some(){ result_read_depth += 1; }
 
-    let shape = (output.len() / n_result_columns, n_result_columns);
+    let shape = (output.len() / result_read_depth, result_read_depth);
     (output, shape)
 }
 

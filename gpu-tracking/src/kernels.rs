@@ -122,7 +122,8 @@ impl Kernel{
             for j in 0..size[1]{
                 let x = i as my_dtype - radius as my_dtype;
                 let y = j as my_dtype - radius as my_dtype;
-                let val = (x.powi(2) + y.powi(2) <= (radius as my_dtype).powi(2)) as i32 as my_dtype;
+                let val = x.powi(2) + y.powi(2);
+                let val = if val <= (radius as my_dtype).powi(2) {val} else {0.};
                 data.push(val);
             }
         }

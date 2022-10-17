@@ -20,15 +20,14 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   let v = i32(global_id.y);
   var gauss_sum = 0.0;
   var constant_sum = 0.0;
-  let kernel_cols = params.preprocess_ncols;
-  let sigma2 = params.sigma2;
+  let kernel_rows = params.composite_ncols;
+  let kernel_cols = params.composite_nrows;
   let rint = kernel_cols / 2;
   var pic_v: i32;
   var pic_idx: i32;
   var do_gauss: bool;
   var gauss_norm = 0.0;
   for (var i: i32 = -rint; i <= rint; i = i + 1) {
-    let x = f32(i);
     pic_v = v + i;
     do_gauss = true;
     if (pic_v < 0){
@@ -40,8 +39,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         do_gauss = false;
       }
     pic_idx = u * params.pic_ncols + pic_v;
-
-    let gauss = exp(-x*x / (2.0 * sigma2));
+    
+    let gauss = exp(-f32(i*i) / (2.0 * 1. * 1.));
     gauss_norm += gauss;
     if (do_gauss){
       gauss_sum += gauss * picture[pic_idx];

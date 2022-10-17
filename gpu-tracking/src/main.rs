@@ -20,6 +20,8 @@ struct Args{
     debug: Option<bool>,
     #[arg(short, long)]
     filter: Option<bool>,
+    #[arg(short, long)]
+    characterize: Option<bool>,
 }
 
 
@@ -29,6 +31,7 @@ fn main() -> anyhow::Result<()> {
     let path = args.input.unwrap_or("../emily_tracking/sample_vids/s_20.tif".to_string());
     let debug = args.debug.unwrap_or(false);
     let filter = args.filter.unwrap_or(true);
+    let characterize = args.characterize.unwrap_or(true);
     let file = fs::File::open(path).expect("didn't find the file");
     let mut decoder = Decoder::new(file).expect("Can't create decoder");
     let (width, height) = decoder.dimensions().unwrap();
@@ -48,6 +51,7 @@ fn main() -> anyhow::Result<()> {
         separation: 10,
         filter_close: filter,
         search_range: Some(9.),
+        characterize: characterize,
         ..Default::default()
     };
     let mut decoderiter = match debug {
