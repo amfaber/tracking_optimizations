@@ -120,7 +120,7 @@ fn get_work(
     state: &GpuState,
     tracking_params: &TrackingParams,
     old_submission: wgpu::SubmissionIndex,
-    wait_gpu_time: &mut f64,
+    wait_gpu_time: &mut Option<f64>,
     frame_index: usize,
     debug: bool,
     job_sender: &Sender<channel_type>,
@@ -132,9 +132,10 @@ fn get_work(
             futures_intrusive::channel::shared::oneshot_channel();
     
     buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
-    let now = Instant::now();
+    let now = wait_gpu_time.as_ref().map(|_| Instant::now());
     state.device.poll(wgpu::Maintain::WaitForSubmissionIndex(old_submission));
-    (*wait_gpu_time) += now.elapsed().as_nanos() as f64 / 1_000_000_000.;
+    wait_gpu_time.as_mut().map(|t| *t += now.unwrap().elapsed().as_secs_f64());
+    // (*wait_gpu_time) += now.elapsed().as_nanos() as f64 / 1_000_000_000.;
     receiver.receive().block_on().unwrap();
     let data = buffer_slice.get_mapped_range();
     let dataf32 = bytemuck::cast_slice::<u8, f32>(&data);
@@ -383,11 +384,12 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
     dims: &[u32; 2],
     tracking_params: TrackingParams,
     debug: bool,
+    verbosity: u32,
     ) -> (output_type, Vec<(String, String)>){
     let state = gpu_setup::setup_state(&tracking_params, dims, debug);
 
     let (circle_inds, middle_most) = kernels::circle_inds((tracking_params.diameter as i32 / 2) as f32);
-    let mut wait_gpu_time = 0.;
+    let mut wait_gpu_time = if verbosity > 0 {Some(0.) } else {None};
 
     let (inp_sender,
         inp_receiver) = std::sync::mpsc::channel::<channel_type>();
@@ -417,13 +419,13 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
                     }
                 );
                 let mut output: output_type = Vec::new();
-                let mut thread_sleep = 0.;
+                let mut thread_sleep = if verbosity > 0 {Some(0.)} else {None};
                 loop{
-                    let now = std::time::Instant::now();
+                    let now = thread_sleep.map(|_| std::time::Instant::now());
                     match inp_receiver.recv().unwrap(){
                         None => break,
                         Some(inp) => {
-                            thread_sleep += now.elapsed().as_nanos() as f64 / 1e9;
+                            thread_sleep.as_mut().map(|thread_sleep| *thread_sleep += now.unwrap().elapsed().as_nanos() as f64 / 1e9);
                             let (positions, properties,
                                 frame_index, neighborhoods) = inp;
                             let frame = frame_receiver.recv().unwrap();
@@ -433,7 +435,7 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
                         }
                     }
                 }
-                dbg!(thread_sleep);
+                thread_sleep.map(|thread_sleep| println!("Thread sleep: {} s", thread_sleep));
                 output
             })
         };
@@ -503,13 +505,13 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
     (output, column_names(tracking_params))
 }
 
-pub fn execute_ndarray(array: &ArrayView3<my_dtype>, params: TrackingParams, debug: bool) -> (Array2<my_dtype>, Vec<(String, String)>) {
+pub fn execute_ndarray(array: &ArrayView3<my_dtype>, params: TrackingParams, debug: bool, verbosity: u32) -> (Array2<my_dtype>, Vec<(String, String)>) {
     if !array.is_standard_layout(){
         panic!("Array is not standard layout");
     }
     let axisiter = array.axis_iter(ndarray::Axis(0));
     let dims = array.shape();
-    let (res, column_names) = execute_gpu(axisiter, &[dims[1] as u32, dims[2] as u32], params, debug);
+    let (res, column_names) = execute_gpu(axisiter, &[dims[1] as u32, dims[2] as u32], params, debug, verbosity);
     let res_len = res.len();
     let shape = (res_len / column_names.len(), column_names.len());
     let res = Array2::from_shape_vec(shape, res)

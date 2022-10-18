@@ -65,7 +65,7 @@ fn main() -> anyhow::Result<()> {
         true => decoderiter.take(1),
         false => decoderiter.take(usize::MAX)
     };
-    let (results, shape) = execute_gpu(&mut decoderiter, &dims, params, debug);
+    let (results, shape) = execute_gpu(&mut decoderiter, &dims, params, debug, 1);
     let function_time = now.elapsed().as_millis() as f64 / 1000.;
     dbg!(function_time);
     

@@ -112,7 +112,7 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         }; 
         
         let array = pyarr.as_array();
-        let (res, columns) = execute_gpu::execute_ndarray(&array, params, false);
+        let (res, columns) = execute_gpu::execute_ndarray(&array, params, false, 0);
         (res.into_pyarray(py), columns.into_py(py))
     }
 
