@@ -1,9 +1,10 @@
 // #![allow(warnings)]
+#![allow(const_item_mutation)]
 use kd_tree::{KdPoint, KdTree, KdIndexTree};
 use std::cmp::Ordering;
-use ndarray::{Array2, ArrayView2, s};
+use ndarray::{ArrayView2};
 use kd_tree;
-use std::{collections::{HashMap, HashSet, VecDeque, hash_map::Entry}, default, iter::FromIterator};
+use std::{collections::{HashMap, HashSet, VecDeque}, iter::FromIterator};
 type float = f32;
 use typenum::{self, U2};
 use num_traits;
@@ -33,7 +34,7 @@ impl<'a> Iterator for FrameSubsetter<'a>{
     // type Item = ArrayView2<'a, float>;
     type Item = Vec<([float; 2])>; 
     fn next(&mut self) -> Option<Self::Item> {
-        let prev_idx = self.idx;
+        // let prev_idx = self.idx;
         let mut output = Vec::new();
         loop{
             let frame = self.array.get(ndarray::Ix2(self.idx, self.frame_col));
@@ -53,7 +54,7 @@ impl<'a> Iterator for FrameSubsetter<'a>{
                     return None;
                 }
             }
-            output.push(([self.array[[self.idx, self.positions.0]], self.array[[self.idx, self.positions.1]]]));
+            output.push([self.array[[self.idx, self.positions.0]], self.array[[self.idx, self.positions.1]]]);
             self.idx += 1;
         }
     }
@@ -77,7 +78,7 @@ impl<'a, T: KdPoint, N: typenum::marker_traits::Unsigned> ReturnDistance<T, N, u
         T: KdPoint<Dim = N>,
         {
             let r2 = radius * radius;
-            let mut results = self.within_by_cmp(|item, k| {
+            let results = self.within_by_cmp(|item, k| {
                 let coord = item.at(k);
                 if coord < query.at(k) - radius {
                     Ordering::Less
@@ -111,7 +112,7 @@ impl<T: KdPoint, N: typenum::marker_traits::Unsigned> ReturnDistance<T, N, T> fo
         T: KdPoint<Dim = N>,
         {
             let r2 = radius * radius;
-            let mut results = self.within_by_cmp(|item, k| {
+            let results = self.within_by_cmp(|item, k| {
                 let coord = item.at(k);
                 if coord < query.at(k) - radius {
                     Ordering::Less
@@ -490,9 +491,9 @@ pub fn link<T: KdPoint<Scalar = float, Dim = U2>>(
     (output, unused_sources)
 }
 
-pub fn link_all<T>(mut frame_iter: T, radius: float, memory: usize) -> Vec<usize>
+pub fn link_all<T>(frame_iter: T, radius: float, memory: usize) -> Vec<usize>
     where T: Iterator<Item = Vec<([float; 2])>>{
-    let mut frame_iter = frame_iter.enumerate();
+    // let frame_iter = frame_iter.enumerate();
     let mut prev: Vec<([float; 2], usize)> = Vec::new();
     // let (i, mut prev) = frame_iter.next().unwrap();
     let mut prev_N = 0;
@@ -505,7 +506,7 @@ pub fn link_all<T>(mut frame_iter: T, radius: float, memory: usize) -> Vec<usize
     // results.extend(prev.iter().map(|(a, b)| (i, *a, *b)));
     let mut total_tracks = 0;
 
-    for (i, frame) in frame_iter{
+    for frame in frame_iter{
         // let new_prev = frame.clone();
         let N = frame.len();
         if memory > 0{

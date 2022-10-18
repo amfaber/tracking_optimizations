@@ -1,8 +1,8 @@
-#![allow(warnings)]
 use tiff::decoder::{Decoder, DecodingResult};
 use ndarray::{Array2};
 use crate::my_dtype;
 
+// type item_type = Vec<my_dtype>;
 type item_type = Array2<my_dtype>;
 
 pub struct IterDecoder<R: std::io::Read + std::io::Seek>{
@@ -31,7 +31,6 @@ impl<R: std::io::Read + std::io::Seek> IterDecoder<R>{
         let data = res.iter().map(|&x| x.into()).collect::<Vec<my_dtype>>();
         let data = ndarray::Array::from_shape_vec(self.dims, data).unwrap();
         data
-        // todo!();
     }
 }
 

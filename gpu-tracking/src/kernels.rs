@@ -1,5 +1,3 @@
-use ndarray::{Array1, Array2};
-
 use crate::my_dtype;
 
 pub struct Kernel{

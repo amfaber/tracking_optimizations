@@ -1,19 +1,15 @@
-#![allow(warnings)]
-use futures;
-use futures_intrusive::{self, channel};
+use futures_intrusive;
 type my_dtype = f32;
-use ndarray::{ArrayBase, ViewRepr, Array2, ArrayView2, ArrayView3, Axis, Array1, Array, ArrayView, Ix, Ix2, IntoDimension, ArrayViewD, s, Dimension};
+use ndarray::{Array2, ArrayView3, Axis, ArrayView};
 use pollster::FutureExt;
-use std::{collections::VecDeque, time::Instant, io::{BufRead, Write, Read}, fs::{self, File}, sync::mpsc::Sender, ops::Add};
-use wgpu::{util::DeviceExt, Buffer, SubmissionIndex};
-use crate::{kernels, into_slice::IntoSlice, gpu_setup::{self, GpuState}, linking::{ReturnDistance, Linker}};
-use std::collections::HashMap;
+use tiff::decoder::Decoder;
+use std::{collections::VecDeque, time::Instant, sync::mpsc::Sender};
+use wgpu::{Buffer, SubmissionIndex};
+use crate::{kernels, into_slice::IntoSlice, gpu_setup::{self, GpuState}, linking::Linker, decoderiter::IterDecoder};
 use kd_tree;
-use rayon::prelude::*;
 use ndarray_stats::{QuantileExt, MaybeNanExt};
-use bencher::black_box;
 
-type inner_output = f32;
+type inner_output = my_dtype;
 type output_type = Vec<inner_output>;
 type channel_type = Option<(Vec<([f32; 2], (usize, f32))>, Option<Vec<f32>>, usize, Option<Vec<my_dtype>>)>;
 
@@ -68,12 +64,6 @@ impl Default for TrackingParams{
     }
 }
 
-unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
-    ::std::slice::from_raw_parts(
-        (p as *const T) as *const u8,
-        ::std::mem::size_of::<T>(),
-    )
-}
 
 fn submit_work(
     frame: &[my_dtype],
@@ -127,7 +117,7 @@ fn get_work(
     circle_inds: &Vec<[i32; 2]>,
     dims: &[u32; 2],
     ) -> () {
-    let mut buffer_slice = finished_staging_buffer.slice(..);
+    let buffer_slice = finished_staging_buffer.slice(..);
     let (sender, receiver) = 
             futures_intrusive::channel::shared::oneshot_channel();
     
@@ -136,7 +126,7 @@ fn get_work(
     state.device.poll(wgpu::Maintain::WaitForSubmissionIndex(old_submission));
     wait_gpu_time.as_mut().map(|t| *t += now.unwrap().elapsed().as_secs_f64());
     // (*wait_gpu_time) += now.elapsed().as_nanos() as f64 / 1_000_000_000.;
-    receiver.receive().block_on().unwrap();
+    receiver.receive().block_on().unwrap().unwrap();
     let data = buffer_slice.get_mapped_range();
     let dataf32 = bytemuck::cast_slice::<u8, f32>(&data);
     let mut positions: Vec<([f32; 2], (usize, f32))> = Vec::with_capacity(1000);
@@ -318,7 +308,7 @@ fn post_process<A: IntoSlice>(
         let mut sig = Vec::with_capacity(N * raw_sig_inds.len());
         let mut bg = raw_bg_inds.map(|_| Vec::with_capacity(N * raw_sig_inds.len()));
         
-        for (position, (idx, mass)) in relevant_points.iter() {
+        for (position, (_idx, _mass)) in relevant_points.iter() {
             let middle_index = [position[0].round() as i32, position[1].round() as i32];
             for ind in raw_sig_inds{
                 let curidx = [(middle_index[0] + ind[0]) as usize, (middle_index[1] + ind[1]) as usize];
@@ -332,9 +322,9 @@ fn post_process<A: IntoSlice>(
             });
         }
         let sig = ndarray::Array::from_shape_vec((relevant_points.len(), raw_sig_inds.len()), sig).unwrap();
-        let mut bg = bg.map(|bg| ndarray::Array::from_shape_vec((relevant_points.len(), raw_bg_inds.unwrap().len()), bg).unwrap());
+        let bg = bg.map(|bg| ndarray::Array::from_shape_vec((relevant_points.len(), raw_bg_inds.unwrap().len()), bg).unwrap());
         let sig_sums = sig.fold_axis_skipnan(Axis(1),
-        noisy_float::NoisyFloat::new(0 as my_dtype), |&acc, &next|{ (acc + next) }).mapv(|x| x.raw());
+        noisy_float::NoisyFloat::new(0 as my_dtype), |&acc, &next|{ acc + next }).mapv(|x| x.raw());
         let bg_medians = bg.map(|mut bg|{
             bg.quantile_axis_skipnan_mut(Axis(1), noisy_float::types::n64(0.5), &ndarray_stats::interpolate::Linear).unwrap()});
         let corrected = bg_medians.as_ref().map(|bg_medians|{
@@ -399,8 +389,6 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
     
     let output = std::thread::scope(|scope|{
         let handle = {
-            let filter = tracking_params.filter_close;
-            let separation = tracking_params.separation as my_dtype;
             let neighborhood_size = circle_inds.len();
             let radius = tracking_params.diameter as i32 / 2;
             let thread_tracking_params = tracking_params.clone();
@@ -491,7 +479,7 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
             &dims,
         );
         wait_gpu_time.map(|wait_gpu_time| println!("Wait GPU time: {} s", wait_gpu_time));
-        inp_sender.send(None);
+        inp_sender.send(None).unwrap();
         handle.join().unwrap()
     });
 
@@ -512,6 +500,22 @@ pub fn execute_ndarray(array: &ArrayView3<my_dtype>, params: TrackingParams, deb
     let axisiter = array.axis_iter(ndarray::Axis(0));
     let dims = array.shape();
     let (res, column_names) = execute_gpu(axisiter, &[dims[1] as u32, dims[2] as u32], params, debug, verbosity);
+    let res_len = res.len();
+    let shape = (res_len / column_names.len(), column_names.len());
+    let res = Array2::from_shape_vec(shape, res)
+        .expect(format!("Could not convert to ndarray. Shape is ({}, {}) but length is {}", shape.0, shape.1, &res_len).as_str());
+    (res, column_names)
+}
+
+pub fn execute_file(path: &str, params: TrackingParams, debug: bool, verbosity: u32) -> (Array2<my_dtype>, Vec<(String, String)>) {
+    let file = std::fs::File::open(path).expect(format!("File not found; {}", path).as_str());
+    let mut decoder = Decoder::new(file).expect("Can't create decoder");
+    let (width, height) = decoder.dimensions().unwrap();
+    let dims = [height, width];
+    // // dbg!(dims);
+    let decoderiter = IterDecoder::from(decoder);
+        
+    let (res, column_names) = execute_gpu(decoderiter, &dims, params, debug, verbosity);
     let res_len = res.len();
     let shape = (res_len / column_names.len(), column_names.len());
     let res = Array2::from_shape_vec(shape, res)

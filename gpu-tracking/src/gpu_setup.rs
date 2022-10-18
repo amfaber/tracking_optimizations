@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fs::File, io::Read};
 
-use crate::{execute_gpu::TrackingParams, kernels, my_dtype};
+use crate::{execute_gpu::TrackingParams, my_dtype};
 
 use pollster::FutureExt;
 use wgpu::{Buffer, Device, self, util::DeviceExt};
@@ -94,7 +94,7 @@ pub fn setup_buffers(tracking_params: &TrackingParams,
         mapped_at_creation: false,
     });
 
-    let sigma = tracking_params.noise_size as f32;
+    // let sigma = tracking_params.noise_size as f32;
     // let gaussian_kernel = kernels::Kernel::tp_gaussian(sigma, 4.);
     // let composite_kernel = kernels::Kernel::composite_kernel(sigma, params.composite_dims);
     // let composite_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -286,7 +286,7 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
         ],
     };
 
-    let compute_pipelines = pipelines.iter().map(|(name, group, shader)|{
+    let compute_pipelines = pipelines.iter().map(|(name, _group, shader)|{
         (name.to_string(), device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: None,
         layout: None,
@@ -297,7 +297,7 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
 
     let bind_group_layouts = compute_pipelines.iter()
     .zip(pipelines.iter())
-    .map(|((name, pipeline), (entry, group, shader))|{
+    .map(|((name, pipeline), (_entry, group, _shader))|{
         (name.as_str(), (*group, pipeline.get_bind_group_layout(*group)))
     }).collect::<HashMap<_, _>>();
 
@@ -321,8 +321,8 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
             Some((2, &buffers.processed_buffer)), 
             Some((3, &buffers.centers_buffer)),
             Some((4, &buffers.masses_buffer)),
-            if (tracking_params.characterize) {Some((5, &buffers.frame_buffer))} else {None},
-            if (tracking_params.characterize) {Some((6, &buffers.result_buffer))} else {None},
+            if tracking_params.characterize {Some((5, &buffers.frame_buffer))} else {None},
+            if tracking_params.characterize {Some((6, &buffers.result_buffer))} else {None},
         ]),
         ("max_row", vec![
             Some((0, &buffers.param_buffer)),
