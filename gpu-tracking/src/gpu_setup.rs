@@ -213,21 +213,21 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
 
     let shaders = HashMap::from([
         // ("proprocess_backup", "src/shaders/another_backup_preprocess.wgsl"),
-        ("centers", "src/shaders/centers.wgsl"),
-        ("centers_outside_parens", "src/shaders/centers_outside_parens.wgsl"),
-        ("max_rows", "src/shaders/max_rows.wgsl"),
-        ("walk", "src/shaders/walk.wgsl"),
-        ("walk_cols", "src/shaders/walk_cols.wgsl"),
-        ("preprocess_rows", "src/shaders/preprocess_rows.wgsl"),
-        ("preprocess_cols", "src/shaders/preprocess_cols.wgsl"),
+        ("centers", include_str!("shaders/centers.wgsl")),
+        // ("centers_outside_parens", include_str!("shaders/centers_outside_parens.wgsl")),
+        ("max_rows", include_str!("shaders/max_rows.wgsl")),
+        ("walk", include_str!("shaders/walk.wgsl")),
+        ("walk_cols", include_str!("shaders/walk_cols.wgsl")),
+        ("preprocess_rows", include_str!("shaders/preprocess_rows.wgsl")),
+        ("preprocess_cols", include_str!("shaders/preprocess_cols.wgsl")),
     ]);
 
-    let shaders = shaders.iter().map(|(&name, shader)| {
-        let mut shader_file = File::open(shader).unwrap();
-        let mut shader_string = String::new();
-        shader_file.read_to_string(&mut shader_string).unwrap();
-        (name, shader_string)
-    }).collect::<HashMap<_, _>>();
+    // let shaders = shaders.iter().map(|(&name, shader)| {
+    //     let mut shader_file = File::open(shader).unwrap();
+    //     let mut shader_string = String::new();
+    //     shader_file.read_to_string(&mut shader_string).unwrap();
+    //     (name, shader_string)
+    // }).collect::<HashMap<_, _>>();
 
     let workgroup_size = [16, 16, 1];
     let workgroups: [u32; 2] = 

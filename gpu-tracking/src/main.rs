@@ -56,8 +56,8 @@ fn main() -> anyhow::Result<()> {
         search_range: Some(9.),
         characterize,
         cpu_processed: processed_cpu,
-        sig_radius: Some(3.),
-        bg_radius: Some((60 as f32).sqrt()),
+        // sig_radius: Some(3.),
+        // bg_radius: Some((60 as f32).sqrt()),
         // gap_radius: Some(0.5),
         ..Default::default()
     };
