@@ -490,7 +490,7 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
             &circle_inds,
             &dims,
         );
-        dbg!(wait_gpu_time);
+        wait_gpu_time.map(|wait_gpu_time| println!("Wait GPU time: {} s", wait_gpu_time));
         inp_sender.send(None);
         handle.join().unwrap()
     });
