@@ -50,12 +50,15 @@ fn main() -> anyhow::Result<()> {
     // let results = execute_ndarray(&arr.view(), TrackingParams::default(), true);
     let params = TrackingParams{
         diameter: 9,
-        minmass: 600.,
+        minmass: 800.,
         separation: 10,
         filter_close: filter,
         search_range: Some(9.),
-        characterize: characterize,
+        characterize,
         cpu_processed: processed_cpu,
+        sig_radius: Some(3.),
+        bg_radius: Some((60 as f32).sqrt()),
+        // gap_radius: Some(0.5),
         ..Default::default()
     };
     let mut decoderiter = match debug {

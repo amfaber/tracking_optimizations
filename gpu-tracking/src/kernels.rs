@@ -1,3 +1,5 @@
+use ndarray::{Array1, Array2};
+
 use crate::my_dtype;
 
 pub struct Kernel{
@@ -131,20 +133,39 @@ impl Kernel{
     }
 }
 
-pub fn circle_inds(radius: i32, strides: [i32; 2]) -> (Vec<i32>, usize){
+pub fn circle_inds(radius: my_dtype) -> (Vec<[i32; 2]>, usize){
+    let radius_bound = radius.ceil() as i32;
     let mut inds = Vec::new();
     let mut middle_most = -1;
-    for i in -radius..radius+1{
-        for j in -radius..radius+1{
-            if i.pow(2) + j.pow(2) <= radius.pow(2){
-                inds.push(i * strides[0] + j * strides[1]);
+    for i in -radius_bound..radius_bound+1{
+        for j in -radius_bound..radius_bound+1{
+            if (i.pow(2) + j.pow(2)) as f32 <= radius.powi(2){
+                inds.push([i, j]);
             }
             if i == 0 && j == 0{
                 middle_most = inds.len() as i32 - 1;
             }
         }
     }
+    // let inds = Array2::from_shape_vec((inds.len() / 2, 2), inds).unwrap();
     (inds, middle_most as usize)
+}
+
+pub fn annulus_inds(outer_radius: my_dtype, inner_radius: my_dtype) -> Vec<[i32; 2]>{
+    let bounds = outer_radius.ceil() as i32;
+    let mut inds = Vec::new();
+    let or2 = outer_radius.powi(2);
+    let ir2 = inner_radius.powi(2);
+    for i in -bounds..bounds+1{
+        for j in -bounds..bounds+1{
+            let r2 = (i.pow(2) + j.pow(2)) as f32;
+            if r2 <= or2 && r2 >= ir2{
+                inds.push([i, j]);
+                // dbg!(i, j);
+            }
+        }
+    }
+    inds
 }
 
 pub fn r2_in_circle(radius: i32) -> Vec<my_dtype>{

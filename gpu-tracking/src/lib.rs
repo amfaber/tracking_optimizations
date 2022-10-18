@@ -6,18 +6,18 @@ pub mod kernels;
 pub mod into_slice;
 pub mod slice_wrapper;
 pub type my_dtype = f32;
-pub mod buffer_setup;
+pub mod gpu_setup;
 pub mod linking;
 
 use ndarray::prelude::*;
 use ndarray;
 use crate::{execute_gpu::{execute_ndarray, TrackingParams}};
-
-#[cfg(feature = "python")]
+// use pyo3::PyList;
+// #[cfg(feature = "python")]
 use numpy::ndarray::{ArrayD, ArrayViewD, Array2, Array3, ArrayBase};
-#[cfg(feature = "python")]
+// #[cfg(feature = "python")]
 use numpy::{IntoPyArray, PyReadonlyArray3, PyReadonlyArray2, PyArray2, PyArray3, PyArray1};
-#[cfg(feature = "python")]
+// #[cfg(feature = "python")]
 macro_rules! not_implemented {
     ($name:ident) => {
         if $name.is_some(){
@@ -31,21 +31,11 @@ macro_rules! not_implemented {
     };
 }
 
-#[cfg(feature = "python")]
-use pyo3::prelude::*;
-#[cfg(feature = "python")]
+// #[cfg(feature = "python")]
+use pyo3::{prelude::*, types::PyList};
+// #[cfg(feature = "python")]
 #[pymodule]
 fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
-    #[pyfn(m)]
-    #[pyo3(name = "execute")]
-    fn execute_py<'py>(py: Python<'py>, pyarr: PyReadonlyArray3<my_dtype>) -> &'py PyArray2<my_dtype> {
-        let array = pyarr.as_array();
-        let res = execute_gpu::execute_ndarray(&array, TrackingParams::default(), false);
-        res.into_pyarray(py)
-    }
-
-
-
     #[pyfn(m)]
     #[pyo3(name = "batch")]
     fn batch_py<'py>(
@@ -67,7 +57,11 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         filter_close: Option<bool>,
         search_range: Option<my_dtype>,
         memory: Option<usize>,
-        ) -> &'py PyArray2<my_dtype> {
+        cpu_processed: Option<bool>,
+        sig_radius: Option<my_dtype>,
+        bg_radius: Option<my_dtype>,
+        gap_radius: Option<my_dtype>,
+        ) ->  (&'py PyArray2<my_dtype>, Py<PyAny>) {
         
         not_implemented!(maxsize, threshold, invert, percentile,
             topn, preprocess);
@@ -86,6 +80,11 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         let max_iterations = max_iterations.unwrap_or(10);
         let characterize = characterize.unwrap_or(false);
         let filter_close = filter_close.unwrap_or(true);
+        let cpu_processed = cpu_processed.unwrap_or(false);
+        // let sig_radius = sig_radius;
+        // let bg_radius = bg_radius;
+        let gap_radius = bg_radius.map(|_| gap_radius.unwrap_or(0.));
+        // let gap_radius = gap_radius;
 
         // neither search_range nor memory are unwrapped as linking is optional on the Rust side.
 
@@ -106,21 +105,15 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
             filter_close,
             search_range,
             memory,
+            cpu_processed,
+            sig_radius,
+            bg_radius,
+            gap_radius,
         }; 
         
         let array = pyarr.as_array();
-        let res = execute_gpu::execute_ndarray(&array, params, false);
-        res.into_pyarray(py)
-    }
-
-    #[pyfn(m)]
-    #[pyo3(name = "composite")]
-    fn composite_py<'py>(py: Python<'py>, sigma: my_dtype, size: u32) -> &'py PyArray2<my_dtype> {
-        let res = kernels::Kernel::composite_kernel(sigma, [size, size]);
-        let arr = ndarray::Array::from_shape_vec((size as usize, size as usize), res.data).unwrap();
-        arr.into_pyarray(py)
-        // todo!()
-        // res.into_pyarray(py)
+        let (res, columns) = execute_gpu::execute_ndarray(&array, params, false);
+        (res.into_pyarray(py), columns.into_py(py))
     }
 
     #[pyfn(m)]
