@@ -1,0 +1,9 @@
+[package]
+edition = "2021"
+name = "fft-tracking"
+version = "0.1.0"
+[dependencies]
+clap = { version = "4.0.6", features = ["derive"] }
+easyfft = "*"
+ndarray = "*"
+tiff = "*"
