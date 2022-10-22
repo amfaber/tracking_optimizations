@@ -56,6 +56,7 @@ def batch(
 def batch_file(
     path,
     diameter,
+    channel = None,
     minmass = None,
     maxsize = None,
     separation = None,
@@ -80,6 +81,7 @@ def batch_file(
     arr, columns = batch_file_rust(
         path,
         diameter,
+        channel,
         minmass,
         maxsize,
         separation,

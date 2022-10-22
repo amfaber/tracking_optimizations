@@ -13,14 +13,17 @@ pub mod linking;
 
 extern crate proc_macro;
 
+use std::{fs::File, collections::HashMap};
+
 // use ndarray::prelude::*;
 // use ndarray;
-use crate::{execute_gpu::{execute_ndarray, TrackingParams}};
+use crate::{execute_gpu::{execute_ndarray, TrackingParams}, decoderiter::{MinimalETSParser}};
+use ndarray::Array;
 // use pyo3::PyList;
 // #[cfg(feature = "python")]
 // use numpy::ndarray::{ArrayD, ArrayViewD, Array2, Array3, ArrayBase};
 // #[cfg(feature = "python")]
-use numpy::{IntoPyArray, PyReadonlyArray3, PyReadonlyArray2, PyArray2, PyArray1};
+use numpy::{IntoPyArray, PyReadonlyArray3, PyReadonlyArray2, PyArray2, PyArray1, PyArrayDyn, PyArray3};
 // #[cfg(feature = "python")]
 macro_rules! not_implemented {
     ($name:ident) => {
@@ -36,7 +39,7 @@ macro_rules! not_implemented {
 }
 
 // #[cfg(feature = "python")]
-use pyo3::{prelude::*};
+use pyo3::{prelude::*, types::PyDict};
 // #[cfg(feature = "python")]
 #[pymodule]
 fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
@@ -123,6 +126,7 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         py: Python<'py>,
         filename: String,
         diameter: u32,
+        channel: Option<usize>,
         minmass: Option<my_dtype>,
         maxsize: Option<my_dtype>,
         separation: Option<u32>,
@@ -187,9 +191,11 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
             sig_radius,
             bg_radius,
             gap_radius,
-        }; 
+        };
+
         
-        let (res, columns) = execute_gpu::execute_file(&filename, params, false, 0);
+        let (res, columns) = execute_gpu::execute_file(
+            &filename, channel, params, false, 0);
         (res.into_pyarray(py), columns.into_py(py))
     }
 
@@ -204,6 +210,27 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         let res = linking::linker_all(frame_iter, search_range, memory);
         res.into_pyarray(py)
     }
+
+    #[pyfn(m)]
+    #[pyo3(name = "parse_ets")]
+    fn parse_ets<'py>(py: Python<'py>, path: &str) -> &'py PyDict{
+        // HashMap<usize, &'py PyArray3<u16>>
+        let mut file = File::open(path).unwrap();
+        let parser = MinimalETSParser::new(&mut file).unwrap();
+        // let mut n_frames = vec![0];
+        let output = PyDict::new(py);
+        for channel in parser.offsets.keys(){
+            let iter = parser.iterate_channel(file.try_clone().unwrap(), *channel);
+            let n_frames = iter.len();
+            let mut vec = Vec::with_capacity(n_frames * parser.dims.iter().product::<usize>());
+            vec.extend(iter.flatten().flatten());
+            let array = Array::from_shape_vec((n_frames, parser.dims[1], parser.dims[0]), vec).unwrap();
+            let array = array.into_pyarray(py);
+            output.set_item(*channel, array).unwrap();
+        }
+        output
+    }
+
 
     Ok(())
 }

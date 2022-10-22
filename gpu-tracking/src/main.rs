@@ -4,7 +4,7 @@ use pollster::FutureExt;
 use std::io::Write;
 use std::{fs, time::Instant};
 use tiff::decoder::{Decoder, DecodingResult};
-use gpu_tracking::{execute_gpu::{execute_gpu, execute_ndarray}};
+use gpu_tracking::{execute_gpu::{self, execute_gpu, execute_ndarray}};
 use gpu_tracking::decoderiter::IterDecoder;
 use futures;
 use futures_intrusive;
@@ -35,18 +35,17 @@ fn main() -> anyhow::Result<()> {
     let filter = args.filter.unwrap_or(true);
     let characterize = args.characterize.unwrap_or(true);
     let processed_cpu = args.processed_cpu.unwrap_or(false);
-    let file = fs::File::open(path).expect("didn't find the file");
-    let mut decoder = Decoder::new(file).expect("Can't create decoder");
-    let (width, height) = decoder.dimensions().unwrap();
-    let dims = [height, width];
-    // // dbg!(dims);
-    let mut decoderiter = IterDecoder::from(decoder);
+    // let file = fs::File::open(path).expect("didn't find the file");
+    // let mut decoder = Decoder::new(file).expect("Can't create decoder");
+    // let (width, height) = decoder.dimensions().unwrap();
+    // let dims = [height, width];
+    // // // dbg!(dims);
+    // let mut decoderiter = IterDecoder::from(decoder);
     // let all_frames = decoderiter.collect::<Vec<_>>();
     // let all_views = all_frames.iter().map(|x| x.view()).collect::<Vec<_>>();
     // let arr = ndarray::stack(ndarray::Axis(0), &all_views).unwrap();
 
 
-    let now = Instant::now();
     // let results = execute_ndarray(&arr.view(), TrackingParams::default(), true);
     let params = TrackingParams{
         diameter: 9,
@@ -61,11 +60,13 @@ fn main() -> anyhow::Result<()> {
         // gap_radius: Some(0.5),
         ..Default::default()
     };
-    let mut decoderiter = match debug {
-        true => decoderiter.take(1),
-        false => decoderiter.take(usize::MAX)
-    };
-    let (results, shape) = execute_gpu(&mut decoderiter, &dims, params, debug, 1);
+    // let mut decoderiter = match debug {
+        //     true => decoderiter.take(1),
+        //     false => decoderiter.take(usize::MAX)
+        // };
+    let now = Instant::now();
+    let (results, column_names) = execute_gpu::execute_file(&path, Some(0), params, debug, 1);
+    // let (results, shape) = execute_gpu(&mut decoderiter, &dims, params, debug, 1);
     let function_time = now.elapsed().as_millis() as f64 / 1000.;
     dbg!(function_time);
     

@@ -582,6 +582,7 @@ dependencies = [
  "anyhow",
  "bencher",
  "bytemuck",
+ "byteorder",
  "clap",
  "futures",
  "futures-intrusive",

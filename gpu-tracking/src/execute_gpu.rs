@@ -3,9 +3,9 @@ type my_dtype = f32;
 use ndarray::{Array2, ArrayView3, Axis, ArrayView};
 use pollster::FutureExt;
 use tiff::decoder::Decoder;
-use std::{collections::VecDeque, time::Instant, sync::mpsc::Sender};
+use std::{collections::VecDeque, time::Instant, sync::mpsc::Sender, path::Path, fs::File};
 use wgpu::{Buffer, SubmissionIndex};
-use crate::{kernels, into_slice::IntoSlice, gpu_setup::{self, GpuState}, linking::Linker, decoderiter::IterDecoder};
+use crate::{kernels, into_slice::IntoSlice, gpu_setup::{self, GpuState}, linking::Linker, decoderiter::{IterDecoder, self}};
 use kd_tree;
 use ndarray_stats::{QuantileExt, MaybeNanExt};
 
@@ -507,15 +507,33 @@ pub fn execute_ndarray(array: &ArrayView3<my_dtype>, params: TrackingParams, deb
     (res, column_names)
 }
 
-pub fn execute_file(path: &str, params: TrackingParams, debug: bool, verbosity: u32) -> (Array2<my_dtype>, Vec<(String, String)>) {
-    let file = std::fs::File::open(path).expect(format!("File not found; {}", path).as_str());
-    let mut decoder = Decoder::new(file).expect("Can't create decoder");
-    let (width, height) = decoder.dimensions().unwrap();
-    let dims = [height, width];
-    // // dbg!(dims);
-    let decoderiter = IterDecoder::from(decoder);
-        
-    let (res, column_names) = execute_gpu(decoderiter, &dims, params, debug, verbosity);
+pub fn execute_file(path: &str, channel: Option<usize>, params: TrackingParams, debug: bool, verbosity: u32) -> (Array2<my_dtype>, Vec<(String, String)>) {
+    let path = Path::new(path);
+    let ext = path.extension().unwrap().to_ascii_lowercase();
+    let mut file = File::open(path).expect("Could not open file");
+    let (res, column_names) = match ext.to_str().unwrap() {
+        "tif" | "tiff" => {
+            let file = File::open(path).expect("Could not open file");
+            // panic!("custom panic");
+            let mut decoder = Decoder::new(file).unwrap();
+            let (width, height) = decoder.dimensions().unwrap();
+            let dims = [height, width];
+            let iterator = IterDecoder::from(decoder);
+            let (res, column_names) = execute_gpu(iterator, &dims, params, debug, verbosity);
+            (res, column_names)
+        },
+        "ets" => {
+            let parser = decoderiter::MinimalETSParser::new(&mut file).unwrap();
+            let dims = [parser.dims[0] as u32, parser.dims[1] as u32];
+            let iterator = parser.iterate_channel(
+                file, channel.unwrap_or(0))
+                .flatten().map(|vec| vec.into_iter().map(|x| x as f32).collect::<Vec<_>>());
+            let (res, column_names) = execute_gpu(iterator, &dims, params, debug, verbosity);
+            (res, column_names)
+        },
+        _ => panic!("File extension '{}' not supported", ext.to_str().unwrap()),
+    };
+
     let res_len = res.len();
     let shape = (res_len / column_names.len(), column_names.len());
     let res = Array2::from_shape_vec(shape, res)
