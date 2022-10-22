@@ -4,3 +4,5 @@
 *launch.json
 **target/
 .DS_Store
+*.vsi
+*.ets
