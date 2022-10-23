@@ -62,7 +62,7 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         filter_close: Option<bool>,
         search_range: Option<my_dtype>,
         memory: Option<usize>,
-        cpu_processed: Option<bool>,
+        // cpu_processed: Option<bool>,
         sig_radius: Option<my_dtype>,
         bg_radius: Option<my_dtype>,
         gap_radius: Option<my_dtype>,
@@ -85,7 +85,7 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         let max_iterations = max_iterations.unwrap_or(10);
         let characterize = characterize.unwrap_or(false);
         let filter_close = filter_close.unwrap_or(true);
-        let cpu_processed = cpu_processed.unwrap_or(false);
+        // let cpu_processed = cpu_processed.unwrap_or(false);
         let gap_radius = bg_radius.map(|_| gap_radius.unwrap_or(0.));
 
         // neither search_range nor memory are unwrapped as linking is optional on the Rust side.
@@ -107,7 +107,7 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
             filter_close,
             search_range,
             memory,
-            cpu_processed,
+            // cpu_processed,
             sig_radius,
             bg_radius,
             gap_radius,
@@ -140,7 +140,7 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         filter_close: Option<bool>,
         search_range: Option<my_dtype>,
         memory: Option<usize>,
-        cpu_processed: Option<bool>,
+        // cpu_processed: Option<bool>,
         sig_radius: Option<my_dtype>,
         bg_radius: Option<my_dtype>,
         gap_radius: Option<my_dtype>,
@@ -163,7 +163,7 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         let max_iterations = max_iterations.unwrap_or(10);
         let characterize = characterize.unwrap_or(false);
         let filter_close = filter_close.unwrap_or(true);
-        let cpu_processed = cpu_processed.unwrap_or(false);
+        // let cpu_processed = cpu_processed.unwrap_or(false);
         let gap_radius = bg_radius.map(|_| gap_radius.unwrap_or(0.));
 
         // neither search_range nor memory are unwrapped as linking is optional on the Rust side.
@@ -185,7 +185,7 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
             filter_close,
             search_range,
             memory,
-            cpu_processed,
+            // cpu_processed,
             sig_radius,
             bg_radius,
             gap_radius,

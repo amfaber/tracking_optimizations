@@ -33,7 +33,7 @@ pub struct TrackingParams{
     pub filter_close: bool,
     pub search_range: Option<my_dtype>,
     pub memory: Option<usize>,
-    pub cpu_processed: bool,
+    // pub cpu_processed: bool,
     pub sig_radius: Option<my_dtype>,
     pub bg_radius: Option<my_dtype>,
     pub gap_radius: Option<my_dtype>,
@@ -58,7 +58,7 @@ impl Default for TrackingParams{
             filter_close: true,
             search_range: None,
             memory: None,
-            cpu_processed: true,
+            // cpu_processed: true,
             sig_radius: None,
             bg_radius: None,
             gap_radius: None,
@@ -131,10 +131,7 @@ fn submit_work(
         staging_buffer, 0, 4);
     encoder.copy_buffer_to_buffer(output_buffer, 0,
         staging_buffer, 4, state.pic_byte_size);
-    if tracking_params.cpu_processed {
-        encoder.copy_buffer_to_buffer(&state.buffers.processed_buffer, 0,
-            &staging_buffer, state.result_read_depth * state.pic_byte_size, state.pic_byte_size);
-    }
+    
     let index = state.queue.submit(Some(encoder.finish()));
     let mut encoder =
         state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
