@@ -49,10 +49,10 @@ fn main() -> anyhow::Result<()> {
     // let results = execute_ndarray(&arr.view(), TrackingParams::default(), true);
     let params = TrackingParams{
         diameter: 9,
-        minmass: 800.,
+        minmass: 0.,
         separation: 10,
         filter_close: filter,
-        search_range: Some(9.),
+        // search_range: Some(9.),
         characterize,
         cpu_processed: processed_cpu,
         // sig_radius: Some(3.),
@@ -61,11 +61,11 @@ fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
     // let mut decoderiter = match debug {
-        //     true => decoderiter.take(1),
-        //     false => decoderiter.take(usize::MAX)
-        // };
+    //         true => decoderiter.take(1),
+    //         false => decoderiter.take(usize::MAX)
+    //     };
     let now = Instant::now();
-    let (results, column_names) = execute_gpu::execute_file(&path, Some(0), params, debug, 1);
+    let (results, column_names) = execute_gpu::execute_file(&path, Some(1), params, debug, 1);
     // let (results, shape) = execute_gpu(&mut decoderiter, &dims, params, debug, 1);
     let function_time = now.elapsed().as_millis() as f64 / 1000.;
     dbg!(function_time);

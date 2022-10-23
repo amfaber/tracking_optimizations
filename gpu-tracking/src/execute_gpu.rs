@@ -1,3 +1,5 @@
+use bencher::black_box;
+use bytemuck::{Pod, Zeroable};
 use futures_intrusive;
 type my_dtype = f32;
 use ndarray::{Array2, ArrayView3, Axis, ArrayView};
@@ -6,12 +8,12 @@ use tiff::decoder::Decoder;
 use std::{collections::VecDeque, time::Instant, sync::mpsc::Sender, path::Path, fs::File};
 use wgpu::{Buffer, SubmissionIndex};
 use crate::{kernels, into_slice::IntoSlice, gpu_setup::{self, GpuState}, linking::Linker, decoderiter::{IterDecoder, self}};
-use kd_tree;
+use kd_tree::{self, KdPoint};
 use ndarray_stats::{QuantileExt, MaybeNanExt};
 
 type inner_output = my_dtype;
 type output_type = Vec<inner_output>;
-type channel_type = Option<(Vec<([f32; 2], (usize, f32))>, Option<Vec<f32>>, usize, Option<Vec<my_dtype>>)>;
+type channel_type = Option<(Vec<ResultRow>, usize, Option<Vec<my_dtype>>)>;
 
 #[derive(Clone)]
 pub struct TrackingParams{
@@ -64,6 +66,41 @@ impl Default for TrackingParams{
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ResultRow{
+    pub x: f32,
+    pub y: f32,
+    pub mass: f32,
+    pub Rg: f32,
+    pub raw_mass: f32,
+    pub signal: f32,
+    pub ecc: f32,
+}
+
+impl ResultRow{
+    pub fn to_slice(&self, characterize: bool) -> &[f32]{
+        let ptr = self as *const Self as *const f32;
+        let len = if characterize {7} else {3};
+        unsafe{std::slice::from_raw_parts(ptr, len)}
+    }
+}
+
+unsafe impl Zeroable for ResultRow {}
+
+unsafe impl Pod for ResultRow{}
+
+impl KdPoint for ResultRow{
+    type Scalar = f32;
+    type Dim = typenum::U2;
+    fn at(&self, k: usize) -> Self::Scalar{
+        match k{
+            0 => self.x,
+            1 => self.y,
+            _ => panic!("Invalid index"),
+        }
+    }
+}
+
 
 fn submit_work(
     frame: &[my_dtype],
@@ -79,19 +116,21 @@ fn submit_work(
     encoder.copy_buffer_to_buffer(staging_buffer, 0,
         &state.buffers.frame_buffer, 0, state.pic_byte_size);
         
-    state.pipelines.iter().for_each(|(name, pipeline)|{
+    state.pipelines.iter().for_each(|(name, (pipeline, wg_n))|{
         let (group, bind_group) = &state.bind_groups[name];
         let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None });
         cpass.set_bind_group(*group, bind_group, &[]);
         cpass.set_pipeline(pipeline);
-        cpass.dispatch_workgroups(state.workgroups[0], state.workgroups[1], 1);
+        cpass.dispatch_workgroups(wg_n[0], wg_n[1], wg_n[2]);
     });
     let output_buffer = match debug {
         false => &state.buffers.result_buffer,
-        true => &state.buffers.centers_buffer,
+        true => &state.buffers.result_buffer,
     };
+    encoder.copy_buffer_to_buffer(&state.buffers.atomic_filtered_buffer, 0,
+        staging_buffer, 0, 4);
     encoder.copy_buffer_to_buffer(output_buffer, 0,
-        staging_buffer, 0, state.result_read_depth * state.pic_byte_size);
+        staging_buffer, 4, state.pic_byte_size);
     if tracking_params.cpu_processed {
         encoder.copy_buffer_to_buffer(&state.buffers.processed_buffer, 0,
             &staging_buffer, state.result_read_depth * state.pic_byte_size, state.pic_byte_size);
@@ -100,6 +139,9 @@ fn submit_work(
     let mut encoder =
         state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     encoder.clear_buffer(&state.buffers.result_buffer, 0, None);
+    encoder.clear_buffer(&state.buffers.atomic_buffer, 0, None);
+    encoder.clear_buffer(&state.buffers.atomic_filtered_buffer, 0, None);
+    encoder.clear_buffer(&state.buffers.particles_buffer, 0, None);
     state.queue.submit(Some(encoder.finish()));
     index
 }
@@ -125,88 +167,35 @@ fn get_work(
     let now = wait_gpu_time.as_ref().map(|_| Instant::now());
     state.device.poll(wgpu::Maintain::WaitForSubmissionIndex(old_submission));
     wait_gpu_time.as_mut().map(|t| *t += now.unwrap().elapsed().as_secs_f64());
-    // (*wait_gpu_time) += now.elapsed().as_nanos() as f64 / 1_000_000_000.;
     receiver.receive().block_on().unwrap().unwrap();
     let data = buffer_slice.get_mapped_range();
-    let dataf32 = bytemuck::cast_slice::<u8, f32>(&data);
-    let mut positions: Vec<([f32; 2], (usize, f32))> = Vec::with_capacity(1000);
-    let mut properties = if tracking_params.characterize || debug {
-        Some(Vec::with_capacity(1000*(state.result_read_depth-3) as usize))
-    } else {
-        None
-    };
     let mut idx = 0usize;
     
-    let pic_size = state.pic_size;
-    let result_read_depth = state.result_read_depth;
+    let neighborhoods = None;
     
-    let (mut neighborhoods, processed_offset) = if tracking_params.cpu_processed {
-        (Some(Vec::with_capacity(1000 * circle_inds.len())), Some(result_read_depth as usize))
-    } else {
-        (None, None)
-    };
-    
-    
-    let shape = [dataf32.len()/dims.iter().product::<u32>() as usize, dims[0] as usize, dims[1] as usize];
-    let data_array = ArrayView::from_shape(shape, dataf32).unwrap();
-    let masses = data_array.index_axis(Axis(0), 0);
-    let centersx = data_array.index_axis(Axis(0), 1);
-    let centersy = data_array.index_axis(Axis(0), 2);
-    let gpu_properties = (3..result_read_depth).map(|i| data_array.index_axis(Axis(0), i as usize)).collect::<Vec<_>>();
-    let processed = processed_offset.map(|processed_offset| {data_array.index_axis(Axis(0), processed_offset)});
-    match debug{
-        false => {
-            for (i, &mass) in masses.indexed_iter(){
-                if mass != 0.0{
-                    unsafe{
-                        positions.push(([*centersx.uget(i), *centersy.uget(i)], (idx, mass)));
-                    }
-                    
-                    if tracking_params.cpu_processed{
-                        // let idx = i.into_dimension().as_array_view();
-                        for ind in circle_inds.iter(){
-                            // let curidx = i + (*ind as usize) + processed_offset * pic_size;
-                            let curidx = ((i.0 as i32 + ind[0]) as usize, (i.1 as i32 + ind[1]) as usize);
-                            neighborhoods.as_mut().unwrap().push(*processed.unwrap().get(curidx).unwrap_or(&my_dtype::NAN));
-                        }
-                    }
-                    if tracking_params.characterize{
-                        for prop in gpu_properties.iter(){
-                            unsafe{
-                                properties.as_mut().unwrap().push(*prop.uget(i));
-                            }
-                        }
-                    }
-                    idx += 1;
-                }
-            }
-        },
-        true => {
-            for i in 0..pic_size*result_read_depth as usize{
-                properties.as_mut().unwrap().push(dataf32[i]);
-            }
-        },
-    }
-    job_sender.send(Some((positions, properties, frame_index, neighborhoods))).unwrap();
-    // post_process(positions, properties, output, frame_index, result_read_depth, filter, separation, debug);
+    let n_parts = *bytemuck::from_bytes::<u32>(&data[..4]);
+    let results = bytemuck::cast_slice::<u8, ResultRow>(&data[4..(n_parts as usize)*4*7 + 4]).to_vec();
+
+    job_sender.send(Some((results, frame_index, neighborhoods))).unwrap();
     drop(data);
     finished_staging_buffer.unmap();
     
 }
 
 pub fn column_names(params: TrackingParams) -> Vec<(String, String)>{
-    let mut names = vec![("frame", "int"), ("mass", "float"), ("y", "float"), ("x", "float")];
+    let mut names = vec![("frame", "int"), ("y", "float"), ("x", "float"), ("mass", "float")];
+    
+    if params.characterize{
+        names.push(("Rg", "float"));
+        names.push(("raw", "float"));
+        names.push(("signal", "float"));
+        names.push(("ecc", "float"));
+    }
 
     if params.search_range.is_some(){
         names.push(("particle", "int"));
     }
-
-    if params.cpu_processed{
-        names.push(("Rg", "float"));
-        names.push(("ecc", "float"));
-        names.push(("signal", "float"));
-    }
-
+    
     if params.sig_radius.is_some(){
         names.push(("raw_mass", "float"));
     }
@@ -216,12 +205,6 @@ pub fn column_names(params: TrackingParams) -> Vec<(String, String)>{
         names.push(("raw_mass_corrected", "float"));
     }
     
-    if params.characterize{
-        names.push(("Rg_gpu", "float"));
-        names.push(("raw_mass_gpu", "float"));
-        names.push(("signal_gpu", "float"));
-        names.push(("ecc_gpu", "float"));
-    }
     names.iter().map(|(name, t)| (name.to_string(), t.to_string())).collect()
 }
 
@@ -235,8 +218,7 @@ pub struct PostProcessKernels{
 }
 
 fn post_process<A: IntoSlice>(
-    positions: Vec<([f32; 2], (usize, f32))>,
-    properties: Option<Vec<f32>>,
+    results: Vec<ResultRow>,
     output: &mut Vec<my_dtype>,
     frame_index: usize,
     result_read_depth: u64,
@@ -250,20 +232,16 @@ fn post_process<A: IntoSlice>(
     dims: &[u32; 2],
     tracking_params: &TrackingParams,
     ) -> () {
-    if debug{
-        output.extend(properties.unwrap());
-        return;
-    }
 
-    let N = positions.len();
-    let tree = kd_tree::KdTree::build_by_ordered_float(positions);
-    let relevant_points = tree.iter().map(|query| {
-        let positions = query.0;
-        let (idx, mass) = query.1;
+    let N = results.len();
+    let tree = kd_tree::KdIndexTree::build_by_ordered_float(&results);
+    let relevant_points = results.iter().enumerate()
+    .map(|(idx, query)| {
+        let mass = query.mass;
         let neighbors = tree.within_radius(query, tracking_params.separation as my_dtype);
         let mut keep_point = true;
-        for neighbor in neighbors{
-            let (neighbor_idx, neighbor_mass) = neighbor.1;
+        for &neighbor_idx in neighbors{
+            let neighbor_mass = results[neighbor_idx].mass;
             if neighbor_idx != idx{
                 if mass < neighbor_mass{
                     keep_point = false;
@@ -277,26 +255,26 @@ fn post_process<A: IntoSlice>(
             }
         }
         if keep_point{
-            Some((positions, (idx, mass)))
+            Some(*query)
         } else {
             None
         }
     }).flatten().collect::<Vec<_>>();
 
-    let cpu_properties = neighborhoods.map(|neighborhoods|{
-        let neighborhoods = ndarray::Array::from_shape_vec((N, neighborhood_size), neighborhoods).unwrap();
-        let kernels = kernels.unwrap();
-        let Rg = (&neighborhoods * &kernels.r2).sum_axis(Axis(1));
-        let sin = (&neighborhoods * &kernels.sin).sum_axis(Axis(1)).mapv(|x| x.powi(2));
-        let cos = (&neighborhoods * &kernels.cos).sum_axis(Axis(1)).mapv(|x| x.powi(2));
-        let ecc = (sin + cos).mapv(|x| x.sqrt());
-        let middle_most = neighborhoods.map_axis(Axis(1), |x| x[middle_most]);
-        let signal = neighborhoods.map_axis(Axis(1), |x|
-            x.iter().max_by(|&&a, &b| {
-                (a).partial_cmp(b).unwrap()
-            }).cloned().unwrap());
-        (Rg, ecc, middle_most, signal)
-    });
+    // let cpu_properties = neighborhoods.map(|neighborhoods|{
+    //     let neighborhoods = ndarray::Array::from_shape_vec((N, neighborhood_size), neighborhoods).unwrap();
+    //     let kernels = kernels.unwrap();
+    //     let Rg = (&neighborhoods * &kernels.r2).sum_axis(Axis(1));
+    //     let sin = (&neighborhoods * &kernels.sin).sum_axis(Axis(1)).mapv(|x| x.powi(2));
+    //     let cos = (&neighborhoods * &kernels.cos).sum_axis(Axis(1)).mapv(|x| x.powi(2));
+    //     let ecc = (sin + cos).mapv(|x| x.sqrt());
+    //     let middle_most = neighborhoods.map_axis(Axis(1), |x| x[middle_most]);
+    //     let signal = neighborhoods.map_axis(Axis(1), |x|
+    //         x.iter().max_by(|&&a, &b| {
+    //             (a).partial_cmp(b).unwrap()
+    //         }).cloned().unwrap());
+    //     (Rg, ecc, middle_most, signal)
+    // });
 
     let raw_properties = frame.map(|inner| {
         let frame = inner.into_slice();
@@ -308,8 +286,8 @@ fn post_process<A: IntoSlice>(
         let mut sig = Vec::with_capacity(N * raw_sig_inds.len());
         let mut bg = raw_bg_inds.map(|_| Vec::with_capacity(N * raw_sig_inds.len()));
         
-        for (position, (_idx, _mass)) in relevant_points.iter() {
-            let middle_index = [position[0].round() as i32, position[1].round() as i32];
+        for row in relevant_points.iter() {
+            let middle_index = [row.x.round() as i32, row.y as i32];
             for ind in raw_sig_inds{
                 let curidx = [(middle_index[0] + ind[0]) as usize, (middle_index[1] + ind[1]) as usize];
                 sig.push(*frame.get(curidx).unwrap_or(&my_dtype::NAN));
@@ -333,38 +311,17 @@ fn post_process<A: IntoSlice>(
     });
 
     let part_ids = linker.map(|linker| linker.advance(&relevant_points));
-
-    for (idx_after_filter, point) in relevant_points.iter().enumerate(){
-        let (positions, (idx_before_filter, mass)) = point;
+    
+    for (idx, row) in relevant_points.iter().enumerate(){
         output.push(frame_index as my_dtype);
-        output.push(*mass);
-        output.push(positions[0]);
-        output.push(positions[1]);
-
-        part_ids.as_ref().map(|part_ids| output.push(part_ids[idx_after_filter] as my_dtype));
-
-        cpu_properties.as_ref().map(|cpu_properties|{
-            let (Rg, ecc, middle_most, signal) = cpu_properties;
-            let idx = *idx_before_filter;
-            output.push((Rg[idx] / mass).sqrt());
-            output.push(ecc[idx] / (mass - middle_most[idx]));
-            output.push(signal[idx]);
-        });
-
+        output.extend_from_slice(row.to_slice(tracking_params.characterize));
+        part_ids.as_ref().map(|part_ids| output.push(part_ids[idx] as my_dtype));
         raw_properties.as_ref().map(|raw_properties|{
-            let idx = idx_after_filter;
-            let (sig_sums, bg_medians, corrected) = raw_properties;
-            output.push(sig_sums[idx]);
-            bg_medians.as_ref().map(|bg_medians| output.push(bg_medians[idx]));
-            corrected.as_ref().map(|corrected| output.push(corrected[idx]));
+            output.push(raw_properties.0[idx]);
+            raw_properties.1.as_ref().map(|bg_medians| output.push(bg_medians[idx]));
+            raw_properties.2.as_ref().map(|corrected| output.push(corrected[idx]));
         });
-        
-        properties.as_ref().map(|properties|{
-            let idx = *idx_before_filter;
-            for j in 0..result_read_depth as usize - 3{
-                output.push(properties[idx * (result_read_depth as usize - 3) + j]);
-            }
-        });
+
     }
 }
 
@@ -406,7 +363,7 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
                         .map(|((bg_radius, sig_radius), gap_radius)| kernels::annulus_inds(bg_radius, sig_radius + gap_radius)),
                     }
                 );
-                let mut output: output_type = Vec::new();
+                let mut output: output_type = Vec::with_capacity(100000);
                 let mut thread_sleep = if verbosity > 0 {Some(0.)} else {None};
                 loop{
                     let now = thread_sleep.map(|_| std::time::Instant::now());
@@ -414,10 +371,10 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
                         None => break,
                         Some(inp) => {
                             thread_sleep.as_mut().map(|thread_sleep| *thread_sleep += now.unwrap().elapsed().as_nanos() as f64 / 1e9);
-                            let (positions, properties,
-                                frame_index, neighborhoods) = inp;
+                            let (results, frame_index,
+                                neighborhoods) = inp;
                             let frame = frame_receiver.recv().unwrap();
-                            post_process(positions, properties, &mut output, frame_index,
+                            post_process(results, &mut output, frame_index,
                                 state.result_read_depth, debug, linker.as_mut(),
                                 neighborhoods, neighborhood_size, kernels.as_ref(), middle_most, frame, dims, &thread_tracking_params);
                         }
@@ -483,13 +440,6 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
         handle.join().unwrap()
     });
 
-    // let mut n_result_columns = state.result_read_depth as usize + 1;
-    // if tracking_params.cpu_processed { n_result_columns += 3};
-    // tracking_params.sig_radius.map(|_| n_result_columns += 1);
-    // tracking_params.bg_radius.map(|_| n_result_columns += 2);
-    // tracking_params.search_range.map(|_| n_result_columns += 1);
-
-    // let shape = (output.len() / n_result_columns, n_result_columns);
     (output, column_names(tracking_params))
 }
 
@@ -519,6 +469,8 @@ pub fn execute_file(path: &str, channel: Option<usize>, params: TrackingParams, 
             let (width, height) = decoder.dimensions().unwrap();
             let dims = [height, width];
             let iterator = IterDecoder::from(decoder);
+            let n_frames = if debug {1} else {usize::MAX};
+            let iterator = iterator.take(n_frames);
             let (res, column_names) = execute_gpu(iterator, &dims, params, debug, verbosity);
             (res, column_names)
         },
@@ -528,6 +480,8 @@ pub fn execute_file(path: &str, channel: Option<usize>, params: TrackingParams, 
             let iterator = parser.iterate_channel(
                 file, channel.unwrap_or(0))
                 .flatten().map(|vec| vec.into_iter().map(|x| x as f32).collect::<Vec<_>>());
+            let n_frames = if debug {1} else {usize::MAX};
+            let iterator = iterator.take(n_frames);
             let (res, column_names) = execute_gpu(iterator, &dims, params, debug, verbosity);
             (res, column_names)
         },

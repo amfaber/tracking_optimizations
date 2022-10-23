@@ -28,15 +28,18 @@ pub struct GpuBuffers{
     pub result_buffer: Buffer,
     pub param_buffer: Buffer,
     pub max_rows: Buffer,
+    pub atomic_buffer: Buffer,
+    pub particles_buffer: Buffer,
+    pub atomic_filtered_buffer: Buffer,
 }
 
 pub struct GpuState{
     pub device: Device,
     pub queue: wgpu::Queue,
     pub buffers: GpuBuffers,
-    pub pipelines: Vec<(String, wgpu::ComputePipeline)>,
+    pub pipelines: Vec<(String, (wgpu::ComputePipeline, [u32; 3]))>,
     pub bind_groups: HashMap<String, (u32, wgpu::BindGroup)>,
-    pub workgroups: [u32; 2],
+    // pub workgroups: [u32; 2],
     pub pic_size: usize,
     pub result_read_depth: u64,
     pub pic_byte_size: u64,
@@ -77,7 +80,8 @@ pub fn setup_buffers(tracking_params: &TrackingParams,
     for i in 0..2{
         let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(format!("Staging {}", i).as_str()),
-            size: ((result_buffer_depth + tracking_params.cpu_processed as u64) * size) as u64,
+            size: size + 4,
+            // size: ((result_buffer_depth + tracking_params.cpu_processed as u64) * size) as u64,
             usage: wgpu::BufferUsages::COPY_SRC 
             | wgpu::BufferUsages::COPY_DST 
             | wgpu::BufferUsages::MAP_READ,
@@ -170,6 +174,27 @@ pub fn setup_buffers(tracking_params: &TrackingParams,
         mapped_at_creation: false,
     });
 
+    let atomic_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 4,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    let atomic_filtered_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 4,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    let particles_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
 
     GpuBuffers{
         staging_buffers,
@@ -183,6 +208,9 @@ pub fn setup_buffers(tracking_params: &TrackingParams,
         result_buffer,
         param_buffer,
         max_rows,
+        atomic_buffer,
+        particles_buffer,
+        atomic_filtered_buffer,
     }
 }
 
@@ -211,49 +239,73 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
     let common_header = include_str!("shaders/params.wgsl");
 
 
+    // let shaders = HashMap::from([
+    //     // ("proprocess_backup", "src/shaders/another_backup_preprocess.wgsl"),
+    //     ("centers", include_str!("shaders/centers.wgsl")),
+    //     // ("centers_outside_parens", include_str!("shaders/centers_outside_parens.wgsl")),
+    //     ("max_rows", include_str!("shaders/max_rows.wgsl")),
+    //     ("walk", include_str!("shaders/walk.wgsl")),
+    //     ("walk_cols", include_str!("shaders/walk_cols.wgsl")),
+    //     ("preprocess_rows", include_str!("shaders/preprocess_rows.wgsl")),
+    //     ("preprocess_cols", include_str!("shaders/preprocess_cols.wgsl")),
+    // ]);
+    
+    let workgroup_size_2d = [16u32, 16, 1];
+    let wg_dims = [dims[0], dims[1], 1];
+
     let shaders = HashMap::from([
         // ("proprocess_backup", "src/shaders/another_backup_preprocess.wgsl"),
-        ("centers", include_str!("shaders/centers.wgsl")),
-        // ("centers_outside_parens", include_str!("shaders/centers_outside_parens.wgsl")),
-        ("max_rows", include_str!("shaders/max_rows.wgsl")),
-        ("walk", include_str!("shaders/walk.wgsl")),
-        ("walk_cols", include_str!("shaders/walk_cols.wgsl")),
-        ("preprocess_rows", include_str!("shaders/preprocess_rows.wgsl")),
-        ("preprocess_cols", include_str!("shaders/preprocess_cols.wgsl")),
+        // ("centers", ("src/shaders/centers.wgsl", wg_dims, workgroup_size_2d)),
+        // ("centers_outsi", ("shaders/centers_outside_parens.wgsl")),
+        ("max_rows", ("src/shaders/max_rows.wgsl", wg_dims, workgroup_size_2d)),
+        // ("walk_cols", ("src/shaders/walk_cols.wgsl", wg_dims, workgroup_size_2d)),
+        ("extract_max", ("src/shaders/extract_max.wgsl", wg_dims, workgroup_size_2d)),
+        ("preprocess_rows", ("src/shaders/preprocess_rows.wgsl", wg_dims, workgroup_size_2d)),
+        ("preprocess_cols", ("src/shaders/preprocess_cols.wgsl", wg_dims, workgroup_size_2d)),
+        ("walk", ("src/shaders/walk.wgsl", [10000, 1, 1], [256, 1, 1])),
+        ("characterize", ("src/shaders/characterize.wgsl", [10000, 1, 1], [256, 1, 1])),
     ]);
 
-    // let shaders = shaders.iter().map(|(&name, shader)| {
-    //     let mut shader_file = File::open(shader).unwrap();
-    //     let mut shader_string = String::new();
-    //     shader_file.read_to_string(&mut shader_string).unwrap();
-    //     (name, shader_string)
-    // }).collect::<HashMap<_, _>>();
+    let shaders = shaders.iter().map(|(&name, (shader, dims, group_size))| {
+        let mut shader_file = File::open(shader).expect(format!("{} not found", shader).as_str());
+        let mut shader_string = String::new();
+        shader_file.read_to_string(&mut shader_string).unwrap();
+        (name, (shader_string, dims, group_size))
+    }).collect::<HashMap<_, _>>();
 
-    let workgroup_size = [16, 16, 1];
-    let workgroups: [u32; 2] = 
-        dims.iter().zip(workgroup_size)
-        .map(|(&x, size)| (x + size - 1) / size).collect::<Vec<u32>>().try_into().unwrap();
+    let n_workgroups = |dims: &[u32; 3], wgsize: &[u32; 3]| { 
+        let mut n_workgroups = [0, 0, 0];
+        for i in 0..3 {
+            n_workgroups[i] = (dims[i] + wgsize[i] - 1) / wgsize[i];
+        }
+        n_workgroups
+    };
+    // let workgroups: [u32; 2] = dims.iter().zip(workgroup_size)
+    //     .map(|(&x, size)| (x + size - 1) / size).collect::<Vec<u32>>().try_into().unwrap();
 
-    let preprocess_source = |source| -> String {
+    
+
+    let preprocess_source = |source, wg_size: &[u32; 3]| -> String {
         let mut result = String::new();
         result.push_str(common_header);
         result.push_str(source);
-        if tracking_params.characterize{
-            result = result.replace("//_feat_char_", "");
-        }
+        // if tracking_params.characterize{
+        //     result = result.replace("//_feat_char_", "");
+        // }
         result.replace("@workgroup_size(_)",
-        format!("@workgroup_size({}, {}, {})", workgroup_size[0], workgroup_size[1], workgroup_size[2]).as_str())
+        format!("@workgroup_size({}, {}, {})", wg_size[0], wg_size[1], wg_size[2]).as_str())
     };
 
 
-    let shaders = shaders.iter().map(|(&name, source)|{
-        let shader_source = preprocess_source(source);
+    let shaders = shaders.iter().map(|(&name, (source, dims, group_size))|{
+        let shader_source = preprocess_source(source, group_size);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor{
             label: None,
             source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
-        (name, shader)
+        (name, (shader, n_workgroups(dims, *group_size)))
     }).collect::<HashMap<_, _>>();
+    
     let pic_size = dims.iter().product::<u32>() as usize;
     let result_read_depth: u64 = match debug{
         false => match tracking_params.characterize{
@@ -268,7 +320,7 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
     
     let buffers = setup_buffers(&tracking_params, &device, size, dims);
 
-    let pipelines = match debug{
+    let pipelines: Vec<Option<(&str, &(wgpu::ShaderModule, [u32; 3]))>> = match debug{
         // false => vec![
         //     // ("rows", &shaders[0]),
         //     // ("finish", &shaders[0]),
@@ -277,28 +329,32 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
         //     ("walk", 0, &shaders["walk"]),
         // ],
         _ => vec![
-            ("pp_rows", 0, &shaders["preprocess_rows"]),
-            ("pp_cols", 0, &shaders["preprocess_cols"]),
-            ("centers", 0, &shaders["centers"]),
+            Some(("pp_rows", &shaders["preprocess_rows"])),
+            Some(("pp_cols", &shaders["preprocess_cols"])),
+            Some(("max_row", &shaders["max_rows"])),
+            Some(("extract_max", &shaders["extract_max"])),
+            Some(("walk", &shaders["walk"])),
+            if (tracking_params.characterize) {Some(("characterize", &shaders["characterize"]))} else {None},
+            // ("centers", 0, &shaders["centers"]),
             // ("centers", 0, &shaders["centers_outside_parens"]),
-            ("max_row", 0, &shaders["max_rows"]),
-            ("walk", 0, &shaders["walk_cols"]),
+            // ("max_row", 0, &shaders["max_rows"]),
+            // ("walk", 0, &shaders["walk_cols"]),
         ],
     };
 
-    let compute_pipelines = pipelines.iter().map(|(name, _group, shader)|{
-        (name.to_string(), device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+    let compute_pipelines = pipelines.iter().flatten().map(|(name, (shader, wg_n))|{
+        (name.to_string(), (device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: None,
         layout: None,
         module: shader,
         entry_point: "main",
-        }))
+        }), *wg_n))
     }).collect::<Vec<_>>();
 
     let bind_group_layouts = compute_pipelines.iter()
-    .zip(pipelines.iter())
-    .map(|((name, pipeline), (_entry, group, _shader))|{
-        (name.as_str(), (*group, pipeline.get_bind_group_layout(*group)))
+    // .zip(pipelines.iter())
+    .map(|(name, (pipeline, wg_n))|{
+        (name.as_str(), (0, pipeline.get_bind_group_layout(0)))
     }).collect::<HashMap<_, _>>();
 
 
@@ -329,14 +385,34 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
             Some((1, &buffers.processed_buffer)), 
             Some((2, &buffers.max_rows)),
         ]),
-        ("walk", vec![
+        ("extract_max", vec![
             Some((0, &buffers.param_buffer)),
             Some((1, &buffers.processed_buffer)), 
             Some((2, &buffers.max_rows)),
-            Some((3, &buffers.centers_buffer)),
-            Some((4, &buffers.masses_buffer)),
+            Some((3, &buffers.atomic_buffer)),
+            Some((4, &buffers.particles_buffer))
+            // Some((3, &buffers.centers_buffer)),
+            // Some((4, &buffers.masses_buffer)),
+            // Some((5, &buffers.result_buffer)),
+            ]),
+        ("walk", vec![
+            Some((0, &buffers.param_buffer)),
+            Some((1, &buffers.processed_buffer)), 
+            Some((2, &buffers.particles_buffer)),
+            Some((3, &buffers.atomic_buffer)),
+            Some((4, &buffers.atomic_filtered_buffer)),
             Some((5, &buffers.result_buffer)),
         ]),
+
+        ("characterize", vec![
+            Some((0, &buffers.param_buffer)),
+            Some((1, &buffers.processed_buffer)), 
+            Some((2, &buffers.frame_buffer)),
+            // Some((3, &buffers.atomic_buffer)),
+            Some((3, &buffers.atomic_filtered_buffer)),
+            Some((4, &buffers.result_buffer)),
+        ]),
+            
     ]);
 
     let bind_group_entries = bind_group_entries
@@ -364,7 +440,7 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
         buffers,
         pipelines: compute_pipelines,
         bind_groups,
-        workgroups,
+        // workgroups,
         pic_size,
         result_read_depth,
         pic_byte_size: size,

@@ -1,4 +1,4 @@
-// #![allow(warnings)]
+#![allow(warnings)]
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
@@ -20,11 +20,9 @@ use std::{fs::File, collections::HashMap};
 use crate::{execute_gpu::{execute_ndarray, TrackingParams}, decoderiter::{MinimalETSParser}};
 use ndarray::Array;
 // use pyo3::PyList;
-// #[cfg(feature = "python")]
-// use numpy::ndarray::{ArrayD, ArrayViewD, Array2, Array3, ArrayBase};
-// #[cfg(feature = "python")]
+#[cfg(feature = "python")]
 use numpy::{IntoPyArray, PyReadonlyArray3, PyReadonlyArray2, PyArray2, PyArray1, PyArrayDyn, PyArray3};
-// #[cfg(feature = "python")]
+#[cfg(feature = "python")]
 macro_rules! not_implemented {
     ($name:ident) => {
         if $name.is_some(){
@@ -38,9 +36,9 @@ macro_rules! not_implemented {
     };
 }
 
-// #[cfg(feature = "python")]
+#[cfg(feature = "python")]
 use pyo3::{prelude::*, types::PyDict};
-// #[cfg(feature = "python")]
+#[cfg(feature = "python")]
 #[pymodule]
 fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
     #[pyfn(m)]
