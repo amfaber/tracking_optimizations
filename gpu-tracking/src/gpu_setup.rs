@@ -234,44 +234,37 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
     let (device, queue) = adapter
     .request_device(&desc, None)
     .block_on().unwrap();
-
     
     let common_header = include_str!("shaders/params.wgsl");
-
-
-    // let shaders = HashMap::from([
-    //     // ("proprocess_backup", "src/shaders/another_backup_preprocess.wgsl"),
-    //     ("centers", include_str!("shaders/centers.wgsl")),
-    //     // ("centers_outside_parens", include_str!("shaders/centers_outside_parens.wgsl")),
-    //     ("max_rows", include_str!("shaders/max_rows.wgsl")),
-    //     ("walk", include_str!("shaders/walk.wgsl")),
-    //     ("walk_cols", include_str!("shaders/walk_cols.wgsl")),
-    //     ("preprocess_rows", include_str!("shaders/preprocess_rows.wgsl")),
-    //     ("preprocess_cols", include_str!("shaders/preprocess_cols.wgsl")),
-    // ]);
     
     let workgroup_size_2d = [16u32, 16, 1];
     let wg_dims = [dims[0], dims[1], 1];
 
     let shaders = HashMap::from([
-        // ("proprocess_backup", "src/shaders/another_backup_preprocess.wgsl"),
-        // ("centers", ("src/shaders/centers.wgsl", wg_dims, workgroup_size_2d)),
-        // ("centers_outsi", ("shaders/centers_outside_parens.wgsl")),
-        ("max_rows", ("src/shaders/max_rows.wgsl", wg_dims, workgroup_size_2d)),
-        // ("walk_cols", ("src/shaders/walk_cols.wgsl", wg_dims, workgroup_size_2d)),
-        ("extract_max", ("src/shaders/extract_max.wgsl", wg_dims, workgroup_size_2d)),
-        ("preprocess_rows", ("src/shaders/preprocess_rows.wgsl", wg_dims, workgroup_size_2d)),
-        ("preprocess_cols", ("src/shaders/preprocess_cols.wgsl", wg_dims, workgroup_size_2d)),
-        ("walk", ("src/shaders/walk.wgsl", [10000, 1, 1], [256, 1, 1])),
-        ("characterize", ("src/shaders/characterize.wgsl", [10000, 1, 1], [256, 1, 1])),
+        ("max_rows", (include_str!("shaders/max_rows.wgsl"), wg_dims, workgroup_size_2d)),
+        ("extract_max", (include_str!("shaders/extract_max.wgsl"), wg_dims, workgroup_size_2d)),
+        ("preprocess_rows", (include_str!("shaders/preprocess_rows.wgsl"), wg_dims, workgroup_size_2d)),
+        ("preprocess_cols", (include_str!("shaders/preprocess_cols.wgsl"), wg_dims, workgroup_size_2d)),
+        ("walk", (include_str!("shaders/walk.wgsl"), [10000, 1, 1], [256, 1, 1])),
+        ("characterize", (include_str!("shaders/characterize.wgsl"), [10000, 1, 1], [256, 1, 1])),
     ]);
 
-    let shaders = shaders.iter().map(|(&name, (shader, dims, group_size))| {
-        let mut shader_file = File::open(shader).expect(format!("{} not found", shader).as_str());
-        let mut shader_string = String::new();
-        shader_file.read_to_string(&mut shader_string).unwrap();
-        (name, (shader_string, dims, group_size))
-    }).collect::<HashMap<_, _>>();
+
+    // let shaders = HashMap::from([
+    //     ("max_rows", ("src/shaders/max_rows.wgsl", wg_dims, workgroup_size_2d)),
+    //     ("extract_max", ("src/shaders/extract_max.wgsl", wg_dims, workgroup_size_2d)),
+    //     ("preprocess_rows", ("src/shaders/preprocess_rows.wgsl", wg_dims, workgroup_size_2d)),
+    //     ("preprocess_cols", ("src/shaders/preprocess_cols.wgsl", wg_dims, workgroup_size_2d)),
+    //     ("walk", ("src/shaders/walk.wgsl", [10000, 1, 1], [256, 1, 1])),
+    //     ("characterize", ("src/shaders/characterize.wgsl", [10000, 1, 1], [256, 1, 1])),
+    // ]);
+
+    // let shaders = shaders.into_iter().map(|(name, (shader, dims, group_size))| {
+    //     let mut shader_file = File::open(shader).expect(format!("{} not found", shader).as_str());
+    //     let mut shader_string = String::new();
+    //     shader_file.read_to_string(&mut shader_string).unwrap();
+    //     (name, (shader_string, dims, group_size))
+    // }).collect::<HashMap<_, _>>();
 
     let n_workgroups = |dims: &[u32; 3], wgsize: &[u32; 3]| { 
         let mut n_workgroups = [0, 0, 0];
@@ -280,8 +273,6 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
         }
         n_workgroups
     };
-    // let workgroups: [u32; 2] = dims.iter().zip(workgroup_size)
-    //     .map(|(&x, size)| (x + size - 1) / size).collect::<Vec<u32>>().try_into().unwrap();
 
     
 
@@ -303,7 +294,7 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
             label: None,
             source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
-        (name, (shader, n_workgroups(dims, *group_size)))
+        (name, (shader, n_workgroups(dims, group_size)))
     }).collect::<HashMap<_, _>>();
     
     let pic_size = dims.iter().product::<u32>() as usize;
