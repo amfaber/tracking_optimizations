@@ -15,6 +15,7 @@ pub struct GpuParams{
     pub max_iterations: u32,
     pub shift_threshold: f32,
     pub minmass: f32,
+    pub margin: i32,
 }
 pub struct GpuBuffers{
     pub staging_buffers: Vec<Buffer>,
@@ -49,6 +50,8 @@ fn gpuparams_from_tracking_params(params: TrackingParams, pic_dims: [u32; 2]) ->
     let kernel_size = params.smoothing_size;
     let circle_size = params.diameter;
     let dilation_size = (2. * params.separation as f32 / (2 as f32).sqrt()) as u32;
+    dbg!(&dilation_size);
+    let margin = vec![params.diameter / 2, params.separation / 2 - 1, params.smoothing_size / 2].iter().max().unwrap().clone() as i32;
     GpuParams{
         pic_dims,
         composite_dims: [kernel_size, kernel_size],
@@ -59,6 +62,7 @@ fn gpuparams_from_tracking_params(params: TrackingParams, pic_dims: [u32; 2]) ->
         max_iterations: params.max_iterations,
         shift_threshold: 0.6,
         minmass: params.minmass,
+        margin,
     }
 }
 
@@ -80,7 +84,7 @@ pub fn setup_buffers(tracking_params: &TrackingParams,
     for i in 0..2{
         let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(format!("Staging {}", i).as_str()),
-            size: size + 4,
+            size: size,
             // size: ((result_buffer_depth + tracking_params.cpu_processed as u64) * size) as u64,
             usage: wgpu::BufferUsages::COPY_SRC 
             | wgpu::BufferUsages::COPY_DST 
@@ -89,8 +93,7 @@ pub fn setup_buffers(tracking_params: &TrackingParams,
         });
         staging_buffers.push(staging_buffer);
     }
-    // let mut free_staging_buffers = staging_buffers.iter().collect::<Vec<&wgpu::Buffer>>();
-    // let mut in_use_staging_buffers = VecDeque::new();
+
     let frame_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
         size: size,
@@ -98,27 +101,11 @@ pub fn setup_buffers(tracking_params: &TrackingParams,
         mapped_at_creation: false,
     });
 
-    // let sigma = tracking_params.noise_size as f32;
-    // let gaussian_kernel = kernels::Kernel::tp_gaussian(sigma, 4.);
-    // let composite_kernel = kernels::Kernel::composite_kernel(sigma, params.composite_dims);
-    // let composite_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-    //     label: None,
-    //     contents: bytemuck::cast_slice(&composite_kernel.data),
-    //     usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-    // });
-
-    // let noise_size = tracking_params.noise_size;
-    // let constant_kernel = kernels::Kernel::rolling_average([noise_size, noise_size]);
-    // let constant_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-    //     label: None,
-    //     contents: bytemuck::cast_slice(&constant_kernel.data),
-    //     usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-    // });
 
     let processed_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
         size: size,
-        usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
     
@@ -129,13 +116,6 @@ pub fn setup_buffers(tracking_params: &TrackingParams,
         mapped_at_creation: false,
     });
     
-    // let r = tracking_params.diameter / 2;
-    // let circle_kernel = kernels::Kernel::circle_mask(r);
-    // let circle_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-    //     label: None,
-    //     contents: bytemuck::cast_slice(&circle_kernel.data),
-    //     usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-    // });
 
     let masses_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
@@ -159,13 +139,6 @@ pub fn setup_buffers(tracking_params: &TrackingParams,
             usage: wgpu::BufferUsages::UNIFORM
         })
     };
-
-    // let gauss_1d_kernel = kernels::Kernel::gauss_1d(sigma, params.composite_dims[0]);
-    // let gauss_1d_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-    //     label: None,
-    //     contents: bytemuck::cast_slice(&gauss_1d_kernel.data),
-    //     usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-    // });
 
     let max_rows = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
@@ -216,7 +189,7 @@ pub fn setup_buffers(tracking_params: &TrackingParams,
 
 
 
-pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: bool) -> GpuState{
+pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: bool, characterize_new_points: bool) -> GpuState{
     let instance = wgpu::Instance::new(wgpu::Backends::all());
 
     let adapter = instance
@@ -249,22 +222,24 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
         ("characterize", (include_str!("shaders/characterize.wgsl"), [10000, 1, 1], [256, 1, 1])),
     ]);
 
+    /* Dynamically load shaders to avoid recompilation when debugging. This requires the shaders to be
+    in the directory layout as in the repo.
+    let shaders = HashMap::from([
+        ("max_rows", ("src/shaders/max_rows.wgsl", wg_dims, workgroup_size_2d)),
+        ("extract_max", ("src/shaders/extract_max.wgsl", wg_dims, workgroup_size_2d)),
+        ("preprocess_rows", ("src/shaders/preprocess_rows.wgsl", wg_dims, workgroup_size_2d)),
+        ("preprocess_cols", ("src/shaders/preprocess_cols.wgsl", wg_dims, workgroup_size_2d)),
+        ("walk", ("src/shaders/walk.wgsl", [10000, 1, 1], [256, 1, 1])),
+        ("characterize", ("src/shaders/characterize.wgsl", [10000, 1, 1], [256, 1, 1])),
+    ]);
 
-    // let shaders = HashMap::from([
-    //     ("max_rows", ("src/shaders/max_rows.wgsl", wg_dims, workgroup_size_2d)),
-    //     ("extract_max", ("src/shaders/extract_max.wgsl", wg_dims, workgroup_size_2d)),
-    //     ("preprocess_rows", ("src/shaders/preprocess_rows.wgsl", wg_dims, workgroup_size_2d)),
-    //     ("preprocess_cols", ("src/shaders/preprocess_cols.wgsl", wg_dims, workgroup_size_2d)),
-    //     ("walk", ("src/shaders/walk.wgsl", [10000, 1, 1], [256, 1, 1])),
-    //     ("characterize", ("src/shaders/characterize.wgsl", [10000, 1, 1], [256, 1, 1])),
-    // ]);
-
-    // let shaders = shaders.into_iter().map(|(name, (shader, dims, group_size))| {
-    //     let mut shader_file = File::open(shader).expect(format!("{} not found", shader).as_str());
-    //     let mut shader_string = String::new();
-    //     shader_file.read_to_string(&mut shader_string).unwrap();
-    //     (name, (shader_string, dims, group_size))
-    // }).collect::<HashMap<_, _>>();
+    let shaders = shaders.into_iter().map(|(name, (shader, dims, group_size))| {
+        let mut shader_file = File::open(shader).expect(format!("{} not found", shader).as_str());
+        let mut shader_string = String::new();
+        shader_file.read_to_string(&mut shader_string).unwrap();
+        (name, (shader_string, dims, group_size))
+    }).collect::<HashMap<_, _>>();
+    */
 
     let n_workgroups = |dims: &[u32; 3], wgsize: &[u32; 3]| { 
         let mut n_workgroups = [0, 0, 0];
@@ -280,9 +255,6 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
         let mut result = String::new();
         result.push_str(common_header);
         result.push_str(source);
-        // if tracking_params.characterize{
-        //     result = result.replace("//_feat_char_", "");
-        // }
         result.replace("@workgroup_size(_)",
         format!("@workgroup_size({}, {}, {})", wg_size[0], wg_size[1], wg_size[2]).as_str())
     };
@@ -309,27 +281,16 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
     let size = slice_size as wgpu::BufferAddress;
     
     
-    let buffers = setup_buffers(&tracking_params, &device, size, dims);
+    let buffers = setup_buffers(&tracking_params, &device, size * 2, dims);
 
     let pipelines: Vec<Option<(&str, &(wgpu::ShaderModule, [u32; 3]))>> = match debug{
-        // false => vec![
-        //     // ("rows", &shaders[0]),
-        //     // ("finish", &shaders[0]),
-        //     ("preprocess", 0, &shaders["preprocess_backup"]),
-        //     ("centers", 0, &shaders["centers"]),
-        //     ("walk", 0, &shaders["walk"]),
-        // ],
         _ => vec![
             Some(("pp_rows", &shaders["preprocess_rows"])),
             Some(("pp_cols", &shaders["preprocess_cols"])),
-            Some(("max_row", &shaders["max_rows"])),
-            Some(("extract_max", &shaders["extract_max"])),
-            Some(("walk", &shaders["walk"])),
-            if (tracking_params.characterize) {Some(("characterize", &shaders["characterize"]))} else {None},
-            // ("centers", 0, &shaders["centers"]),
-            // ("centers", 0, &shaders["centers_outside_parens"]),
-            // ("max_row", 0, &shaders["max_rows"]),
-            // ("walk", 0, &shaders["walk_cols"]),
+            if (!characterize_new_points) {Some(("extract_max", &shaders["extract_max"]))} else {None},
+            if (!characterize_new_points) {Some(("max_row", &shaders["max_rows"]))} else {None},
+            if (!characterize_new_points) {Some(("walk", &shaders["walk"]))} else {None},
+            if (tracking_params.characterize | characterize_new_points) {Some(("characterize", &shaders["characterize"]))} else {None},
         ],
     };
 
@@ -343,7 +304,6 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
     }).collect::<Vec<_>>();
 
     let bind_group_layouts = compute_pipelines.iter()
-    // .zip(pipelines.iter())
     .map(|(name, (pipeline, wg_n))|{
         (name.as_str(), (0, pipeline.get_bind_group_layout(0)))
     }).collect::<HashMap<_, _>>();
@@ -354,12 +314,10 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
         ("pp_rows", vec![
             Some((0, &buffers.param_buffer)),
             Some((1, &buffers.frame_buffer)),
-            // (2, &buffers.gauss_1d_buffer),
             Some((3, &buffers.centers_buffer)),
         ]),
         ("pp_cols", vec![
             Some((0, &buffers.param_buffer)),
-            // (1, &buffers.gauss_1d_buffer),
             Some((2, &buffers.centers_buffer)),
             Some((3, &buffers.processed_buffer)), 
         ]),
@@ -382,9 +340,6 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
             Some((2, &buffers.max_rows)),
             Some((3, &buffers.atomic_buffer)),
             Some((4, &buffers.particles_buffer))
-            // Some((3, &buffers.centers_buffer)),
-            // Some((4, &buffers.masses_buffer)),
-            // Some((5, &buffers.result_buffer)),
             ]),
         ("walk", vec![
             Some((0, &buffers.param_buffer)),
@@ -399,7 +354,6 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
             Some((0, &buffers.param_buffer)),
             Some((1, &buffers.processed_buffer)), 
             Some((2, &buffers.frame_buffer)),
-            // Some((3, &buffers.atomic_buffer)),
             Some((3, &buffers.atomic_filtered_buffer)),
             Some((4, &buffers.result_buffer)),
         ]),

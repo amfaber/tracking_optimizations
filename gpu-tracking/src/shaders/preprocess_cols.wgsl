@@ -34,11 +34,13 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     pic_u = u + i;
     do_gauss = true;
     if (pic_u < 0){
-        pic_u = -pic_u + -1;
+        // pic_u = -pic_u + -1;
+        pic_u = 0;
         do_gauss = false;
       }
     else if (pic_u >= i32(params.pic_nrows)){
-        pic_u = 2 * i32(params.pic_nrows) - pic_u - 1;
+        // pic_u = 2 * i32(params.pic_nrows) - pic_u - 1;
+        pic_u = params.pic_nrows - 1;
         do_gauss = false;
       }
     pic_idx = pic_u * params.pic_ncols + v;
@@ -52,7 +54,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   }
   
   let result = gauss_sum/gauss_norm - constant_sum/f32(kernel_rows * kernel_cols);
-  if (result < 0.0){
+  if (result < 1./255.){
     processed_buffer[u * params.pic_ncols + v] = 0.0;
   }
   else{

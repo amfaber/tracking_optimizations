@@ -228,7 +228,87 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         }
         output
     }
+    
+    #[pyfn(m)]
+    #[pyo3(name = "parse_ets")]
+    fn characterize_points_rust(
+        py: Python<'py>,
+        pypoints: PyReadonlyArray2<my_dtype>,
+        pyarr: PyReadonlyArray3<my_dtype>,
+        diameter: u32,
+        minmass: Option<my_dtype>,
+        maxsize: Option<my_dtype>,
+        separation: Option<u32>,
+        noise_size: Option<f32>,
+        smoothing_size: Option<u32>,
+        threshold: Option<my_dtype>,
+        invert: Option<bool>,
+        percentile: Option<my_dtype>,
+        topn: Option<u32>,
+        preprocess: Option<bool>,
+        max_iterations: Option<u32>,
+        characterize: Option<bool>,
+        filter_close: Option<bool>,
+        search_range: Option<my_dtype>,
+        memory: Option<usize>,
+        // cpu_processed: Option<bool>,
+        sig_radius: Option<my_dtype>,
+        bg_radius: Option<my_dtype>,
+        gap_radius: Option<my_dtype>,
+        ) -> (&'py PyArray2<my_dtype>, Py<PyAny>) {
+        
+        not_implemented!(maxsize, threshold, invert, percentile,
+            topn, preprocess);
+        
+        
+        let minmass = minmass.unwrap_or(0.);
+        let maxsize = maxsize.unwrap_or(f32::INFINITY);
+        let separation = separation.unwrap_or(diameter + 1);
+        let noise_size = noise_size.unwrap_or(1.);
+        let smoothing_size = smoothing_size.unwrap_or(diameter);
+        let threshold = threshold.unwrap_or(1./255.);
+        let invert = invert.unwrap_or(false);
+        let percentile = percentile.unwrap_or(64.);
+        let topn = topn.unwrap_or(u32::MAX);
+        let preprocess = preprocess.unwrap_or(true);
+        let max_iterations = max_iterations.unwrap_or(10);
+        let characterize = characterize.unwrap_or(false);
+        let filter_close = filter_close.unwrap_or(true);
+        // let cpu_processed = cpu_processed.unwrap_or(false);
+        let gap_radius = bg_radius.map(|_| gap_radius.unwrap_or(0.));
 
+        // neither search_range nor memory are unwrapped as linking is optional on the Rust side.
+
+        let params = TrackingParams {
+            diameter,
+            minmass,
+            maxsize,
+            separation,
+            noise_size,
+            smoothing_size,
+            threshold,
+            invert,
+            percentile,
+            topn,
+            preprocess,
+            max_iterations,
+            characterize,
+            filter_close,
+            search_range,
+            memory,
+            // cpu_processed,
+            sig_radius,
+            bg_radius,
+            gap_radius,
+        };
+        let points = pypoints.as_array();
+        let array = pyarr.as_array();
+        let dims = [array.shape()[1], array.shape()[2]];
+        let point_iter = Some(linking::FrameSubsetter::new(&points, 0, (2, 3)));
+        let mut frame_iter = array.axis_iter(ndarray::Axis(0));
+        let (res, columns) = execute_gpu::execute_gpu(
+            frame_iter, &dims, params, false, 0, point_iter);
+    }
 
     Ok(())
 }

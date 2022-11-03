@@ -39,30 +39,18 @@ fn get_center(u: i32, v: i32, kernel_rows: i32, kernel_cols: i32) -> vec3<f32>{
   let r = f32(rint);
   let r2 = r * r;
   var centers_and_mass = vec3<f32>(0.0, 0.0, 0.0);
-  // var mass = 0.0;
-  // var result = vec3<f32>(0.0, 0.0, 0.0);
   let middle_idx = u * params.pic_ncols + v;
-  //_feat_char_let pic_size = params.pic_nrows * params.pic_ncols;
-  // let start_u = u - kernel_rows / 2;
-  // let start_v = v - kernel_cols / 2;
   var Rg = 0.0;
-  // var raw_mass = 0.0;
-  // var signal = 0.0;
-  // var ecc_sin = 0.0;
-  // var ecc_cos = 0.0;
   for (var i: i32 = -rint; i <= rint; i = i + 1) {
     let x = f32(i);
     let x2 = x*x;
     for (var j: i32 = -rint; j <= rint; j = j + 1) {
-      // let yint = j;
       let y = f32(j);
       let y2 = y*y;
       var mask = x2 + y2;
       if (mask > r2) {
         continue;
       }
-      // let pic_u = clamp(start_u + i, 0, i32(params.pic_nrows) - 1);
-      // let pic_v = clamp(start_v + j, 0, params.pic_ncols - 1);
       let pic_u = u + i;
       let pic_v = v + j;
       if (pic_u < 0 || pic_u >= params.pic_nrows || pic_v < 0 || pic_v >= params.pic_ncols) {
@@ -74,29 +62,10 @@ fn get_center(u: i32, v: i32, kernel_rows: i32, kernel_cols: i32) -> vec3<f32>{
       centers_and_mass[0] += data * x;
       centers_and_mass[1] += data * y;
       centers_and_mass[2] += data;
-
-      //_feat_char_Rg += data*mask;
-      //_feat_char_raw_mass += raw_frame[pic_idx];
-      //_feat_char_signal = max(signal, data);
-      //_feat_char_let theta = atan2(y, x);
-      //_feat_char_ecc_sin += data * sin(2.*theta);
-      //_feat_char_ecc_cos += data * cos(2.*theta);
     }
   }
-  // ecc_sin *= ecc_sin;
-  // ecc_cos *= ecc_cos;
-  // let ecc = sqrt(ecc_sin + ecc_cos) / (mass - processed_buffer[middle_idx]);
-  // let Rg = sqrt(Rg / mass);
-
-  //_feat_char_results_buffer[middle_idx + pic_size * 3] = Rg;
-  //_feat_char_results_buffer[middle_idx + pic_size * 4] = raw_mass;
-  //_feat_char_results_buffer[middle_idx + pic_size * 5] = signal;
-  //_feat_char_results_buffer[middle_idx + pic_size * 6] = ecc;
-
   centers_and_mass[0] /= centers_and_mass[2];
   centers_and_mass[1] /= centers_and_mass[2];
-  // centers_buffer[middle_idx] = centers_and_mass;
-  // masses[middle_idx] = mass;
   return centers_and_mass;
 }
 
@@ -106,23 +75,24 @@ fn walk(part_idx: u32) -> vec3<f32> {
   var picuv = particles[part_idx];
   var changed = false;
   var center_and_mass: vec3<f32>;
+  let radiusu = params.circle_nrows / 2;
+  let radiusv = params.circle_ncols / 2;
   for (var i: u32 = 0u; i < params.max_iterations; i = i + 1u) {
 
     // idx = u * params.pic_ncols + v;
-
     center_and_mass = get_center(picuv[0], picuv[1], params.circle_nrows, params.circle_ncols);
     changed = false;
-    if (center_and_mass[0] > params.threshold && picuv[0] < params.pic_nrows - 1) {
+    if (center_and_mass[0] > params.threshold && picuv[0] < params.pic_nrows - 1 - radiusu) {
       picuv[0] += 1;
       changed = true;
-    } else if (center_and_mass[0] < -params.threshold && picuv[0] > 0) {
+    } else if (center_and_mass[0] < -params.threshold && picuv[0] > radiusu) {
       picuv[0] -= 1;
       changed = true;
     }
-    if (center_and_mass[1] > params.threshold && picuv[1] < params.pic_ncols - 1) {
+    if (center_and_mass[1] > params.threshold && picuv[1] < params.pic_ncols - 1 - radiusv) {
       picuv[1] += 1;
       changed = true;
-    } else if (center_and_mass[1] < -params.threshold && picuv[1] > 0) {
+    } else if (center_and_mass[1] < -params.threshold && picuv[1] > radiusv) {
       picuv[1] -= 1;
       changed = true;
     }

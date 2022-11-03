@@ -32,11 +32,13 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     pic_v = v + i;
     do_gauss = true;
     if (pic_v < 0){
-        pic_v = -pic_v + -1;
+        // pic_v = -pic_v + -1;
+        pic_v = 0;
         do_gauss = false;
       }
     else if (pic_v >= i32(params.pic_ncols)){
-        pic_v = 2 * i32(params.pic_ncols) - pic_v - 1;
+        // pic_v = 2 * i32(params.pic_ncols) - pic_v - 1;
+        pic_v = params.pic_ncols - 1;
         do_gauss = false;
       }
     pic_idx = u * params.pic_ncols + pic_v;
