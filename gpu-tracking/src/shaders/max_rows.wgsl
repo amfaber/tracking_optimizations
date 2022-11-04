@@ -11,6 +11,10 @@ var<storage, read_write> max_rows: array<f32>;
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>){
   let u = i32(global_id.x);
   let v = i32(global_id.y);
+  if (u < 0 || u >= params.pic_nrows || v < 0 || v >= params.pic_ncols) {
+    return;
+  }
+
   let kernel_rows = params.dilation_nrows;
   let kernel_cols = params.dilation_ncols;
   let center = processed_buffer[u * params.pic_ncols + v];

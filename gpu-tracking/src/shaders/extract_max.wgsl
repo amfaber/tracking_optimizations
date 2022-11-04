@@ -40,6 +40,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   }
   let u = i32(global_id.x);
   let v = i32(global_id.y);
+  if (u < params.margin || u >= params.pic_nrows - params.margin || v < params.margin || v >= params.pic_ncols - params.margin) {
+    return;
+  }
+
   let idx = global_id.x * u32(params.pic_ncols) + global_id.y;
 
   if (is_max(i32(global_id.x), i32(global_id.y), params.dilation_nrows, params.dilation_ncols)) {

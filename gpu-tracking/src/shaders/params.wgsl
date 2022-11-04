@@ -13,4 +13,5 @@ struct params{
   max_iterations: u32,
   threshold: f32,
   minmass: f32,
+  margin: i32,
 }

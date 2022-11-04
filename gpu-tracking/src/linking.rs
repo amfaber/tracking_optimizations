@@ -32,7 +32,7 @@ impl FrameSubsetter<'_>{
 
 impl<'a> Iterator for FrameSubsetter<'a>{
     // type Item = ArrayView2<'a, float>;
-    type Item = Vec<([float; 2])>; 
+    type Item = (usize, Vec<[float; 2]>); 
     fn next(&mut self) -> Option<Self::Item> {
         // let prev_idx = self.idx;
         let mut output = Vec::new();
@@ -44,12 +44,12 @@ impl<'a> Iterator for FrameSubsetter<'a>{
                     if frame != self.cur_frame{
                         self.cur_frame = frame;
                         // let result = Some(self.array.slice(s![prev_idx..self.idx, ..]));
-                        return Some(output);
+                        return Some((self.cur_frame as usize, output));
                     }
                 },
                 None => {
                     if output.len() > 0{
-                        return Some(output);
+                        return Some((self.cur_frame as usize, output));
                     }
                     return None;
                 }
@@ -567,12 +567,12 @@ pub fn link_all<T>(frame_iter: T, radius: float, memory: usize) -> Vec<usize>
 
 }
 
-pub fn linker_all(frame_iter: impl Iterator<Item = Vec<([float; 2])>>, radius: float, memory: usize) -> Vec<usize>{
+pub fn linker_all(frame_iter: impl Iterator<Item = (usize, Vec<[float; 2]>)>, radius: float, memory: usize) -> Vec<usize>{
 
     let mut linker = Linker::new(radius, memory);
     let mut results = Vec::new();
     for frame in frame_iter{
-        let result = linker.advance(&frame);
+        let result = linker.advance(&frame.1);
         results.extend(result.into_iter());
     }
     results
