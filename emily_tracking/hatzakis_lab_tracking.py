@@ -551,6 +551,15 @@ def Correct_illumination_profile(photon_movie, inplace = True):
     
     return out
 
+class MockEtsFile:
+    def __init__(self, filepath):
+        from gpu_tracking import parse_ets
+        self.arr = parse_ets(filepath).astype("float32")
+        self.shape = self.arr.shape
+        
+    def asarray(self, key):
+        return self.arr[key]
+
 class VideoChunker:
     def __init__(self,
      filepath,
@@ -563,7 +572,10 @@ class VideoChunker:
      transform = None,
      auto_apply_transform = True
      ):
-        self.vid_file = tifffile.TiffFile(filepath).series[0]
+        if filepath.lowercase().endswith("tif") | filepath.lowercase().endswith("tif"):
+            self.vid_file = tifffile.TiffFile(filepath).series[0]
+        elif filepath.lowercase().endswith("ets"):
+            self.vid_file = MockEtsFile(filepath)
         self.frames, self.height, self.width = self.vid_file.shape
         self.return_frame_correction = return_frame_correction
         self.offset = offset
