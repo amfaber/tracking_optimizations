@@ -40,7 +40,6 @@ fn get_center(u: i32, v: i32, kernel_rows: i32, kernel_cols: i32) -> vec3<f32>{
   let r2 = r * r;
   var centers_and_mass = vec3<f32>(0.0, 0.0, 0.0);
   let middle_idx = u * params.pic_ncols + v;
-  var Rg = 0.0;
   for (var i: i32 = -rint; i <= rint; i = i + 1) {
     let x = f32(i);
     let x2 = x*x;
@@ -103,7 +102,8 @@ fn walk(part_idx: u32) -> vec3<f32> {
   let final_coords = vec3<f32>(
     f32(picuv[0]) + center_and_mass[0], // + 1000. * f32(changed),
     f32(picuv[1]) + center_and_mass[1], // + 1000. * f32(changed),
-    center_and_mass[2]
+    center_and_mass[2],
+    // f32(changed)
     );
   return final_coords;
 }

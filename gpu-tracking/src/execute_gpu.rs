@@ -2,7 +2,8 @@ use bencher::black_box;
 use bytemuck::{Pod, Zeroable};
 use futures_intrusive;
 type my_dtype = f32;
-use ndarray::{Array2, ArrayView3, Axis, ArrayView, Array3};
+use image::Frame;
+use ndarray::{Array2, ArrayView3, Axis, ArrayView, Array3, ArrayView2};
 use pollster::FutureExt;
 use tiff::decoder::Decoder;
 use std::{collections::VecDeque, time::Instant, sync::mpsc::Sender, path::Path, fs::File, io::Write};
@@ -122,6 +123,7 @@ fn submit_work(
             ecc: 0.,
         }).collect::<Vec<_>>();
         state.queue.write_buffer(staging_buffer, state.pic_byte_size, bytemuck::cast_slice(&positions));
+        state.queue.write_buffer(&state.buffers.atomic_filtered_buffer, 0, bytemuck::cast_slice(&[positions.len() as u32]));
     });
     let mut encoder =
     state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
@@ -412,6 +414,7 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
         };
         
         let mut free_staging_buffers = state.buffers.staging_buffers.iter().collect::<Vec<&wgpu::Buffer>>();
+        
         let mut in_use_staging_buffers = VecDeque::new();
         let (frame, positions, mut frame_index) = match pos_iter{
             Some(ref mut iter) => {
@@ -439,7 +442,14 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
                         Some((frame_to_take, positions)) => (frame_to_take, positions),
                         None => break,
                     };
-                    let frame = frames.by_ref().skip(frame_to_take - frame_index - 1).next().unwrap();
+                    let frame = match frames.by_ref().skip(frame_to_take - frame_index - 1).next(){
+                        Some(frame) => frame,
+                        None => {
+                            inp_sender.send(None);
+                            handle.join();
+                            panic!("Frame {} not found", frame_to_take);
+                        },
+                    };
                     (frame, Some(positions), Some(frame_to_take))
                 },
                 None => {
@@ -449,7 +459,6 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
                     }
                 }
             };
-
             let staging_buffer = free_staging_buffers.pop().unwrap();
             in_use_staging_buffers.push_back(staging_buffer);
             let new_submission = submit_work(frame.into_slice(), staging_buffer, &state, &tracking_params, debug, positions);
@@ -536,20 +545,26 @@ pub fn sequential_execute<A: IntoSlice + Send, T: Iterator<Item = A>>(
     (output, names)
 }
 
-pub fn execute_ndarray(array: &ArrayView3<my_dtype>, params: TrackingParams, debug: bool, verbosity: u32) -> (Array2<my_dtype>, Vec<(String, String)>) {
+pub fn execute_ndarray<'a>(
+    array: &ArrayView3<my_dtype>,
+    params: TrackingParams,
+    debug: bool,
+    verbosity: u32,
+    pos_array: Option<&'a ArrayView2<'a, my_dtype>>,
+    ) -> (Array2<my_dtype>, Vec<(String, String)>) {
     if !array.is_standard_layout(){
         panic!("Array is not standard layout");
     }
     let axisiter = array.axis_iter(ndarray::Axis(0));
     let dims = array.shape();
+    let mut pos_iter = pos_array.map(|pos_array| FrameSubsetter::new(pos_array, 0, (1, 2)));
     
     let (res, column_names) = 
         if debug {
             sequential_execute(axisiter, &[dims[1] as u32, dims[2] as u32], params, debug, verbosity)
         } else {
-            execute_gpu(axisiter, &[dims[1] as u32, dims[2] as u32], params, debug, verbosity, None::<std::vec::IntoIter<(usize, Vec<[f32; 2]>)>>)
+            execute_gpu(axisiter, &[dims[1] as u32, dims[2] as u32], params, debug, verbosity, pos_iter)
         };
-    let test = vec![0].into_iter();
     let res_len = res.len();
     let shape = (res_len / column_names.len(), column_names.len());
     let res = Array2::from_shape_vec(shape, res)
@@ -557,7 +572,13 @@ pub fn execute_ndarray(array: &ArrayView3<my_dtype>, params: TrackingParams, deb
     (res, column_names)
 }
 
-pub fn execute_file(path: &str, channel: Option<usize>, params: TrackingParams, debug: bool, verbosity: u32) -> (Array2<my_dtype>, Vec<(String, String)>) {
+pub fn execute_file(path: &str,
+    channel: Option<usize>,
+    params: TrackingParams,
+    debug: bool,
+    verbosity: u32,
+    mut pos_iter: Option<impl Iterator<Item = (usize, Vec<[my_dtype; 2]>)>>,
+    ) -> (Array2<my_dtype>, Vec<(String, String)>) {
     let path = Path::new(path);
     let ext = path.extension().unwrap().to_ascii_lowercase();
     let mut file = File::open(path).expect("Could not open file");
@@ -575,7 +596,7 @@ pub fn execute_file(path: &str, channel: Option<usize>, params: TrackingParams, 
                 if debug {
                     sequential_execute(iterator, &dims, params, debug, verbosity)
                 } else {
-                    execute_gpu(iterator, &dims, params, debug, verbosity, None::<std::vec::IntoIter<(usize, Vec<[f32; 2]>)>>)
+                    execute_gpu(iterator, &dims, params, debug, verbosity, pos_iter)
                 };
             (res, column_names)
         },
@@ -591,7 +612,7 @@ pub fn execute_file(path: &str, channel: Option<usize>, params: TrackingParams, 
                 if debug{
                     sequential_execute(iterator, &dims, params, debug, verbosity)
                 } else{
-                    execute_gpu(iterator, &dims, params, debug, verbosity, None::<std::vec::IntoIter<(usize, Vec<[f32; 2]>)>>)
+                    execute_gpu(iterator, &dims, params, debug, verbosity, pos_iter)
                 };
             (res, column_names)
         },

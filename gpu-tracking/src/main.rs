@@ -1,5 +1,6 @@
 #![allow(warnings)]
 use gpu_tracking::execute_gpu::TrackingParams;
+use ndarray::{Array2, s};
 use pollster::FutureExt;
 use std::io::Write;
 use std::{fs, time::Instant};
@@ -33,23 +34,23 @@ fn main() -> anyhow::Result<()> {
     let path = args.input.unwrap_or("../emily_tracking/sample_vids/s_20.tif".to_string());
     let debug = args.debug.unwrap_or(false);
     let filter = args.filter.unwrap_or(true);
-    let characterize = args.characterize.unwrap_or(true);
+    let characterize = args.characterize.unwrap_or(false);
     // let processed_cpu = args.processed_cpu.unwrap_or(false);
-    // let file = fs::File::open(path).expect("didn't find the file");
-    // let mut decoder = Decoder::new(file).expect("Can't create decoder");
-    // let (width, height) = decoder.dimensions().unwrap();
-    // let dims = [height, width];
+    let file = fs::File::open(&path).expect("didn't find the file");
+    let mut decoder = Decoder::new(file).expect("Can't create decoder");
+    let (width, height) = decoder.dimensions().unwrap();
+    let dims = [height, width];
     // // // dbg!(dims);
-    // let mut decoderiter = IterDecoder::from(decoder);
-    // let all_frames = decoderiter.collect::<Vec<_>>();
-    // let all_views = all_frames.iter().map(|x| x.view()).collect::<Vec<_>>();
-    // let arr = ndarray::stack(ndarray::Axis(0), &all_views).unwrap();
+    let mut decoderiter = IterDecoder::from(decoder);
+    let all_frames = decoderiter.take(3).collect::<Vec<_>>();
+    let all_views = all_frames.iter().map(|x| x.view()).collect::<Vec<_>>();
+    let arr = ndarray::stack(ndarray::Axis(0), &all_views).unwrap();
 
 
     // let results = execute_ndarray(&arr.view(), TrackingParams::default(), true);
     let params = TrackingParams{
         diameter: 9,
-        minmass: 0.,
+        minmass: 800.,
         separation: 10,
         filter_close: filter,
         // search_range: Some(9.),
@@ -64,9 +65,19 @@ fn main() -> anyhow::Result<()> {
     //         true => decoderiter.take(1),
     //         false => decoderiter.take(usize::MAX)
     //     };
+    // let now = Instant::now();
+    // let points = vec![(0usize, vec![[300f32, 300f32], [200f32, 200f32]]), (200usize, vec![[300f32, 300f32], [200f32, 200f32]])];
+    // let (results, column_names) = execute_gpu::execute_file(&path, Some(1), params, debug, 1, Some(points.into_iter()));
+    // // let (results, shape) = execute_gpu(&mut decoderiter, &dims, params, debug, 1);
+    // dbg!(&results);
+    // let function_time = now.elapsed().as_millis() as f64 / 1000.;
+    // dbg!(function_time);
     let now = Instant::now();
-    let (results, column_names) = execute_gpu::execute_file(&path, Some(1), params, debug, 1);
+    let points = vec![0f32, 300f32, 300f32, 0f32, 200f32, 200f32, 200f32, 300f32, 300f32, 2000f32, 200f32, 200f32];
+    let points = Array2::from_shape_vec((4, 3), points).unwrap();
+    let (results, column_names) = execute_gpu::execute_ndarray(&arr.view(), params, debug, 1, None);
     // let (results, shape) = execute_gpu(&mut decoderiter, &dims, params, debug, 1);
+    // dbg!(&results.slice(s![..600, ..]));
     let function_time = now.elapsed().as_millis() as f64 / 1000.;
     dbg!(function_time);
     

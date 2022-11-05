@@ -29,6 +29,36 @@ var<storage, read> n_particles: u32;
 @group(0) @binding(4)
 var<storage, read_write> results: array<f32>;
 
+fn get_mass(u: i32, v: i32, kernel_rows: i32, kernel_cols: i32) -> f32{
+  let rint = (kernel_rows - 1) / 2;
+  let r = f32(rint);
+  let r2 = r * r;
+  var mass = 0.0;
+  let middle_idx = u * params.pic_ncols + v;
+  for (var i: i32 = -rint; i <= rint; i = i + 1) {
+    let x = f32(i);
+    let x2 = x*x;
+    for (var j: i32 = -rint; j <= rint; j = j + 1) {
+      let y = f32(j);
+      let y2 = y*y;
+      var mask = x2 + y2;
+      if (mask > r2) {
+        continue;
+      }
+      let pic_u = u + i;
+      let pic_v = v + j;
+      if (pic_u < 0 || pic_u >= params.pic_nrows || pic_v < 0 || pic_v >= params.pic_ncols) {
+        continue;
+      }
+      let pic_idx = pic_u * params.pic_ncols + pic_v;
+      let data = processed_buffer[pic_idx];
+
+      mass += data;
+    }
+  }
+  return mass;
+}
+
 
 fn characterize(part_idx: u32, kernel_rows: i32, kernel_cols: i32){
   let rint = (kernel_rows - 1) / 2;
@@ -36,6 +66,7 @@ fn characterize(part_idx: u32, kernel_rows: i32, kernel_cols: i32){
   let r2 = r * r;
   let u = i32(round(results[part_idx * 7u + 0u]));
   let v = i32(round(results[part_idx * 7u + 1u]));
+  //_feat_characterize_points results[part_idx * 7u + 2u] = get_mass(u, v, kernel_rows, kernel_cols);
   let mass = results[part_idx * 7u + 2u];
 
   let middle_idx = u * params.pic_ncols + v;

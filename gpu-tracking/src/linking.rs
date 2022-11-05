@@ -42,9 +42,10 @@ impl<'a> Iterator for FrameSubsetter<'a>{
                 Some(frame) => {
                     let frame = *frame;
                     if frame != self.cur_frame{
+                        let out = (self.cur_frame as usize, output);
                         self.cur_frame = frame;
                         // let result = Some(self.array.slice(s![prev_idx..self.idx, ..]));
-                        return Some((self.cur_frame as usize, output));
+                        return Some(out);
                     }
                 },
                 None => {

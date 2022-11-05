@@ -50,7 +50,6 @@ fn gpuparams_from_tracking_params(params: TrackingParams, pic_dims: [u32; 2]) ->
     let kernel_size = params.smoothing_size;
     let circle_size = params.diameter;
     let dilation_size = (2. * params.separation as f32 / (2 as f32).sqrt()) as u32;
-    dbg!(&dilation_size);
     let margin = vec![params.diameter / 2, params.separation / 2 - 1, params.smoothing_size / 2].iter().max().unwrap().clone() as i32;
     GpuParams{
         pic_dims,
@@ -255,6 +254,9 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
         let mut result = String::new();
         result.push_str(common_header);
         result.push_str(source);
+        if characterize_new_points{
+            result = result.replace("//_feat_characterize_points ", "");
+        }
         result.replace("@workgroup_size(_)",
         format!("@workgroup_size({}, {}, {})", wg_size[0], wg_size[1], wg_size[2]).as_str())
     };
@@ -287,12 +289,13 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
         _ => vec![
             Some(("pp_rows", &shaders["preprocess_rows"])),
             Some(("pp_cols", &shaders["preprocess_cols"])),
-            if (!characterize_new_points) {Some(("extract_max", &shaders["extract_max"]))} else {None},
             if (!characterize_new_points) {Some(("max_row", &shaders["max_rows"]))} else {None},
+            if (!characterize_new_points) {Some(("extract_max", &shaders["extract_max"]))} else {None},
             if (!characterize_new_points) {Some(("walk", &shaders["walk"]))} else {None},
             if (tracking_params.characterize | characterize_new_points) {Some(("characterize", &shaders["characterize"]))} else {None},
         ],
     };
+
 
     let compute_pipelines = pipelines.iter().flatten().map(|(name, (shader, wg_n))|{
         (name.to_string(), (device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
