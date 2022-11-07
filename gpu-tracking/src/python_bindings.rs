@@ -1,26 +1,11 @@
-#![allow(warnings)]
-#![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
-
-pub mod decoderiter;
-pub mod execute_gpu;
-pub mod kernels;
-pub mod into_slice;
-pub mod slice_wrapper;
-pub type my_dtype = f32;
-pub mod gpu_setup;
-pub mod linking;
 // #[cfg(feature = "python")]
-// pub mod python_bindings;
-use linking::FrameSubsetter;
-use ndarray::Array2;
-use crate::{execute_gpu::{execute_ndarray, TrackingParams}, decoderiter::{MinimalETSParser}};
-use ndarray::Array;
-use std::{fs::File, collections::HashMap};
-
 use pyo3::{prelude::*, types::PyDict};
-use numpy::{self, PyArray2, PyReadonlyArray3, PyReadonlyArray2, IntoPyArray, PyArray1,};
+// #[cfg(feature = "python")]
+use numpy::{IntoPyArray, PyReadonlyArray3, PyReadonlyArray2, PyArray2, PyArray1, PyArrayDyn, PyArray3};
 
+
+
+// #[cfg(feature = "python")]
 macro_rules! make_args {
     (
     // $(#[$m:meta])*

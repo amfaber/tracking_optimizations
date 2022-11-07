@@ -27,6 +27,30 @@ struct Args{
     // processed_cpu: Option<bool>,
 }
 
+// macro_rules! test {
+//     // (@helper $inside:ident; $y:ident $($body:tt)*) => {
+//     //     {
+//     //         println!("inside func {}", $y);
+//     //         let mut $inside = 1;
+//     //         $($body)*
+//     //     }
+//     // };
+
+//     (fn $name:ident($($args:tt)*) -> $outtype:ty => $params:ident $body:block) => {
+//         fn $name($($args)*, y: i32) -> $outtype {
+//             let mut $params = 1;
+//             $body
+//         }
+//     }
+// }
+
+
+// test!(
+//     fn idk(x: i32, u: usize) -> i32 => inside{
+        
+//         inside
+//     }
+// );
 
 fn main() -> anyhow::Result<()> {
     let args: Args = Args::parse();
@@ -42,7 +66,7 @@ fn main() -> anyhow::Result<()> {
     let dims = [height, width];
     // // // dbg!(dims);
     let mut decoderiter = IterDecoder::from(decoder);
-    let all_frames = decoderiter.take(3).collect::<Vec<_>>();
+    let all_frames = decoderiter.collect::<Vec<_>>();
     let all_views = all_frames.iter().map(|x| x.view()).collect::<Vec<_>>();
     let arr = ndarray::stack(ndarray::Axis(0), &all_views).unwrap();
 
