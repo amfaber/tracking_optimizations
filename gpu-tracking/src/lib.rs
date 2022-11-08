@@ -21,6 +21,19 @@ use std::{fs::File, collections::HashMap};
 use pyo3::{prelude::*, types::PyDict};
 use numpy::{self, PyArray2, PyReadonlyArray3, PyReadonlyArray2, IntoPyArray, PyArray1,};
 
+macro_rules! not_implemented {
+    ($name:ident) => {
+        if $name.is_some(){
+            panic!("{} is not implemented", stringify!($name));
+        }
+    };
+    
+    ($name:ident, $($names:ident), +) => {
+        not_implemented!($name);
+        not_implemented!($($names), +);
+    };
+}
+
 macro_rules! make_args {
     (
     // $(#[$m:meta])*
@@ -49,6 +62,7 @@ macro_rules! make_args {
             sig_radius: Option<my_dtype>,
             bg_radius: Option<my_dtype>,
             gap_radius: Option<my_dtype>,
+            varcheck: Option<my_dtype>,
             $($postargs)*
         ) -> $outtype {
             not_implemented!(maxsize, threshold, invert, percentile,
@@ -94,6 +108,7 @@ macro_rules! make_args {
                 sig_radius,
                 bg_radius,
                 gap_radius,
+                varcheck,
             };
             $body
         }
@@ -101,18 +116,7 @@ macro_rules! make_args {
 }
 
 // #[cfg(feature = "python")]
-macro_rules! not_implemented {
-    ($name:ident) => {
-        if $name.is_some(){
-            panic!("{} is not implemented", stringify!($name));
-        }
-    };
-    
-    ($name:ident, $($names:ident), +) => {
-        not_implemented!($name);
-        not_implemented!($($names), +);
-    };
-}
+
 
 // #[cfg(feature = "python")]
 make_args!(

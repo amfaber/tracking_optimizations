@@ -38,6 +38,7 @@ pub struct TrackingParams{
     pub sig_radius: Option<my_dtype>,
     pub bg_radius: Option<my_dtype>,
     pub gap_radius: Option<my_dtype>,
+    pub varcheck: Option<my_dtype>,
 }
 
 impl Default for TrackingParams{
@@ -63,6 +64,7 @@ impl Default for TrackingParams{
             sig_radius: None,
             bg_radius: None,
             gap_radius: None,
+            varcheck: None,
         }
     }
 }

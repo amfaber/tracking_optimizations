@@ -34,6 +34,9 @@ var<storage, read_write> n_particles_filtered: atomic<u32>;
 @group(0) @binding(5)
 var<storage, read_write> results: array<f32>;
 
+@group(0) @binding(6)
+var<storage, read_write> raw_frame: array<f32>;
+
 fn get_center(u: i32, v: i32, kernel_rows: i32, kernel_cols: i32) -> vec3<f32>{
   let rint = (kernel_rows - 1) / 2;
   let r = f32(rint);
@@ -68,6 +71,56 @@ fn get_center(u: i32, v: i32, kernel_rows: i32, kernel_cols: i32) -> vec3<f32>{
   return centers_and_mass;
 }
 
+fn variance_check(u: f32, v: f32) -> bool{
+  let u = i32(round(u));
+  let v = i32(round(v));
+  let radiusu = params.preprocess_nrows / 2;
+  let radiusv = params.preprocess_ncols / 2;
+  
+  var mean = 0.0;
+  var counter = 0.0;
+  for (var i: i32 = -radiusu; i <= radiusu; i = i + 1) {
+    let pic_u = u + i;
+    if (pic_u < 0 || pic_u >= params.pic_nrows) {
+      continue;
+    }
+    for (var j: i32 = -radiusv; j <= radiusv; j = j + 1) {
+      let pic_v = v + j;
+      if (pic_v < 0 || pic_v >= params.pic_ncols) {
+        continue;
+      }
+      let pic_idx = pic_u * params.pic_ncols + pic_v;
+      mean += raw_frame[pic_idx];
+      counter += 1.0;
+    }
+  }
+  mean /= counter;
+
+  var variance = 0.0;
+  for (var i: i32 = -radiusu; i <= radiusu; i = i + 1) {
+    let pic_u = u + i;
+    if (pic_u < 0 || pic_u >= params.pic_nrows) {
+      continue;
+    }
+    for (var j: i32 = -radiusv; j <= radiusv; j = j + 1) {
+      let pic_v = v + j;
+      if (pic_v < 0 || pic_v >= params.pic_ncols) {
+        continue;
+      }
+      let pic_idx = pic_u * params.pic_ncols + pic_v;
+      variance += (raw_frame[pic_idx] - mean) * (raw_frame[pic_idx] - mean);
+    }
+  }
+  variance /= counter - 1.0;
+  // variance = sqrt(variance);
+  let stdev = sqrt(variance);
+  if (processed_buffer[u * params.pic_ncols + v] > stdev * params.var_factor) {
+    return true;
+  } else {
+    return false;
+  }
+}
+
 fn walk(part_idx: u32) -> vec3<f32> {
   // var adjust_u = 0;
   // var adjust_v = 0;
@@ -77,7 +130,6 @@ fn walk(part_idx: u32) -> vec3<f32> {
   let radiusu = params.circle_nrows / 2;
   let radiusv = params.circle_ncols / 2;
   for (var i: u32 = 0u; i < params.max_iterations; i = i + 1u) {
-
     // idx = u * params.pic_ncols + v;
     center_and_mass = get_center(picuv[0], picuv[1], params.circle_nrows, params.circle_ncols);
     changed = false;
@@ -115,8 +167,12 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   }
   // let idx = global_id.x * u32(params.pic_ncols) + global_id.y;
   let final_coords = walk(global_id.x);
+
+  let varcheck = true;
+  //_feat_varcheck let varcheck = variance_check(final_coords[0], final_coords[1]);
   
-  if (final_coords[2] > params.minmass) {
+
+  if (final_coords[2] > params.minmass && varcheck) {
     let part_id = atomicAdd(&n_particles_filtered, 1u);
     let n_res_cols = 7u;
     results[part_id * n_res_cols + 0u] = final_coords[0];

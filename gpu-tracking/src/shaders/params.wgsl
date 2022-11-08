@@ -14,4 +14,5 @@ struct params{
   threshold: f32,
   minmass: f32,
   margin: i32,
+  var_factor: f32,
 }

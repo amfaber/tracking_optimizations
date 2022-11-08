@@ -16,6 +16,7 @@ pub struct GpuParams{
     pub shift_threshold: f32,
     pub minmass: f32,
     pub margin: i32,
+    pub var_factor: f32,
 }
 pub struct GpuBuffers{
     pub staging_buffers: Vec<Buffer>,
@@ -51,6 +52,7 @@ fn gpuparams_from_tracking_params(params: TrackingParams, pic_dims: [u32; 2]) ->
     let circle_size = params.diameter;
     let dilation_size = (2. * params.separation as f32 / (2 as f32).sqrt()) as u32;
     let margin = vec![params.diameter / 2, params.separation / 2 - 1, params.smoothing_size / 2].iter().max().unwrap().clone() as i32;
+
     GpuParams{
         pic_dims,
         composite_dims: [kernel_size, kernel_size],
@@ -62,6 +64,7 @@ fn gpuparams_from_tracking_params(params: TrackingParams, pic_dims: [u32; 2]) ->
         shift_threshold: 0.6,
         minmass: params.minmass,
         margin,
+        var_factor: params.varcheck.unwrap_or(0.0),
     }
 }
 
@@ -257,6 +260,9 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
         if characterize_new_points{
             result = result.replace("//_feat_characterize_points ", "");
         }
+        if tracking_params.varcheck.is_some(){
+            result = result.replace("//_feat_varcheck ", "");
+        }
         result.replace("@workgroup_size(_)",
         format!("@workgroup_size({}, {}, {})", wg_size[0], wg_size[1], wg_size[2]).as_str())
     };
@@ -351,6 +357,7 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
             Some((3, &buffers.atomic_buffer)),
             Some((4, &buffers.atomic_filtered_buffer)),
             Some((5, &buffers.result_buffer)),
+            if tracking_params.varcheck.is_some() {Some((6, &buffers.frame_buffer))} else {None},
         ]),
 
         ("characterize", vec![

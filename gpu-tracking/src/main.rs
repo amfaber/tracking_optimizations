@@ -66,9 +66,9 @@ fn main() -> anyhow::Result<()> {
     let dims = [height, width];
     // // // dbg!(dims);
     let mut decoderiter = IterDecoder::from(decoder);
-    let all_frames = decoderiter.collect::<Vec<_>>();
-    let all_views = all_frames.iter().map(|x| x.view()).collect::<Vec<_>>();
-    let arr = ndarray::stack(ndarray::Axis(0), &all_views).unwrap();
+    // let all_frames = decoderiter.collect::<Vec<_>>();
+    // let all_views = all_frames.iter().map(|x| x.view()).collect::<Vec<_>>();
+    // let arr = ndarray::stack(ndarray::Axis(0), &all_views).unwrap();
 
 
     // let results = execute_ndarray(&arr.view(), TrackingParams::default(), true);
@@ -83,6 +83,7 @@ fn main() -> anyhow::Result<()> {
         // sig_radius: Some(3.),
         // bg_radius: Some((60 as f32).sqrt()),
         // gap_radius: Some(0.5),
+        varcheck: Some(1.),
         ..Default::default()
     };
     // let mut decoderiter = match debug {
@@ -99,11 +100,13 @@ fn main() -> anyhow::Result<()> {
     let now = Instant::now();
     let points = vec![0f32, 300f32, 300f32, 0f32, 200f32, 200f32, 200f32, 300f32, 300f32, 2000f32, 200f32, 200f32];
     let points = Array2::from_shape_vec((4, 3), points).unwrap();
-    let (results, column_names) = execute_gpu::execute_ndarray(&arr.view(), params, debug, 1, None);
+    let (results, column_names) = execute_gpu::execute_gpu(decoderiter, &dims, params, debug, 1, None::<std::vec::IntoIter<(usize, Vec<[my_dtype; 2]>)>>);
+    // let (results, column_names) = execute_gpu::execute_ndarray(&arr.view(), params, debug, 1, None);
     // let (results, shape) = execute_gpu(&mut decoderiter, &dims, params, debug, 1);
     // dbg!(&results.slice(s![..600, ..]));
     let function_time = now.elapsed().as_millis() as f64 / 1000.;
     dbg!(function_time);
+    dbg!(&results.len());
     
     
     if debug{
