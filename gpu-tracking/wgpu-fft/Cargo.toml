@@ -8,4 +8,6 @@ edition = "2021"
 [dependencies]
 bytemuck = { version = "1.12.3", features = ["derive"] }
 pollster = "0.2.5"
+realfft = "3.1.0"
+transpose = "0.2.2"
 wgpu = "0.14.0"

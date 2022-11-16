@@ -75,43 +75,38 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>){
     // if (i != 0u){
     //     return;
     // }
-    var l: u32;
-    var q: u32;
-    var k: u32;
-    if !inverse {
-        l = N >> (p - 1u);
-        q = (i * (1u << (p - 1u))) & (halfN - 1u);
-        k = i >> (firstTrailingBit(N) - p);
-    } else {
-        l = 1u << p;
-        q = (i * (N >> p)) & (halfN - 1u);
-        k = i >> (p - 1u);
-    }
 
-
-    // let l = 1u << p;
+    // var l: u32;
+    // var q: u32;
+    // var k: u32;
+    
+    let l = 1u << p;
+    let q = (i * (N >> p)) & (halfN - 1u);
+    let k = i >> (p - 1u);
     let s = l >> 1u;
-    // let k = i >> (p - 1u);
     let u = i & (s - 1u);
-    // let q = (i * (N >> p)) & ((N >> 1u) - 1u);
+    
     var w = twiddles[q];
-    if inverse{
-        w[1] = -w[1];
-    }
+    // w[1] = -w[1];
 
     let kl = k*l;
     let upper_butter_idx = istride*(kl + u) + jpos_idx;
     let lower_butter_idx = istride*(kl + u + s) + jpos_idx;
     let upper_butter = data[upper_butter_idx];
     let lower_butter = data[lower_butter_idx];
-    if !inverse{
-        data[upper_butter_idx] = upper_butter + lower_butter;
-        data[lower_butter_idx] = complex_multiply((upper_butter - lower_butter), w);
-    } else {
-        let w_lower_butter = complex_multiply(w, lower_butter);
-        data[upper_butter_idx] = upper_butter + w_lower_butter;
-        data[lower_butter_idx] = upper_butter - w_lower_butter;
-    }
+
+    let w_lower_butter = complex_multiply(w, lower_butter);
+    data[upper_butter_idx] = upper_butter + w_lower_butter;
+    data[lower_butter_idx] = upper_butter - w_lower_butter;
+
+
+    // let l = 1u << p;
+    // let k = i / s;
+    // let q = (i * (N >> p)) & ((N >> 1u) - 1u);
+
+    // if !inverse{
+    // } else {
+    // }
 
 }
 

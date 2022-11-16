@@ -18,7 +18,7 @@ var<storage, read_write> twiddles1: array<vec2<f32>>;
 
 @compute @workgroup_size(_)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>){
-    let pi = 3.14159265358979323846;
+    let pi = -3.14159265358979323846;
     if (global_id.x < arrayLength(&twiddles0)){
         let i = global_id.x;
         let N = f32(fftparams.nrows);
