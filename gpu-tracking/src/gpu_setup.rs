@@ -1,11 +1,90 @@
 use std::{collections::HashMap, fs::File, io::Read};
 
-use crate::{execute_gpu::TrackingParams, my_dtype};
+use crate::{my_dtype};
 
 use pollster::FutureExt;
 use wgpu::{Buffer, Device, self, util::DeviceExt};
+use wgpu_fft::{self, fft::FftPlan};
 
-pub struct GpuParams{
+
+#[derive(Clone)]
+pub struct TrackpyParams{
+    
+}
+
+#[derive(Clone)]
+pub struct LogParams{
+    min_sigma: my_dtype,
+    max_sigma: my_dtype,
+    n_sigma: usize,
+}
+
+#[derive(Clone)]
+pub enum Style{
+    Trackpy(TrackpyParams),
+    Log(LogParams),
+}
+
+
+#[derive(Clone)]
+pub struct TrackingParams{
+    pub diameter: u32,
+    pub minmass: f32,
+    pub maxsize: f32,
+    pub separation: u32,
+    pub noise_size: f32,
+    pub smoothing_size: u32,
+    pub threshold: f32,
+    pub invert: bool,
+    pub percentile: f32,
+    pub topn: u32,
+    pub preprocess: bool,
+    pub max_iterations: u32,
+    pub characterize: bool,
+    pub filter_close: bool,
+    pub search_range: Option<my_dtype>,
+    pub memory: Option<usize>,
+    // pub cpu_processed: bool,
+    pub sig_radius: Option<my_dtype>,
+    pub bg_radius: Option<my_dtype>,
+    pub gap_radius: Option<my_dtype>,
+    pub varcheck: Option<my_dtype>,
+    pub style: Style,
+}
+
+impl Default for TrackingParams{
+    fn default() -> Self {
+        TrackingParams{
+            diameter: 9,
+            minmass: 0.,
+            maxsize: 0.0,
+            separation: 11,
+            noise_size: 1.,
+            smoothing_size: 9,
+            threshold: 0.0,
+            invert: false,
+            percentile: 0.,
+            topn: 0,
+            preprocess: true,
+            max_iterations: 10,
+            characterize: false,
+            filter_close: true,
+            search_range: None,
+            memory: None,
+            // cpu_processed: true,
+            sig_radius: None,
+            bg_radius: None,
+            gap_radius: None,
+            varcheck: None,
+            style: Style::Trackpy(TrackpyParams{
+
+            })
+        }
+    }
+}
+
+
+pub struct TrackpyGpuParams{
     pub pic_dims: [u32; 2],
     pub composite_dims: [u32; 2],
     pub sigma: f32,
@@ -18,27 +97,37 @@ pub struct GpuParams{
     pub margin: i32,
     pub var_factor: f32,
 }
-pub struct GpuBuffers{
+pub struct TrackpyGpuBuffers{
     pub staging_buffers: Vec<Buffer>,
     pub frame_buffer: Buffer,
-    // pub composite_buffer: Buffer,
-    // pub gauss_1d_buffer: Buffer,
-    pub processed_buffer: Buffer,
-    pub centers_buffer: Buffer,
-    // pub circle_buffer: Buffer,
-    pub masses_buffer: Buffer,
     pub result_buffer: Buffer,
-    pub param_buffer: Buffer,
-    pub max_rows: Buffer,
     pub atomic_buffer: Buffer,
     pub particles_buffer: Buffer,
     pub atomic_filtered_buffer: Buffer,
+    
+    pub processed_buffer: Buffer,
+    pub centers_buffer: Buffer,
+    pub masses_buffer: Buffer,
+    pub max_rows: Buffer,
+    pub param_buffer: Buffer,
 }
 
-pub struct GpuState{
+pub struct LogGpuBuffers{
+    pub staging_buffers: Vec<Buffer>,
+    pub frame_buffer: Buffer,
+    pub result_buffer: Buffer,
+    pub atomic_buffer: Buffer,
+    pub particles_buffer: Buffer,
+    pub atomic_filtered_buffer: Buffer,
+    
+    pub logspace_buffers: Vec<Buffer>,
+    pub filter_buffers: Vec<Buffer>,
+}
+
+pub struct TrackpyGpuState{
     pub device: Device,
     pub queue: wgpu::Queue,
-    pub buffers: GpuBuffers,
+    pub buffers: TrackpyGpuBuffers,
     pub pipelines: Vec<(String, (wgpu::ComputePipeline, [u32; 3]))>,
     pub bind_groups: HashMap<String, (u32, wgpu::BindGroup)>,
     // pub workgroups: [u32; 2],
@@ -47,13 +136,51 @@ pub struct GpuState{
     pub pic_byte_size: u64,
 }
 
-fn gpuparams_from_tracking_params(params: TrackingParams, pic_dims: [u32; 2]) -> GpuParams {
+pub struct LogGpuState{
+
+}
+
+pub enum GpuBuffers{
+    Trackpy(TrackpyGpuBuffers),
+    Log(LogGpuBuffers)
+}
+
+pub enum GpuState{
+    Trackpy(TrackpyGpuState),
+    Log(LogGpuState),
+}
+
+impl GpuState{
+    pub fn staging_buffers(&self) -> &Vec<Buffer>{
+        match self{
+            Self::Trackpy(state) => &state.buffers.staging_buffers,
+            Self::Log(state) => todo!(),
+        }
+    }
+    
+    pub fn queue(&self) -> &wgpu::Queue{
+        match self{
+            Self::Trackpy(state) => &state.queue,
+            Self::Log(state) => todo!(),
+        }
+    }
+
+    pub fn device(&self) -> &wgpu::Device{
+        match self{
+            Self::Trackpy(state) => &state.device,
+            Self::Log(state) => todo!(),
+        }
+    }
+}
+
+
+fn gpuparams_from_tracking_params(params: TrackingParams, pic_dims: [u32; 2]) -> TrackpyGpuParams {
     let kernel_size = params.smoothing_size;
     let circle_size = params.diameter;
     let dilation_size = (2. * params.separation as f32 / (2 as f32).sqrt()) as u32;
     let margin = vec![params.diameter / 2, params.separation / 2 - 1, params.smoothing_size / 2].iter().max().unwrap().clone() as i32;
 
-    GpuParams{
+    TrackpyGpuParams{
         pic_dims,
         composite_dims: [kernel_size, kernel_size],
         sigma: params.noise_size,
@@ -79,9 +206,10 @@ pub fn setup_buffers(tracking_params: &TrackingParams,
     device: &wgpu::Device,
     size: u64,
     dims: &[u32; 2],
-    ) -> GpuBuffers{
+    fftplan: Option<FftPlan>,
+    ) -> GpuBuffers {
+    
     let result_buffer_depth = if tracking_params.characterize { 7 } else { 3 };
-    let params = gpuparams_from_tracking_params(tracking_params.clone(), *dims);
     let mut staging_buffers = Vec::new();
     for i in 0..2{
         let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -95,37 +223,15 @@ pub fn setup_buffers(tracking_params: &TrackingParams,
         });
         staging_buffers.push(staging_buffer);
     }
-
+    
     let frame_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
         size: size,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
-
-
-    let processed_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: size,
-        usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
     
-    let centers_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: (2 * size) as u64,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
     
-
-    let masses_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
-
     let result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
         size: (result_buffer_depth * size) as u64,
@@ -133,22 +239,6 @@ pub fn setup_buffers(tracking_params: &TrackingParams,
         mapped_at_creation: false,
     });
     
-
-    let param_buffer = unsafe{
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Width Buffer"),
-            contents: any_as_u8_slice(&params),
-            usage: wgpu::BufferUsages::UNIFORM
-        })
-    };
-
-    let max_rows = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
-
     let atomic_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
         size: 4,
@@ -170,28 +260,98 @@ pub fn setup_buffers(tracking_params: &TrackingParams,
         mapped_at_creation: false,
     });
 
+    match tracking_params.style{
+    Style::Trackpy(styleparams) => {
+        let params = gpuparams_from_tracking_params(tracking_params.clone(), *dims);
+        
+        let processed_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: size,
+            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        
+        let centers_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: (2 * size) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        
+        
+        let masses_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
 
-    GpuBuffers{
-        staging_buffers,
-        frame_buffer,
-        // composite_buffer,
-        // gauss_1d_buffer,
-        processed_buffer,
-        centers_buffer,
-        // circle_buffer,
-        masses_buffer,
-        result_buffer,
-        param_buffer,
-        max_rows,
-        atomic_buffer,
-        particles_buffer,
-        atomic_filtered_buffer,
+        let param_buffer = unsafe{
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Width Buffer"),
+                contents: any_as_u8_slice(&params),
+                usage: wgpu::BufferUsages::UNIFORM
+            })
+        };
+    
+        let max_rows = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        
+        GpuBuffers::Trackpy(TrackpyGpuBuffers{
+            staging_buffers,
+            frame_buffer,
+            processed_buffer,
+            centers_buffer,
+            masses_buffer,
+            result_buffer,
+            param_buffer,
+            max_rows,
+            atomic_buffer,
+            particles_buffer,
+            atomic_filtered_buffer,
+        })
+    },
+    Style::Log(styleparams) => {
+        let fftplan = fftplan.unwrap();
+        let logspace_buffers: Vec<_> = (0..3)
+        .map(|_|{
+            fftplan.create_buffer(false)
+        }).collect();
+
+        let filter_buffers: Vec<_> = (0..styleparams.n_sigma).map(|_|{
+            fftplan.create_buffer(false)
+        }).collect();
+
+        let laplacian_buffer = fftplan.create_buffer(false);
+
+
+        GpuBuffers::Log(LogGpuBuffers{
+            staging_buffers,
+            frame_buffer,
+            result_buffer,
+            atomic_buffer,
+            particles_buffer,
+            atomic_filtered_buffer,
+
+            logspace_buffers,
+            filter_buffers,
+        })
+    }
     }
 }
 
 
 
-pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: bool, characterize_new_points: bool) -> GpuState{
+pub fn setup_state(
+    tracking_params: &TrackingParams,
+    dims: &[u32; 2],
+    debug: bool,
+    characterize_new_points: bool) -> GpuState{
+    
     let instance = wgpu::Instance::new(wgpu::Backends::all());
 
     let adapter = instance
@@ -200,8 +360,7 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
         force_fallback_adapter: false,
         compatible_surface: None,
     })
-    .block_on()
-    .ok_or(anyhow::anyhow!("Couldn't create the adapter")).unwrap();
+    .block_on().expect("Couldn't create adapter");
 
     let mut desc = wgpu::DeviceDescriptor::default();
     desc.features = wgpu::Features::MAPPABLE_PRIMARY_BUFFERS;
@@ -289,18 +448,16 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
     let size = slice_size as wgpu::BufferAddress;
     
     
-    let buffers = setup_buffers(&tracking_params, &device, size * 2, dims);
+    let buffers = setup_buffers(&tracking_params, &device, size * 2, dims, None);
 
-    let pipelines: Vec<Option<(&str, &(wgpu::ShaderModule, [u32; 3]))>> = match debug{
-        _ => vec![
-            Some(("pp_rows", &shaders["preprocess_rows"])),
-            Some(("pp_cols", &shaders["preprocess_cols"])),
-            if (!characterize_new_points) {Some(("max_row", &shaders["max_rows"]))} else {None},
-            if (!characterize_new_points) {Some(("extract_max", &shaders["extract_max"]))} else {None},
-            if (!characterize_new_points) {Some(("walk", &shaders["walk"]))} else {None},
-            if (tracking_params.characterize | characterize_new_points) {Some(("characterize", &shaders["characterize"]))} else {None},
-        ],
-    };
+    let pipelines: Vec<Option<(&str, &(wgpu::ShaderModule, [u32; 3]))>> = vec![
+        Some(("pp_rows", &shaders["preprocess_rows"])),
+        Some(("pp_cols", &shaders["preprocess_cols"])),
+        if (!characterize_new_points) {Some(("max_row", &shaders["max_rows"]))} else {None},
+        if (!characterize_new_points) {Some(("extract_max", &shaders["extract_max"]))} else {None},
+        if (!characterize_new_points) {Some(("walk", &shaders["walk"]))} else {None},
+        if (tracking_params.characterize | characterize_new_points) {Some(("characterize", &shaders["characterize"]))} else {None},
+    ];
 
 
     let compute_pipelines = pipelines.iter().flatten().map(|(name, (shader, wg_n))|{
@@ -317,88 +474,93 @@ pub fn setup_state(tracking_params: &TrackingParams, dims: &[u32; 2], debug: boo
         (name.as_str(), (0, pipeline.get_bind_group_layout(0)))
     }).collect::<HashMap<_, _>>();
 
-
-    let bind_group_entries = 
-        HashMap::from([
-        ("pp_rows", vec![
-            Some((0, &buffers.param_buffer)),
-            Some((1, &buffers.frame_buffer)),
-            Some((3, &buffers.centers_buffer)),
-        ]),
-        ("pp_cols", vec![
-            Some((0, &buffers.param_buffer)),
-            Some((2, &buffers.centers_buffer)),
-            Some((3, &buffers.processed_buffer)), 
-        ]),
-        ("centers", vec![
-            Some((0, &buffers.param_buffer)),    
-            Some((2, &buffers.processed_buffer)), 
-            Some((3, &buffers.centers_buffer)),
-            Some((4, &buffers.masses_buffer)),
-            if tracking_params.characterize {Some((5, &buffers.frame_buffer))} else {None},
-            if tracking_params.characterize {Some((6, &buffers.result_buffer))} else {None},
-        ]),
-        ("max_row", vec![
-            Some((0, &buffers.param_buffer)),
-            Some((1, &buffers.processed_buffer)), 
-            Some((2, &buffers.max_rows)),
-        ]),
-        ("extract_max", vec![
-            Some((0, &buffers.param_buffer)),
-            Some((1, &buffers.processed_buffer)), 
-            Some((2, &buffers.max_rows)),
-            Some((3, &buffers.atomic_buffer)),
-            Some((4, &buffers.particles_buffer))
+    match buffers{
+    GpuBuffers::Trackpy(buffers) => {
+            let bind_group_entries = 
+            HashMap::from([
+            ("pp_rows", vec![
+                Some((0, &buffers.param_buffer)),
+                Some((1, &buffers.frame_buffer)),
+                Some((3, &buffers.centers_buffer)),
             ]),
-        ("walk", vec![
-            Some((0, &buffers.param_buffer)),
-            Some((1, &buffers.processed_buffer)), 
-            Some((2, &buffers.particles_buffer)),
-            Some((3, &buffers.atomic_buffer)),
-            Some((4, &buffers.atomic_filtered_buffer)),
-            Some((5, &buffers.result_buffer)),
-            if tracking_params.varcheck.is_some() {Some((6, &buffers.frame_buffer))} else {None},
-        ]),
+            ("pp_cols", vec![
+                Some((0, &buffers.param_buffer)),
+                Some((2, &buffers.centers_buffer)),
+                Some((3, &buffers.processed_buffer)), 
+            ]),
+            ("centers", vec![
+                Some((0, &buffers.param_buffer)),    
+                Some((2, &buffers.processed_buffer)), 
+                Some((3, &buffers.centers_buffer)),
+                Some((4, &buffers.masses_buffer)),
+                if tracking_params.characterize {Some((5, &buffers.frame_buffer))} else {None},
+                if tracking_params.characterize {Some((6, &buffers.result_buffer))} else {None},
+            ]),
+            ("max_row", vec![
+                Some((0, &buffers.param_buffer)),
+                Some((1, &buffers.processed_buffer)), 
+                Some((2, &buffers.max_rows)),
+            ]),
+            ("extract_max", vec![
+                Some((0, &buffers.param_buffer)),
+                Some((1, &buffers.processed_buffer)), 
+                Some((2, &buffers.max_rows)),
+                Some((3, &buffers.atomic_buffer)),
+                Some((4, &buffers.particles_buffer))
+                ]),
+            ("walk", vec![
+                Some((0, &buffers.param_buffer)),
+                Some((1, &buffers.processed_buffer)), 
+                Some((2, &buffers.particles_buffer)),
+                Some((3, &buffers.atomic_buffer)),
+                Some((4, &buffers.atomic_filtered_buffer)),
+                Some((5, &buffers.result_buffer)),
+                if tracking_params.varcheck.is_some() {Some((6, &buffers.frame_buffer))} else {None},
+            ]),
 
-        ("characterize", vec![
-            Some((0, &buffers.param_buffer)),
-            Some((1, &buffers.processed_buffer)), 
-            Some((2, &buffers.frame_buffer)),
-            Some((3, &buffers.atomic_filtered_buffer)),
-            Some((4, &buffers.result_buffer)),
-        ]),
-            
-    ]);
+            ("characterize", vec![
+                Some((0, &buffers.param_buffer)),
+                Some((1, &buffers.processed_buffer)), 
+                Some((2, &buffers.frame_buffer)),
+                Some((3, &buffers.atomic_filtered_buffer)),
+                Some((4, &buffers.result_buffer)),
+            ]),
+                
+        ]);
 
-    let bind_group_entries = bind_group_entries
-        .iter().map(|(&name, group)| (name, group.iter().flatten().map(|(i, buffer)|
-            wgpu::BindGroupEntry {
-            binding: *i as u32,
-            resource: buffer.as_entire_binding()}).collect::<Vec<_>>())
-        )
-        .collect::<HashMap<_, _>>();
-    
-    
-    let bind_groups = bind_group_layouts.iter()
-        .map(|(&name, (group, layout))|{
-        let entries = &bind_group_entries[name];
-        (name.to_string(), (*group, device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout,
-            entries: &entries[..],
-        })))}
-    ).collect::<HashMap<_, _>>();
+        let bind_group_entries = bind_group_entries
+            .iter().map(|(&name, group)| (name, group.iter().flatten().map(|(i, buffer)|
+                wgpu::BindGroupEntry {
+                binding: *i as u32,
+                resource: buffer.as_entire_binding()}).collect::<Vec<_>>())
+            )
+            .collect::<HashMap<_, _>>();
+        
+        
+        let bind_groups = bind_group_layouts.iter()
+            .map(|(&name, (group, layout))|{
+            let entries = &bind_group_entries[name];
+            (name.to_string(), (*group, device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout,
+                entries: &entries[..],
+            })))}
+        ).collect::<HashMap<_, _>>();
 
-    GpuState{
-        device,
-        queue,
-        buffers,
-        pipelines: compute_pipelines,
-        bind_groups,
-        // workgroups,
-        pic_size,
-        result_read_depth,
-        pic_byte_size: size,
+        GpuState::Trackpy(TrackpyGpuState{
+            device,
+            queue,
+            buffers,
+            pipelines: compute_pipelines,
+            bind_groups,
+            // workgroups,
+            pic_size,
+            result_read_depth,
+            pic_byte_size: size,
+        })
+    },
+    _ => todo!()
     }
+    
 }
 

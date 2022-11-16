@@ -14,7 +14,7 @@ pub mod linking;
 // pub mod python_bindings;
 use linking::FrameSubsetter;
 use ndarray::Array2;
-use crate::{execute_gpu::{execute_ndarray, TrackingParams}, decoderiter::{MinimalETSParser}};
+use crate::{execute_gpu::{execute_ndarray}, decoderiter::{MinimalETSParser}, gpu_setup::TrackingParams};
 use ndarray::Array;
 use std::{fs::File, collections::HashMap};
 
@@ -85,6 +85,8 @@ macro_rules! make_args {
             let filter_close = filter_close.unwrap_or(true);
             // let cpu_processed = cpu_processed.unwrap_or(false);
             let gap_radius = bg_radius.map(|_| gap_radius.unwrap_or(0.));
+
+            let style = gpu_setup::Style::Trackpy;
     
             // neither search_range nor memory are unwrapped as linking is optional on the Rust side.
     
@@ -110,6 +112,7 @@ macro_rules! make_args {
                 bg_radius,
                 gap_radius,
                 varcheck,
+                style
             };
             $body
         }

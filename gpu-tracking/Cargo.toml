@@ -24,7 +24,7 @@ pollster = "0.2.5"
 rayon = "1.5.3"
 tiff = "0.7.3"
 typenum = "1.15.0"
-wgpu = "0.13.1"
+wgpu = "0.14.0"
 byteorder = "1.4.3"
 
 [dependencies.wgpu-fft]
