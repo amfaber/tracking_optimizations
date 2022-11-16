@@ -1,7 +1,4 @@
 pub mod fft;
-pub mod convolutions;
-
-
 
 #[cfg(test)]
 mod tests {
@@ -50,13 +47,13 @@ mod tests {
 
     #[test]
     fn gpu_speed() {
-        let shape = [1024, 1024];
+        let shape = [300, 300];
         let data = (0..shape[0] * shape[1]).map(|_i| _i as f32).collect::<Vec<_>>();
         let size = std::mem::size_of::<f32>() * data.len();
         let size = size as u64;
         let state = GpuState::new();
         let shaders =
-         fft::compile_shaders(&state.device, Some(&[16, 16, 1]), None);
+         fft::compile_shaders(&state.device, None, None);
 
         let input = state.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -65,20 +62,23 @@ mod tests {
             mapped_at_creation: false,
         });
         
-        let padded = state.device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: size * 2,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC 
-            // | wgpu::BufferUsages::MAP_READ
-            ,
-            mapped_at_creation: false,
-        });
+        let padded_shape = fft::get_shape(&shape, &[1, 1]);
+
+        let mut plan = fft::FftPlan::create(&padded_shape, shaders, &state.device, &state.queue);
+        let padded = plan.create_buffer(false);
+        // let padded = state.device.create_buffer(&wgpu::BufferDescriptor {
+        //     label: None,
+        //     size: size * 2,
+        //     usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC 
+        //     // | wgpu::BufferUsages::MAP_READ
+        //     ,
+        //     mapped_at_creation: false,
+        // });
         // let test = data.as_ptr() as *const u8;
         // let copy_slice = unsafe{ std::slice::from_raw_parts(data.as_ptr() as *const u8, size as usize) };
         let copy_slice = bytemuck::cast_slice::<f32, u8>(&data);
         
         state.queue.write_buffer(&input, 0, copy_slice);
-        let mut plan = fft::FftPlan::create(&shape, shaders, &state.device, &state.queue);
         
         let mut encoder = state.device.create_command_encoder(&Default::default());
         plan.pad(&mut encoder, &input, &padded, &[shape[0], shape[1]]);
@@ -102,16 +102,15 @@ mod tests {
         // std::fs::write("out.bin", &read_data[..]).unwrap();
 
     }
-
     #[test]
     fn gpu_save() {
-        let shape = [8, 8];
+        let shape = [16, 16];
         let data = (0..shape[0] * shape[1]).map(|_i| _i as f32).collect::<Vec<_>>();
         let size = std::mem::size_of::<f32>() * data.len();
         let size = size as u64;
         let state = GpuState::new();
         let shaders =
-         fft::compile_shaders(&state.device, Some(&[16, 16, 1]), None);
+         fft::compile_shaders(&state.device, None, None);
 
         let input = state.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -120,42 +119,30 @@ mod tests {
             mapped_at_creation: false,
         });
         
-        let padded = state.device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: size * 2,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC 
-            | wgpu::BufferUsages::MAP_READ
-            ,
-            mapped_at_creation: false,
-        });
-        // let test = data.as_ptr() as *const u8;
-        // let copy_slice = unsafe{ std::slice::from_raw_parts(data.as_ptr() as *const u8, size as usize) };
+        let padded_shape = fft::get_shape(&shape, &[1, 1]);
+
+        let mut plan = fft::FftPlan::create(&padded_shape, shaders, &state.device, &state.queue);
+        let padded = plan.create_buffer(true);
+
         let copy_slice = bytemuck::cast_slice::<f32, u8>(&data);
         
         state.queue.write_buffer(&input, 0, copy_slice);
-        let mut plan = fft::FftPlan::create(&shape, shaders, &state.device, &state.queue);
         
         let mut encoder = state.device.create_command_encoder(&Default::default());
         plan.pad(&mut encoder, &input, &padded, &[shape[0], shape[1]]);
         state.queue.submit(Some(encoder.finish()));
 
-        // let n = 250;
-        // let now = Instant::now();
-        // for _i in 0..n{
         let mut encoder = state.device.create_command_encoder(&Default::default());
         plan.fft(&mut encoder, &padded, false, false);
         plan.fft(&mut encoder, &padded, true, true);
         state.queue.submit(Some(encoder.finish()));
-        // }
         let slice = padded.slice(..);
         slice.map_async(wgpu::MapMode::Read, |_| {});
         state.device.poll(wgpu::Maintain::Wait);
-        // dbg!(now.elapsed().as_nanos() as f64 / 1_000_000_000.);
         let read_data = slice.get_mapped_range();
         std::fs::write("out.bin", &read_data[..]).unwrap();
 
     }
-
 
     #[test]
     fn rustfft_test() {

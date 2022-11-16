@@ -63,7 +63,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>){
         N = ncols;
         M = nrows;
         istride = 1u;
-        let jstride = nrows;
+        let jstride = ncols;
         jpos_idx = j*jstride;
     }
 

@@ -27,6 +27,10 @@ typenum = "1.15.0"
 wgpu = "0.13.1"
 byteorder = "1.4.3"
 
+[dependencies.wgpu-fft]
+version = "*"
+path = "wgpu-fft"
+
 [dependencies.clap]
 features = ["derive"]
 version = "4.0.6"

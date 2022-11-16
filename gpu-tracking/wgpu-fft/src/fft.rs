@@ -13,9 +13,7 @@ pub struct FftParams{
     pub inverse: u32,
 }
 
-static fftparams_size_checker: [u8; 20] = [0; std::mem::size_of::<FftParams>()];
-
-
+// static fftparams_size_checker: [u8; 20] = [0; std::mem::size_of::<FftParams>()];
 
 pub fn array_map<T: Default, const N: usize, F: Fn(&T, &T) -> T>(arr1: &[T; N], arr2: &[T; N], function: F) -> [T; N]{
     let mut result: [T; N] = core::array::from_fn(|_| T::default());
@@ -119,12 +117,14 @@ impl<'a> FftPlan<'a>{
         };
 
         let shapes = HashMap::from([
-          ("fft0", [dims[0] / 2, dims[1], 1]),
-          ("fft1", [dims[0], dims[1] / 2, 1]),
+          ("fft0",          [dims[0] / 2, dims[1], 1]),
+          ("fft1",          [dims[0], dims[1] / 2, 1]),
           ("twiddle_setup", [dims[0] / 2 + dims[1] / 2, 1, 1]),
-          ("pad", [dims[0], dims[1], 1]),
-          ("normalize", [dims[0], dims[1], 1]),
+          ("pad",           [dims[0], dims[1], 1]),
+          ("normalize",     [dims[0], dims[1], 1]),
+          ("multiply",      [dims[0]*dims[1], 1, 1])
         ]);
+        // dbg!(&shapes);
 
         let pipelines = shaders.iter().map(|(name, (shader, wg_size))| {
             let shape = shapes[name.as_str()];
@@ -240,8 +240,9 @@ impl<'a> FftPlan<'a>{
                 (0, &self.gpu_side_params),
                 (1, input),
             ]),
-
         ];
+        // let mut order = [(0, "fft0"), (1, "fft1")];
+
         self.params.current_dim = 0;
         let bind_group_entries = bind_group_entries.iter().map(|(name, entries)|{
             let entries = entries.iter().map(|(binding, buffer)|{
@@ -293,19 +294,6 @@ impl<'a> FftPlan<'a>{
         }
 
 
-        // self.params.set_dim(1);
-
-        // for p in 1..=self.exponents[1]{
-        //     dbg!(p);
-        //     self.params.set_stage(p);
-        //     self.params.write_to_buffer(self.queue, &self.gpu_side_params);
-        //     let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-        //     cpass.set_bind_group(0, &bindgroup, &[]);
-        //     cpass.set_pipeline(pipeline);
-        //     cpass.dispatch_workgroups(wg_n[0], wg_n[1], wg_n[2]);
-        // }
-        
-        
         if normalize{
             let (pipeline, wg_n, layout) = &self.pipelines["normalize"];
             let bindgroup = self.device.create_bind_group(&wgpu::BindGroupDescriptor{
@@ -321,13 +309,17 @@ impl<'a> FftPlan<'a>{
         }
     }
 
-    pub fn create_buffer(&self) -> wgpu::Buffer {
+    pub fn create_buffer(&self, mappable: bool) -> wgpu::Buffer {
 
         let size = self.params.dims.iter().product::<u32>() as u64 * std::mem::size_of::<f32>() as u64 * 2;
+        let mut usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC;
+        if mappable{
+            usage |= wgpu::BufferUsages::MAP_READ
+        }
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor{
             label: None,
             size,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            usage,
             mapped_at_creation: false,
         });
 
@@ -373,6 +365,43 @@ impl<'a> FftPlan<'a>{
         }
 
     }
+
+    pub fn spectral_convolution(&self, encoder: &mut wgpu::CommandEncoder, modified_inplace: &wgpu::Buffer, factor: &wgpu::Buffer){
+
+        let bind_group_entries = [
+            ("multiply", vec![
+                // (0, &self.gpu_side_params),
+                (0, modified_inplace),
+                (1, factor),
+            ]),
+        
+        ];
+        let bind_group_entries = bind_group_entries.iter().map(|(name, entries)|{
+            let entries = entries.iter().map(|(binding, buffer)|{
+                wgpu::BindGroupEntry{
+                    binding: *binding,
+                    resource: buffer.as_entire_binding(),
+                }
+            }).collect::<Vec<_>>();
+            (name.to_string(), entries)
+        }).collect::<HashMap<_,_>>();
+
+        let (pipeline, wg_n, layout) = &self.pipelines["multiply"];
+
+        let bindgroup = self.device.create_bind_group(&wgpu::BindGroupDescriptor{
+                    label: None,
+                    layout,
+                    entries: &bind_group_entries["multiply"],
+        });
+        
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+            // dbg!(wg_n);
+            cpass.set_bind_group(0, &bindgroup, &[]);
+            cpass.set_pipeline(pipeline);
+            cpass.dispatch_workgroups(wg_n[0], wg_n[1], wg_n[2]);
+        }
+    }
 }
 
 
@@ -410,6 +439,7 @@ pub fn compile_shaders(device: &wgpu::Device, workgroup_size2d: Option<&[u32; 3]
         ("twiddle_setup", (include_str!("shaders/twiddle_setup.wgsl"), workgroup_size1d)),
         ("pad", (include_str!("shaders/pad.wgsl"), workgroup_size2d)),
         ("normalize", (include_str!("shaders/normalize.wgsl"), workgroup_size2d)),
+        ("multiply", (include_str!("shaders/multiply.wgsl"), workgroup_size1d)),
     ]);
 
     let preprocess_source = |source, wg_size: &[u32; 3]| -> String {
