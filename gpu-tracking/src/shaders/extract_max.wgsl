@@ -1,8 +1,15 @@
+struct ParticleLocation{
+    x: i32,
+    y: i32,
+    r: f32,
+    log_space_max: f32,
+}
+
 @group(0) @binding(0)
-var<uniform> params: params;
+var<uniform> params: Params;
 
 @group(0) @binding(1)
-var<storage, read_write> processed_buffer: array<f32>;
+var<storage, read> processed_buffer: array<f32>;
 
 @group(0) @binding(2)
 var<storage, read> max_rows: array<f32>;
@@ -11,7 +18,7 @@ var<storage, read> max_rows: array<f32>;
 var<storage, read_write> n_particles: atomic<u32>;
 
 @group(0) @binding(4)
-var<storage, read_write> max_points: array<vec2<i32>>;
+var<storage, read_write> max_points: array<ParticleLocation>;
 
 fn is_max(u: i32, v: i32, kernel_rows: i32, kernel_cols: i32) -> bool {
   let center = processed_buffer[u * params.pic_ncols + v];
@@ -48,6 +55,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
   if (is_max(i32(global_id.x), i32(global_id.y), params.dilation_nrows, params.dilation_ncols)) {
     let part = atomicAdd(&n_particles, 1u);
-    max_points[part] = vec2<i32>(u, v);
+    max_points[part] = ParticleLocation(u, v, -1.0, -1.0);
   }
 }

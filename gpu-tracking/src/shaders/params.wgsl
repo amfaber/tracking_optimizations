@@ -1,4 +1,4 @@
-struct params{
+struct Params{
   pic_nrows: i32,
   pic_ncols: i32,
   preprocess_nrows: i32,

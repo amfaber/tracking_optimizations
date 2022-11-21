@@ -14,11 +14,13 @@ pub mod linking;
 // pub mod python_bindings;
 use linking::FrameSubsetter;
 use ndarray::Array2;
-use crate::{execute_gpu::{execute_ndarray}, decoderiter::{MinimalETSParser}, gpu_setup::TrackingParams};
+use crate::{execute_gpu::{execute_ndarray}, decoderiter::{MinimalETSParser}, gpu_setup::{TrackingParams, TrackpyParams, LogParams}};
 use ndarray::Array;
 use std::{fs::File, collections::HashMap};
 
+#[cfg(feature = "python")]
 use pyo3::{prelude::*, types::PyDict};
+#[cfg(feature = "python")]
 use numpy::{self, PyArray2, PyReadonlyArray3, PyReadonlyArray2, IntoPyArray, PyArray1,};
 
 
@@ -86,7 +88,9 @@ macro_rules! make_args {
             // let cpu_processed = cpu_processed.unwrap_or(false);
             let gap_radius = bg_radius.map(|_| gap_radius.unwrap_or(0.));
 
-            let style = gpu_setup::Style::Trackpy;
+            let style = gpu_setup::Style::Trackpy(
+                TrackpyParams{}
+            );
     
             // neither search_range nor memory are unwrapped as linking is optional on the Rust side.
     
@@ -122,7 +126,7 @@ macro_rules! make_args {
 // #[cfg(feature = "python")]
 
 
-// #[cfg(feature = "python")]
+#[cfg(feature = "python")]
 make_args!(
     fn batch_rust<'py>(
     {
@@ -140,7 +144,7 @@ make_args!(
     }
 );
 
-// #[cfg(feature = "python")]
+#[cfg(feature = "python")]
 make_args!(
     fn batch_file_rust<'py>(
         {
@@ -165,7 +169,7 @@ make_args!(
 
 
 
-// #[cfg(feature = "python")]
+#[cfg(feature = "python")]
 #[pymodule]
 fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
 

@@ -1,12 +1,14 @@
 #![allow(warnings)]
-use gpu_tracking::execute_gpu::TrackingParams;
+use gpu_tracking::gpu_setup::Style;
 use ndarray::{Array2, s};
 use pollster::FutureExt;
 use std::io::Write;
 use std::{fs, time::Instant};
 use tiff::decoder::{Decoder, DecodingResult};
-use gpu_tracking::{execute_gpu::{self, execute_gpu, execute_ndarray}};
-use gpu_tracking::decoderiter::IterDecoder;
+use gpu_tracking::{
+    execute_gpu::{self, execute_gpu, execute_ndarray},
+    decoderiter::IterDecoder,
+    gpu_setup::{TrackingParams, LogParams, TrackpyParams}};
 use futures;
 use futures_intrusive;
 pub type my_dtype = f32;
@@ -55,7 +57,8 @@ struct Args{
 fn main() -> anyhow::Result<()> {
     let args: Args = Args::parse();
     let now_top = Instant::now();
-    let path = args.input.unwrap_or("../emily_tracking/sample_vids/s_20.tif".to_string());
+    // let path = args.input.unwrap_or("../emily_tracking/sample_vids/s_20.tif".to_string());
+    let path = args.input.unwrap_or("testing/scuffed_blobs_1C.tif".to_string());
     let debug = args.debug.unwrap_or(false);
     let filter = args.filter.unwrap_or(true);
     let characterize = args.characterize.unwrap_or(false);
@@ -78,12 +81,18 @@ fn main() -> anyhow::Result<()> {
         separation: 10,
         filter_close: filter,
         // search_range: Some(9.),
-        characterize,
+        // characterize,
         // cpu_processed: processed_cpu,
         // sig_radius: Some(3.),
         // bg_radius: Some((60 as f32).sqrt()),
         // gap_radius: Some(0.5),
-        varcheck: Some(1.),
+        // varcheck: Some(1.),
+        style: Style::Log(LogParams{
+            min_sigma: 10.,
+            max_sigma: 50.,
+            n_sigma: 10,
+            log_spacing: false,
+        }),
         ..Default::default()
     };
     // let mut decoderiter = match debug {
@@ -108,12 +117,12 @@ fn main() -> anyhow::Result<()> {
     dbg!(function_time);
     dbg!(&results.len());
     
-    
-    if debug{
-        let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).open("test").unwrap();
-        let raw_bytes = unsafe{std::slice::from_raw_parts(results.as_ptr() as *const u8, results.len() * std::mem::size_of::<my_dtype>())};
-        file.write_all(raw_bytes).unwrap();
-    }
+    std::fs::write("testing/dump.bin", bytemuck::cast_slice(&results));
+    // if debug{
+        // let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).open("test").unwrap();
+        // let raw_bytes = unsafe{std::slice::from_raw_parts(results.as_ptr() as *const u8, results.len() * std::mem::size_of::<my_dtype>())};
+        // file.write_all(raw_bytes).unwrap();
+    // }
 
     // let total = now_top.elapsed().as_millis() as f64 / 1000.;
     // dbg!(total);

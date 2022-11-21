@@ -14,8 +14,10 @@
 //   threshold: f32,
 //   minmass: f32,
 // }
+
+
 @group(0) @binding(0)
-var<uniform> params: params;
+var<uniform> params: Params;
 
 @group(0) @binding(1)
 var<storage, read> processed_buffer: array<f32>;
@@ -116,10 +118,11 @@ fn characterize(part_idx: u32, kernel_rows: i32, kernel_cols: i32){
   let ecc = sqrt(ecc_sin + ecc_cos) / (mass - processed_buffer[middle_idx]);
   let Rg = sqrt(Rg / mass);
 
-  results[part_idx * 7u + 3u] = Rg;
-  results[part_idx * 7u + 4u] = raw_mass;
-  results[part_idx * 7u + 5u] = signal;
-  results[part_idx * 7u + 6u] = ecc;
+  let n_res = 9u;
+  results[part_idx * n_res + 5u] = Rg;
+  results[part_idx * n_res + 6u] = raw_mass;
+  results[part_idx * n_res + 7u] = signal;
+  results[part_idx * n_res + 8u] = ecc;
 
 //   centers[0] /= mass;
 //   centers[1] /= mass;

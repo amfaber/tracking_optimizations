@@ -1,3 +1,4 @@
+#![allow(warnings)]
 use wgpu_fft::fft;
 
 
@@ -61,7 +62,7 @@ fn _gpu_speed(shape: [u32; 2]) {
     let padded_shape = fft::get_shape(&shape, &[1, 1]);
 
     let mut plan = fft::FftPlan::create(&padded_shape, shaders, &state.device, &state.queue);
-    let padded = plan.create_buffer(false);
+    let padded = plan.create_buffer(&state.device, false);
     // let padded = state.device.create_buffer(&wgpu::BufferDescriptor {
     //     label: None,
     //     size: size * 2,
@@ -77,15 +78,17 @@ fn _gpu_speed(shape: [u32; 2]) {
     state.queue.write_buffer(&input, 0, copy_slice);
     
     let mut encoder = state.device.create_command_encoder(&Default::default());
-    plan.pad(&mut encoder, &input, &padded, &[shape[0], shape[1]]);
-    state.queue.submit(Some(encoder.finish()));
+    // plan.pad(&state.device, &mut encoder, &input, &padded, &[shape[0], shape[1]]);
+    // state.queue.submit(Some(encoder.finish()));
 
     let n = 250;
     let now = Instant::now();
+    let fftpass = plan.fft_pass(&padded, &state.device);
     for _i in 0..n{
         let mut encoder = state.device.create_command_encoder(&Default::default());
-        plan.fft(&mut encoder, &padded, false, false);
-        plan.fft(&mut encoder, &padded, true, true);
+        fftpass.execute(&mut encoder, false, false);
+        fftpass.execute(&mut encoder, true, true);
+        // plan.fft(&mut encoder, &padded, true, true);
         state.queue.submit(Some(encoder.finish()));
     }
     // let slice = plan.twiddle_factors[0].slice(..);
@@ -98,13 +101,37 @@ fn _gpu_speed(shape: [u32; 2]) {
     // std::fs::write("out.bin", &read_data[..]).unwrap();
 
 }
-fn _gpu_save(shape: [u32; 2], do_fft: bool) {
+
+
+pub fn inspect_buffer(
+    buffer_to_inspect: &wgpu::Buffer,
+    mappable_buffer: &wgpu::Buffer,
+    queue: &wgpu::Queue,
+    mut encoder: wgpu::CommandEncoder,
+    device: &wgpu::Device,
+    copy_size: u64,
+    file_path: &str,
+    ) -> !{
+    encoder.copy_buffer_to_buffer(&buffer_to_inspect, 0, mappable_buffer, 0, copy_size);
+    let slice = mappable_buffer.slice(..);
+    let (sender, recv) = std::sync::mpsc::channel();
+    queue.submit(Some(encoder.finish()));
+    slice.map_async(wgpu::MapMode::Read, move |res|{sender.send(res);});
+    device.poll(wgpu::Maintain::Wait);
+    let idk = recv.recv().unwrap().unwrap();
+    let data = slice.get_mapped_range()[..].to_vec();
+    std::fs::write(file_path, &data);
+    drop(slice);
+    mappable_buffer.unmap();
+    panic!("intended panic")
+}
+
+
+
+fn _gpu_save(argshape: [u32; 2], do_fft: bool) {
     let shape = [524u32, 800];
     let data = std::fs::read("grey_lion.bin").unwrap();
-    // let data = unsafe{
-    //     data.chunks(4)
-    //     .map(|chunk| std::mem::transmute::<[u8;4], f32>(chunk.try_into().unwrap())).collect::<Vec<_>>()
-    // };
+
     let data: Vec<_> = data.into_iter().map(|e| e as f32).collect();
     assert_eq!(data.len() as u32, shape[0] * shape[1]);
     // let data = (0..shape[0] * shape[1]).map(|_i| _i as f32).collect::<Vec<_>>();
@@ -119,13 +146,20 @@ fn _gpu_save(shape: [u32; 2], do_fft: bool) {
     // let filter = [1./(area as f32); area];
     // let filtershape = [diameter as u32; 2];
     
-    let filter: [f32; 9] = [
-         0., -1., -0.,
-        -1.,  4., -1.,
-         0., -1., -0.,
-    ];
+    // let filter: [f32; 9] = [
+    //      0., -1., -0.,
+    //     -1.,  4., -1.,
+    //      0., -1., -0.,
+    // ];
+    // let filtershape = [3; 2];
 
-    let filtershape = [3; 2];
+    // let filter = [1f32; 65536];
+    // let filtershape = [256, 256];
+
+    let filtershape = argshape;
+    let filter = (0..filtershape[0]*filtershape[1]).map(|i| 1./(filtershape[0]*filtershape[1]) as f32).collect::<Vec<_>>();
+    // let filter = (0..filtershape[0]*filtershape[1]).map(|i| i as f32).collect::<Vec<_>>();
+
 
     let input = state.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
@@ -135,32 +169,57 @@ fn _gpu_save(shape: [u32; 2], do_fft: bool) {
 
     let filterbuffer = state.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC | 
+        wgpu::BufferUsages::MAP_READ,
         contents: bytemuck::cast_slice(&filter),
     });
     
 
     let padded_shape = fft::get_shape(&shape, &filtershape);
 
-    let mut plan = fft::FftPlan::create(&padded_shape, shaders, &state.device, &state.queue);
-    let padded = plan.create_buffer(true);
-    let filterpadded = plan.create_buffer(false);
+    let plan = fft::FftPlan::create(&padded_shape, shaders, &state.device, &state.queue);
+    let padded = plan.create_buffer(&state.device, true);
+    let filterpadded = plan.create_buffer(&state.device, true);
 
     let copy_slice = bytemuck::cast_slice::<f32, u8>(&data);
     
     state.queue.write_buffer(&input, 0, copy_slice);
     
     let mut encoder = state.device.create_command_encoder(&Default::default());
-    plan.pad(&mut encoder, &input, &padded, &[shape[0], shape[1]]);
-    plan.pad(&mut encoder, &filterbuffer, &filterpadded, &filtershape);
+    
+    let (pass, push_constants) = plan.pad_pass(&state.device, &input, &padded, &[shape[0], shape[1]]);
+    inspect_buffer(
+        &padded,
+        &filterpadded,
+        &state.queue,
+        encoder,
+        &state.device,
+        (padded_shape[0]*padded_shape[1]*8) as u64,
+        "dump.bin");
+    
+    pass.execute(&mut encoder, bytemuck::cast_slice(&push_constants));
+    let (pass, push_constants) = plan.pad_pass(&state.device, &filterbuffer, &filterpadded, &filtershape);
+    pass.execute(&mut encoder, bytemuck::cast_slice(&push_constants));
     state.queue.submit(Some(encoder.finish()));
 
+    let fft_pass_filter = plan.fft_pass(&filterpadded, &state.device);
+    let fft_pass_image = plan.fft_pass(&padded, &state.device);
+
+    let convolution = plan.inplace_spectral_convolution_pass(&state.device, &padded, &filterpadded);
+    
+    let padded2 = plan.create_buffer(&state.device, true);
+    let filter_convolve = plan.inplace_spectral_convolution_pass(&state.device, &filterpadded, &padded2);
+
+    let copy_size = plan.params.dims[0] * plan.params.dims[1] * 8;
     if do_fft{
         let mut encoder = state.device.create_command_encoder(&Default::default());
-        plan.fft(&mut encoder, &padded, false, false);
-        plan.fft(&mut encoder, &filterpadded, false, false);
-        plan.spectral_convolution(&mut encoder, &padded, &filterpadded);
-        plan.fft(&mut encoder, &padded, true, true);
+        fft_pass_filter.execute(&mut encoder, false, false);
+        // fft_pass_filter.execute(&mut encoder, true, true);
+        fft_pass_image.execute(&mut encoder, false, false);
+        encoder.copy_buffer_to_buffer(&filterpadded, 0, &padded2, 0, copy_size as u64);
+        filter_convolve.execute(&mut encoder, &[]);
+        convolution.execute(&mut encoder, &[]);
+        fft_pass_image.execute(&mut encoder, true, true);
         state.queue.submit(Some(encoder.finish()));
     }
     let slice = padded.slice(..);
