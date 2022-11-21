@@ -129,12 +129,13 @@ pub fn inspect_buffer(
 
 
 fn _gpu_save(argshape: [u32; 2], do_fft: bool) {
-    let shape = [524u32, 800];
-    let data = std::fs::read("grey_lion.bin").unwrap();
+    // let shape = [524u32, 800];
+    // let data = std::fs::read("grey_lion.bin").unwrap();
+    // let data: Vec<_> = data.into_iter().map(|e| e as f32).collect();
 
-    let data: Vec<_> = data.into_iter().map(|e| e as f32).collect();
+    let shape = argshape;
+    let data = (0..shape[0] * shape[1]).map(|_i| _i as f32).collect::<Vec<_>>();
     assert_eq!(data.len() as u32, shape[0] * shape[1]);
-    // let data = (0..shape[0] * shape[1]).map(|_i| _i as f32).collect::<Vec<_>>();
     let state = GpuState::new();
     let shaders =
         fft::compile_shaders(&state.device, None, None);

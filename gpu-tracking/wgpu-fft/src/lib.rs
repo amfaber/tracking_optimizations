@@ -14,9 +14,9 @@ impl FullComputePass{
         let mut cpass = encoder.begin_compute_pass(&Default::default());
         cpass.set_bind_group(0, &self.bindgroup, &[]);
         cpass.set_pipeline(&self.pipeline);
-        if push_constants.len() > 0{
-            cpass.set_push_constants(0, push_constants);
-        }
+        // if push_constants.len() > 0{
+        cpass.set_push_constants(0, push_constants);
+        // }
         cpass.dispatch_workgroups(self.wg_n[0], self.wg_n[1], self.wg_n[2]);
     }
 }

@@ -871,25 +871,35 @@ pub fn setup_state(
     
 }
 
-pub fn inspect_buffer(
-    buffer_to_inspect: &wgpu::Buffer,
+pub fn inspect_buffer<P: AsRef<std::path::Path>>(
+    buffers_to_inspect: &[&wgpu::Buffer],
     mappable_buffer: &wgpu::Buffer,
     queue: &wgpu::Queue,
     mut encoder: wgpu::CommandEncoder,
     device: &wgpu::Device,
     copy_size: u64,
-    file_path: &str,
-    ) -> !{
-    encoder.copy_buffer_to_buffer(&buffer_to_inspect, 0, mappable_buffer, 0, copy_size);
-    let slice = mappable_buffer.slice(..);
-    let (sender, recv) = std::sync::mpsc::channel();
+    file_path: P,
+    ) -> ! {
+    
+    let path = file_path.as_ref().to_owned();
     queue.submit(Some(encoder.finish()));
-    slice.map_async(wgpu::MapMode::Read, move |res|{sender.send(res);});
-    device.poll(wgpu::Maintain::Wait);
-    let idk = recv.recv().unwrap().unwrap();
-    let data = slice.get_mapped_range()[..].to_vec();
-    std::fs::write(file_path, &data);
-    drop(slice);
-    mappable_buffer.unmap();
+    
+    for (i, &buffer) in buffers_to_inspect.iter().enumerate(){
+        let mut encoder = device.create_command_encoder(&Default::default());
+        encoder.copy_buffer_to_buffer(&buffer, 0, mappable_buffer, 0, copy_size);
+        let slice = mappable_buffer.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::Maintain::Wait);
+        let data = slice.get_mapped_range()[..].to_vec();
+        let mut path = path.clone();
+        path.push(format!("dump{}.bin", i));
+        std::fs::write(&path, &data);
+        drop(slice);
+        mappable_buffer.unmap();
+    }
+
+    // let (sender, recv) = std::sync::mpsc::channel();
+    // slice.map_async(wgpu::MapMode::Read, move |res|{sender.send(res);});
+    // let idk = recv.recv().unwrap().unwrap();
     panic!("intended panic")
 }

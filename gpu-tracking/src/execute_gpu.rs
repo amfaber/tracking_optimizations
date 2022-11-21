@@ -186,10 +186,10 @@ fn submit_work(
             encoder.clear_buffer(&buffers.global_max, 0, None);
 
 
-            // let copy_size = flavor.fftplan.params.dims;
-            // let copy_size = (copy_size[0] * copy_size[1] * 8) as u64;
-            let copy_size = 1670012;
-            inspect_buffer(&buffers.particles_buffer,
+            let copy_size = flavor.fftplan.params.dims;
+            let copy_size = (copy_size[0] * copy_size[1] * 8) as u64;
+            // let copy_size = 1670012;
+            inspect_buffer(&[&buffers.logspace_buffers[0].0, &buffers.logspace_buffers[1].0, &buffers.logspace_buffers[2].0],
             &buffers.staging_buffers[0],
             &state.queue,
             encoder,
