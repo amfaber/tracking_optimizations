@@ -3,8 +3,8 @@ use std::{collections::HashMap, fs::File, io::Read, rc::Rc};
 use crate::{my_dtype};
 
 use pollster::FutureExt;
-use wgpu::{Buffer, Device, self, util::{DeviceExt, BufferInitDescriptor}, ComputePipeline};
-use wgpu_fft::{self, fft::{FftPlan, FftPass}, FullComputePass};
+use wgpu::{Buffer, Device, self, util::{DeviceExt, BufferInitDescriptor}, ComputePipeline, BindGroupLayout};
+use wgpu_fft::{self, fft::{FftPlan, FftPass}, FullComputePass, infer_compute_bindgroup_layout};
 
 
 
@@ -645,21 +645,23 @@ pub fn setup_state(
 
     let shaders = shaders.iter().map(|(&name, (source, dims, group_size))|{
         let shader_source = preprocess_source(source, group_size, common_header);
+        let bindgrouplayout = infer_compute_bindgroup_layout(&device, &shader_source);
+
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor{
             label: None,
             source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
-        (name, (shader, n_workgroups(dims, group_size)))
+        (name, (shader, n_workgroups(dims, group_size), bindgrouplayout))
     }).collect::<HashMap<_, _>>();
     
-    let pipelines = shaders.iter().map(|(name, (shader, wg_n))|{
-        let dummypipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: None,
-            layout: None,
-            module: shader,
-            entry_point: "main",
-            });
-        let bindgrouplayout = dummypipeline.get_bind_group_layout(0);
+    let pipelines = shaders.into_iter().map(|(name, (shader, wg_n, bindgrouplayout))|{
+        // let dummypipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        //     label: None,
+        //     layout: None,
+        //     module: &shader,
+        //     entry_point: "main",
+        //     });
+        // let bindgrouplayout = dummypipeline.get_bind_group_layout(0);
         let pipelinelayout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{
             label: None,
             bind_group_layouts: &[&bindgrouplayout],
@@ -671,11 +673,11 @@ pub fn setup_state(
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor{
             label: None,
             layout: Some(&pipelinelayout),
-            module: shader,
+            module: &shader,
             entry_point: "main",
         });
 
-        (name.to_string(), (Rc::new(pipeline), bindgrouplayout, *wg_n))
+        (name.to_string(), (Rc::new(pipeline), bindgrouplayout, wg_n))
     }).collect::<HashMap<_, _>>();
 
 
@@ -724,7 +726,8 @@ pub fn setup_state(
                 Some((3, &buffers.atomic_buffer)),
                 Some((4, &buffers.atomic_filtered_buffer)),
                 Some((5, &buffers.result_buffer)),
-                if tracking_params.varcheck.is_some() {Some((6, &buffers.frame_buffer))} else {None},
+                Some((6, &buffers.frame_buffer)),
+                // if tracking_params.varcheck.is_some() {Some((6, &buffers.frame_buffer))} else {None},
             ]]),
 
             ("characterize", vec![vec![
@@ -769,7 +772,8 @@ pub fn setup_state(
                 Some((3, &buffers.atomic_buffer)),
                 Some((4, &buffers.atomic_filtered_buffer)),
                 Some((5, &buffers.result_buffer)),
-                if tracking_params.varcheck.is_some() {Some((6, &buffers.frame_buffer))} else {None},
+                Some((6, &buffers.frame_buffer)),
+                // if tracking_params.varcheck.is_some() {Some((6, &buffers.frame_buffer))} else {None},
                 Some((7, &flavor.fftplan.gpu_side_params)),
             ]}).collect::<Vec<_>>()),
 
@@ -849,35 +853,30 @@ pub fn setup_state(
     // if let GpuStateFlavor::Log(ref flavor) = state.flavor{
     state.setup_buffers();
 
-    if let GpuStateFlavor::Log(flavor) = &state.flavor{
-        let buffers = &flavor.buffers;
-        let encoder = state.device.create_command_encoder(&Default::default());
-        let copy_size = flavor.fftplan.params.dims;
-        dbg!(&copy_size);
-        let copy_size = (copy_size[0] * copy_size[1]) as u64;
-        // inspect_buffer(&buffers.filter_buffers[0].0,
-        //     &buffers.staging_buffers[0],
-        //     &state.queue,
-        //     encoder,
-        //     &state.device,
-        //     copy_size,
-        //     "testing/dump.bin")
-        }
-            // }
+    // if let GpuStateFlavor::Log(flavor) = &state.flavor{
+    //     let buffers = &flavor.buffers;
+    //     let encoder = state.device.create_command_encoder(&Default::default());
+    //     let copy_size = flavor.fftplan.params.dims;
+    //     let copy_size = (copy_size[0] * copy_size[1]) as u64;
+    //     inspect_buffer(&buffers.filter_buffers[0].0,
+    //         &buffers.staging_buffers[0],
+    //         &state.queue,
+    //         encoder,
+    //         &state.device,
+    //         copy_size,
+    //         "testing/dump.bin")
+    //     }
     state
 
-    // todo!()
-    
-    
 }
 
-pub fn inspect_buffer<P: AsRef<std::path::Path>>(
+pub fn inspect_buffers<P: AsRef<std::path::Path>>(
     buffers_to_inspect: &[&wgpu::Buffer],
     mappable_buffer: &wgpu::Buffer,
     queue: &wgpu::Queue,
     mut encoder: wgpu::CommandEncoder,
     device: &wgpu::Device,
-    copy_size: u64,
+    // copy_size: u64,
     file_path: P,
     ) -> ! {
     
@@ -886,14 +885,16 @@ pub fn inspect_buffer<P: AsRef<std::path::Path>>(
     
     for (i, &buffer) in buffers_to_inspect.iter().enumerate(){
         let mut encoder = device.create_command_encoder(&Default::default());
-        encoder.copy_buffer_to_buffer(&buffer, 0, mappable_buffer, 0, copy_size);
+        encoder.clear_buffer(mappable_buffer, 0, None);
+        encoder.copy_buffer_to_buffer(buffer, 0, mappable_buffer, 0, buffer.size());
+        queue.submit(Some(encoder.finish()));
         let slice = mappable_buffer.slice(..);
         slice.map_async(wgpu::MapMode::Read, |_| {});
         device.poll(wgpu::Maintain::Wait);
         let data = slice.get_mapped_range()[..].to_vec();
         let mut path = path.clone();
         path.push(format!("dump{}.bin", i));
-        std::fs::write(&path, &data);
+        std::fs::write(&path, &data[..buffer.size() as usize]);
         drop(slice);
         mappable_buffer.unmap();
     }

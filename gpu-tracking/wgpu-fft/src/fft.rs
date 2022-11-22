@@ -2,7 +2,8 @@
 use wgpu::{self, BufferBinding, ComputePass};
 use std::{collections::HashMap, hash::Hash, char::ParseCharError, rc::Rc};
 use bytemuck;
-use crate::FullComputePass;
+use crate::{FullComputePass, infer_compute_bindgroup_layout};
+use regex;
 
 // #[derive(bytemuck::Pod, bytemuck::Zeroable)]
 // #[repr(C)]
@@ -99,7 +100,7 @@ impl FftPlan{
     pub fn create(
         dims: &[u32; 2],
         shaders: HashMap<String,
-        (wgpu::ShaderModule, [u32; 3])>,
+        (wgpu::ShaderModule, [u32; 3], wgpu::BindGroupLayout)>,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         ) -> Self{
@@ -157,19 +158,17 @@ impl FftPlan{
         ]);
         // dbg!(&shapes);
 
-        let pipelines = shaders.iter().map(|(name, (shader, wg_size))| {
+        let pipelines = shaders.into_iter().map(|(name, (shader, wg_size, bindgrouplayout))| {
             shapes.get(name.as_str()).expect(format!("{} not found", name).as_str());
             let shape = shapes[name.as_str()];
-            let wg_n = n_workgroups(&shape, wg_size);
-            let dummy_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor{
-                label: None,
-                layout: None,
-                module: shader,
-                entry_point: "main",
-            });
-            
-            let bindgrouplayout = dummy_pipeline.get_bind_group_layout(0);
-            // bindgrouplayout
+            let wg_n = n_workgroups(&shape, &wg_size);
+            // let dummy_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor{
+            //     label: None,
+            //     layout: None,
+            //     module: shader,
+            //     entry_point: "main",
+            // });
+            // let bindgrouplayout = dummy_pipeline.get_bind_group_layout(0);
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{
                 label: None,
                 bind_group_layouts: &[&bindgrouplayout],
@@ -181,10 +180,10 @@ impl FftPlan{
             let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor{
                 label: None,
                 layout: Some(&pipeline_layout),
-                module: shader,
+                module: &shader,
                 entry_point: "main",
             });
-            (name.to_string(), (Rc::new(pipeline), wg_n, bindgrouplayout))
+            (name, (Rc::new(pipeline), wg_n, bindgrouplayout))
         }).collect::<HashMap<_, _>>();
         // Twiddle setup
         {
@@ -528,7 +527,8 @@ pub fn get_shape(image_shape: &[u32; 2], filter_shape: &[u32; 2]) -> [u32; 2]{
 
 
 
-pub fn compile_shaders(device: &wgpu::Device, workgroup_size2d: Option<&[u32; 3]>, workgroup_size1d: Option<&[u32; 3]>) -> HashMap<String, (wgpu::ShaderModule, [u32; 3])>{
+pub fn compile_shaders(device: &wgpu::Device, workgroup_size2d: Option<&[u32; 3]>, workgroup_size1d: Option<&[u32; 3]>)
+    -> HashMap<String, (wgpu::ShaderModule, [u32; 3], wgpu::BindGroupLayout)>{
     
     
 
@@ -537,7 +537,8 @@ pub fn compile_shaders(device: &wgpu::Device, workgroup_size2d: Option<&[u32; 3]
     let workgroup_size1d =  workgroup_size1d.unwrap_or(&[256u32, 1, 1]).clone();
     // let wg_dims = [dims[0], dims[1], 1];
 
-    let common_header = include_str!("shaders/common_header.wgsl");
+    // let common_header = include_str!("shaders/common_header.wgsl");
+    let common_header = "";
 
     let fft_source = include_str!("shaders/fft.wgsl");
 
@@ -564,11 +565,14 @@ pub fn compile_shaders(device: &wgpu::Device, workgroup_size2d: Option<&[u32; 3]
     let shaders = shaders.iter()
         .map(|(&name, (source, group_size))|{
         let shader_source = preprocess_source(source, group_size);
+        
+        let bindgrouplayout = infer_compute_bindgroup_layout(device, &shader_source);
+
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor{
             label: None,
             source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
-        (name.to_string(), (shader, group_size.clone()))
+        (name.to_string(), (shader, group_size.clone(), bindgrouplayout))
     }).collect::<HashMap<_, _>>();
 
     shaders

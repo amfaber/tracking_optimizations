@@ -46,7 +46,7 @@ fn is_max_in_plane(i: i32, j: i32, plane: u32, center: f32, row_transform: i32, 
         for (var loop_j = -1; loop_j < 2; loop_j++){
             let x = i + loop_i;
             let y = j + loop_j;
-            if (x < 0 || x >= i32(shape.nrows) || y < 0 || y >= i32(shape.ncols)){
+            if (x < 0 || x >= params.pic_nrows || y >= params.pic_ncols){
                 continue;
             }
             let idx = (((x + row_transform) % i32(shape.nrows)) * i32(params.pic_ncols) + (y + col_transform) % i32(shape.ncols));
@@ -60,7 +60,10 @@ fn is_max_in_plane(i: i32, j: i32, plane: u32, center: f32, row_transform: i32, 
             else if plane == 2u{
                 neighbor = top[idx][0];
             }
-            if (neighbor > center){
+            // if neighbor - center > -0.5{
+            //     return false;
+            // }
+            if (neighbor >= center){
                 return false;
             }
         }
@@ -80,8 +83,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let row_transform = (i32(shape.nrows) - params.pic_nrows) / 2;
     let col_transform = (i32(shape.ncols) - params.pic_ncols) / 2;
 
-    let center = middle[(i + row_transform) * i32(shape.ncols) + (j + col_transform)][0];
-    if (center <= 0.0){
+    let center = middle[((i + row_transform) % i32(shape.nrows)) * i32(shape.ncols) + ((j + col_transform) % i32(shape.ncols))][0];
+    if (center <= 1.0){
         return;
     }
 
@@ -106,6 +109,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let idx = atomicAdd(&n_particles, 1u);
     atomicMax(&global_max, i32(center));
     let sqrt2 = 1.4142135623730951;
-    particles[idx] = ParticleLocation(i32(i), i32(j), pc.sigma*sqrt2, center);
+    particles[idx] = ParticleLocation(i, j, pc.sigma*sqrt2, center);
 
 }

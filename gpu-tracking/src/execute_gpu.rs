@@ -8,7 +8,14 @@ use pollster::FutureExt;
 use tiff::decoder::Decoder;
 use std::{collections::VecDeque, time::Instant, sync::mpsc::Sender, path::Path, fs::File, io::Write};
 use wgpu::{Buffer, SubmissionIndex};
-use crate::{kernels, into_slice::IntoSlice, gpu_setup::{self, GpuState, TrackpyGpuState, Style, TrackingParams, GpuBuffers, GpuStateFlavor, any_as_u8_slice, inspect_buffer}, linking::{Linker, FrameSubsetter}, decoderiter::{IterDecoder, self}};
+use crate::{kernels, into_slice::IntoSlice,
+    gpu_setup::{
+    self, GpuState, TrackpyGpuState, Style, TrackingParams, GpuBuffers, GpuStateFlavor, any_as_u8_slice, inspect_buffers
+}, linking::{
+    Linker, FrameSubsetter
+}, decoderiter::{
+    IterDecoder, self
+}};
 use kd_tree::{self, KdPoint};
 use ndarray_stats::{QuantileExt, MaybeNanExt};
 
@@ -150,7 +157,7 @@ fn submit_work(
             convolution.execute(&mut encoder, &[]);
             
             let ifft = &buffers.logspace_buffers[i % 3].2;
-            ifft.execute(&mut encoder, true, false);
+            ifft.execute(&mut encoder, true, true);
             let mut edge: i32 = -1;
             
             for i in iterator{
@@ -158,10 +165,10 @@ fn submit_work(
                 convolution.execute(&mut encoder, &[]);
                 
                 let ifft = &buffers.logspace_buffers[i % 3].2;
-                ifft.execute(&mut encoder, true, false);
+                ifft.execute(&mut encoder, true, true);
                 
                 let find_max = &state.passes["logspace_max"][(i-1) % 3];
-                let sigma = flavor.sigmas[i];
+                let sigma = flavor.sigmas[i-1];
                 let push_constants_tuple = (edge, sigma);
                 let push_constants = unsafe{ any_as_u8_slice(&push_constants_tuple) };
                 find_max.execute(&mut encoder, push_constants);
@@ -173,8 +180,10 @@ fn submit_work(
                 
                 edge = 0;
             }
-            
+
             encoder.clear_buffer(&buffers.logspace_buffers[n_sigma % 3].0, 0, None);
+            
+            
             edge = 1;
             
             let find_max = &state.passes["logspace_max"][(n_sigma - 1) % 3];
@@ -182,20 +191,21 @@ fn submit_work(
             let push_constants_tuple = (edge, sigma);
             let push_constants = unsafe{ any_as_u8_slice(&push_constants_tuple) };
             find_max.execute(&mut encoder, push_constants);
-            encoder.copy_buffer_to_buffer(&buffers.global_max, 0, staging_buffer, 4+state.pic_byte_size, 4);
-            encoder.clear_buffer(&buffers.global_max, 0, None);
 
-
-            let copy_size = flavor.fftplan.params.dims;
-            let copy_size = (copy_size[0] * copy_size[1] * 8) as u64;
+            // let copy_size = flavor.fftplan.params.dims;
+            // let copy_size = (copy_size[0] * copy_size[1] * 8) as u64;
             // let copy_size = 1670012;
-            inspect_buffer(&[&buffers.logspace_buffers[0].0, &buffers.logspace_buffers[1].0, &buffers.logspace_buffers[2].0],
+            // dbg!(&copy_size);
+            inspect_buffers(&[&buffers.particles_buffer, &buffers.atomic_buffer],
             &buffers.staging_buffers[0],
             &state.queue,
             encoder,
             &state.device,
-            copy_size,
-            "testing/dump.bin");
+            // copy_size,
+            "testing");
+
+            encoder.copy_buffer_to_buffer(&buffers.global_max, 0, staging_buffer, 4+state.pic_byte_size, 4);
+            encoder.clear_buffer(&buffers.global_max, 0, None);
         }
     }
 

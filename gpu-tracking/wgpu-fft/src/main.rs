@@ -245,5 +245,67 @@ struct Args{
 fn main(){
     let args = Args::parse();
     let do_fft = args.fft.unwrap_or(true);
-    _gpu_save([args.shape_rows, args.shape_cols], do_fft)
+    // _gpu_save([args.shape_rows, args.shape_cols], do_fft)
+    let state = GpuState::new();
+    let source = include_str!("shaders/fft.wgsl");
+    let module = state.device.create_shader_module(wgpu::ShaderModuleDescriptor{
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+
+    let entries = [
+        wgpu::BindGroupLayoutEntry{
+            binding: 0,
+            ty: wgpu::BindingType::Buffer{
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            visibility: wgpu::ShaderStages::COMPUTE,
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry{
+            binding: 1,
+            ty: wgpu::BindingType::Buffer{
+                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            visibility: wgpu::ShaderStages::COMPUTE,
+            count: None,
+        },
+        // wgpu::BindGroupLayoutEntry{
+        //     binding: 2,
+        //     ty: wgpu::BindingType::Buffer{
+        //         ty: wgpu::BufferBindingType::Storage { read_only: true },
+        //         has_dynamic_offset: false,
+        //         min_binding_size: None,
+        //     },
+        //     visibility: wgpu::ShaderStages::COMPUTE,
+        //     count: None,
+        // },
+
+    ];
+    
+    let bind_group_layouts = state.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+        label: None,
+        entries: entries.as_slice()
+    });
+
+    let pipelinelayout = state.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{
+        label: None,
+        bind_group_layouts: &[&bind_group_layouts],
+        push_constant_ranges: &[wgpu::PushConstantRange{
+            stages: wgpu::ShaderStages::COMPUTE,
+            range: 0..16,
+        }],
+    });
+
+    let idk = state.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor{
+        label: None,
+        layout: Some(&pipelinelayout),
+        module: &module,
+        entry_point: "main",
+    });
+
 }

@@ -1,25 +1,8 @@
-use std::rc::Rc;
-
 pub mod fft;
+pub mod wgpu_utilities;
 
-pub struct FullComputePass{
-    pub bindgroup: wgpu::BindGroup,
-    pub wg_n: [u32; 3],
-    pub pipeline: Rc<wgpu::ComputePipeline>,
-}
+pub use wgpu_utilities::*;
 
-
-impl FullComputePass{
-    pub fn execute(&self, encoder: &mut wgpu::CommandEncoder, push_constants: &[u8]){
-        let mut cpass = encoder.begin_compute_pass(&Default::default());
-        cpass.set_bind_group(0, &self.bindgroup, &[]);
-        cpass.set_pipeline(&self.pipeline);
-        // if push_constants.len() > 0{
-        cpass.set_push_constants(0, push_constants);
-        // }
-        cpass.dispatch_workgroups(self.wg_n[0], self.wg_n[1], self.wg_n[2]);
-    }
-}
 
 #[cfg(test)]
 mod tests {

@@ -89,7 +89,7 @@ fn main() -> anyhow::Result<()> {
         // varcheck: Some(1.),
         style: Style::Log(LogParams{
             min_sigma: 10.,
-            max_sigma: 50.,
+            max_sigma: 20.,
             n_sigma: 10,
             log_spacing: false,
         }),
