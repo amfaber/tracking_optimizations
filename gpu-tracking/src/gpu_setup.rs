@@ -8,9 +8,10 @@ use wgpu_fft::{self, fft::{FftPlan, FftPass}, FullComputePass, infer_compute_bin
 
 
 
-struct SeparableConvolution<const N: usize>{
+pub struct SeparableConvolution<const N: usize>{
     input_pass: FullComputePass,
     passes: [FullComputePass; 2],
+    // push_constant_vec: Vec<u8>,
 }
 
 impl<const N: usize> SeparableConvolution<N>{
@@ -134,11 +135,12 @@ impl<const N: usize> SeparableConvolution<N>{
         }
     }
 
-    fn execute(&self, encoder: &mut wgpu::CommandEncoder){
+    fn execute(&self, encoder: &mut wgpu::CommandEncoder, push_constants: &[u8]){
         let input = std::iter::once(&self.input_pass);
         for (dim, pass) in input.chain(self.passes.iter().cycle().take(N)).enumerate(){
-            let push_constants = [dim as u32];
-            pass.execute(encoder, bytemuck::cast_slice(&push_constants));
+            let push_constants = Vec::from_iter(unsafe{ any_as_u8_slice(&(dim as u32)).iter().chain(push_constants.iter()).cloned() });
+            // let push_constants = [dim as u32];
+            pass.execute(encoder, &push_constants[..]);
         }
     }
 }
@@ -258,11 +260,12 @@ pub struct LogGpuBuffers{
     pub param_buffer: Buffer,
     
     pub raw_padded: (Buffer, (FullComputePass, [u32; 4]), FftPass<2>),
-    pub logspace_buffers: Vec<(Buffer, Vec<FullComputePass>, FftPass<2>)>,
+    pub logspace_buffers: Vec<(Buffer, Vec<FullComputePass>, FftPass<2>, SeparableConvolution<2>)>,
     pub filter_buffers: Vec<(Buffer, FftPass<2>, FullComputePass)>,
     pub laplacian_buffer: (Buffer, FftPass<2>),
     pub unpadded_laplace: (Buffer, [u32; 2]),
     pub global_max: Buffer,
+    pub temp_buffer: Buffer,
 }
 
 
@@ -418,6 +421,7 @@ pub fn create_buffers(tracking_params: &TrackingParams,
     size: u64,
     dims: &[u32; 2],
     fftplan: Option<&FftPlan>,
+    pipelines: &mut HashMap<String, (Rc<ComputePipeline>, BindGroupLayout, [u32; 3])>
     ) -> GpuBuffers {
     
     let result_buffer_depth = if tracking_params.characterize { 7 } else { 3 };
@@ -564,7 +568,14 @@ pub fn create_buffers(tracking_params: &TrackingParams,
         let raw_pad_pass = fftplan.pad_pass(device, &frame_buffer, &raw_padded, dims);
         let raw_fft_pass = fftplan.fft_pass(&raw_padded, device);
         let raw_padded = (raw_padded, raw_pad_pass, raw_fft_pass);
-
+        
+        let separable_pipeline = pipelines.remove("separable_log").unwrap();
+        let temp_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: size,
+            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
 
         let logspace_buffers: Vec<_> = (0..3)
         .map(|_|{
@@ -573,7 +584,15 @@ pub fn create_buffers(tracking_params: &TrackingParams,
             let convolutionpasses = filter_buffers.iter().map(|(filterbuffer, _fftpass, _lap_conv)|{
                 fftplan.spectral_convolution_pass(device, &raw_padded.0, filterbuffer, &log_space_buffer)
             }).collect();
-            (log_space_buffer, convolutionpasses, fftpass)
+            let separable_pass = SeparableConvolution::<2>::new(
+                device,
+                &separable_pipeline,
+                &log_space_buffer,
+                &frame_buffer,
+                &temp_buffer,
+                [&param_buffer],
+            );
+            (log_space_buffer, convolutionpasses, fftpass, separable_pass)
             // buffer
         }).collect();
 
@@ -583,6 +602,9 @@ pub fn create_buffers(tracking_params: &TrackingParams,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+
+        
+        
 
 
         GpuBuffers::Log(LogGpuBuffers{
@@ -600,6 +622,7 @@ pub fn create_buffers(tracking_params: &TrackingParams,
             laplacian_buffer: (padded_laplacian_buffer, laplacian_fft_pass),
             unpadded_laplace: (laplacian_buffer, [3, 3]),
             global_max,
+            temp_buffer,
         })
     }
     }
@@ -657,7 +680,7 @@ pub fn setup_state(
     let size = slice_size as wgpu::BufferAddress;
     
 
-    let preprocess_source = |source, wg_size: &[u32; 3], common_header| -> String {
+    let preprocess_source = |source: &str, wg_size: &[u32; 3], common_header: &str| -> String {
         let mut result = String::new();
         result.push_str(common_header);
         result.push_str(source);
@@ -677,7 +700,7 @@ pub fn setup_state(
     let wg_dims = [dims[0], dims[1], 1];
     let common_header = include_str!("shaders/params.wgsl");
     
-    let (flavor, shaders, common_header) = match &tracking_params.style{
+    let (flavor, pipelines, common_header) = match &tracking_params.style{
         
     Style::Trackpy(params) => {
             
@@ -689,6 +712,10 @@ pub fn setup_state(
             ("walk", (include_str!("shaders/walk.wgsl"), [10000, 1, 1], workgroup_size1d)),
             ("characterize", (include_str!("shaders/characterize.wgsl"), [10000, 1, 1], workgroup_size1d)),
         ]);
+
+        let mut pipelines = 
+        make_pipelines_from_source(shaders, preprocess_source, common_header, &device);
+        
             
         let order = vec![
             Some("preprocess_rows".to_string()),
@@ -701,7 +728,7 @@ pub fn setup_state(
 
         let order = order.into_iter().flatten().collect();
         
-        let GpuBuffers::Trackpy(buffers) = create_buffers(&tracking_params, &device, size * 2, dims, None) else {unreachable!()};
+        let GpuBuffers::Trackpy(buffers) = create_buffers(&tracking_params, &device, size * 2, dims, None, &mut pipelines) else {unreachable!()};
         
         let flavor = GpuStateFlavor::Trackpy(TrackpyGpuState {
             order,
@@ -709,7 +736,7 @@ pub fn setup_state(
         });
 
 
-        (flavor, shaders, common_header)
+        (flavor, pipelines, common_header)
     },
     Style::Log(params) => {
         // let common_header = "";
@@ -731,8 +758,10 @@ pub fn setup_state(
             // ("characterize", (include_str!("shaders/characterize.wgsl"), [10000, 1, 1], workgroup_size1d)),
         ]);
         
+        let mut pipelines = 
+        make_pipelines_from_source(shaders, preprocess_source, common_header, &device);
         
-        let GpuBuffers::Log(buffers) = create_buffers(&tracking_params, &device, size, dims, fftplan.as_ref()) else {unreachable!()};
+        let GpuBuffers::Log(buffers) = create_buffers(&tracking_params, &device, size, dims, fftplan.as_ref(), &mut pipelines) else {unreachable!()};
         
         let sigmas = if params.log_spacing{
             let mut start = params.min_sigma.log(10.);
@@ -754,7 +783,7 @@ pub fn setup_state(
             buffers,
             sigmas,
         });
-        (flavor, shaders, common_header)
+        (flavor, pipelines, common_header)
     },
     };
     
@@ -779,17 +808,17 @@ pub fn setup_state(
     }).collect::<HashMap<_, _>>();
     */
 
-    let shaders = shaders.into_iter().map(|(name, (source, dims, group_size))|{
-        let shader_source = preprocess_source(source, &group_size, common_header);
-        let bindgrouplayout = infer_compute_bindgroup_layout(&device, &shader_source);
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor{
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-        });
-        (name, (shader, n_workgroups(&dims, &group_size), bindgrouplayout))
-    }).collect::<HashMap<_, _>>();
+    // let shaders = shaders.into_iter().map(|(name, (source, dims, group_size))|{
+    //     let shader_source = preprocess_source(source, &group_size, common_header);
+    //     let bindgrouplayout = infer_compute_bindgroup_layout(&device, &shader_source);
+    //     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor{
+    //         label: None,
+    //         source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+    //     });
+    //     (name, (shader, n_workgroups(&dims, &group_size), bindgrouplayout))
+    // }).collect::<HashMap<_, _>>();
     
-    let pipelines = shaders.into_iter().map(|(name, (shader, wg_n, bindgrouplayout))|{
+    // let mut pipelines = shaders.into_iter().map(|(name, (shader, wg_n, bindgrouplayout))|{
         // let dummypipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         //     label: None,
         //     layout: None,
@@ -797,23 +826,23 @@ pub fn setup_state(
         //     entry_point: "main",
         //     });
         // let bindgrouplayout = dummypipeline.get_bind_group_layout(0);
-        let pipelinelayout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{
-            label: None,
-            bind_group_layouts: &[&bindgrouplayout],
-            push_constant_ranges: &[wgpu::PushConstantRange{
-                stages: wgpu::ShaderStages::COMPUTE,
-                range: 0..16,
-            }],
-        });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor{
-            label: None,
-            layout: Some(&pipelinelayout),
-            module: &shader,
-            entry_point: "main",
-        });
+    //     let pipelinelayout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{
+    //         label: None,
+    //         bind_group_layouts: &[&bindgrouplayout],
+    //         push_constant_ranges: &[wgpu::PushConstantRange{
+    //             stages: wgpu::ShaderStages::COMPUTE,
+    //             range: 0..16,
+    //         }],
+    //     });
+    //     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor{
+    //         label: None,
+    //         layout: Some(&pipelinelayout),
+    //         module: &shader,
+    //         entry_point: "main",
+    //     });
 
-        (name.to_string(), (Rc::new(pipeline), bindgrouplayout, wg_n))
-    }).collect::<HashMap<_, _>>();
+    //     (name.to_string(), (Rc::new(pipeline), bindgrouplayout, wg_n))
+    // }).collect::<HashMap<_, _>>();
 
 
     
@@ -899,7 +928,8 @@ pub fn setup_state(
                     Some((7, &buffers.global_max)),
                     ]}).collect::<Vec<_>>()),
             
-            ("walk", buffers.logspace_buffers.iter().map(|(logspace_buffer, _, __)| {
+            ("walk", buffers.logspace_buffers.iter().map(|(tup)| {
+                let logspace_buffer = &tup.0;
             vec![
                 Some((0, &buffers.param_buffer)),
                 Some((1, logspace_buffer)), 
@@ -928,19 +958,34 @@ pub fn setup_state(
                 (name, bind_entries_vector)
             })
         .collect::<HashMap<_, _>>();
-    
-    let passes = HashMap::from(
-        {
-            let name = "separable_log".to_string();
-            let pipeline = &pipelines[&name];
-            let pass = SeparableConvolution::new(
-                &device,
-                pipeline,
-                input_buffer,
-            );
-            [(name.clone(), name)]
-        }
-    );
+
+
+    // let mut passes: HashMap<String, Vec<impl SeparableConvolution<2>>> = HashMap::new();
+
+    // match flavor{
+    //     GpuStateFlavor::Trackpy(ref flavor) => {
+
+    //     },
+    //     GpuStateFlavor::Log(ref flavor) => {
+    //         let name = "separable_log".to_string();
+    //         let pipeline = &pipelines.remove(&name).unwrap();
+
+    //         let pass_vec = flavor.buffers.logspace_buffers.iter().map(|(log_space_buffer, _, __)| {
+    //         SeparableConvolution::<2>::new(
+    //             &device,
+    //             pipeline,
+    //             &flavor.buffers.frame_buffer,
+    //             log_space_buffer,
+    //             &flavor.buffers.temp_buffer,
+    //             [&flavor.buffers.param_buffer],
+    //         )
+    //         // passes.insert(name, pass);
+    //         }).collect::<Vec<_>>();
+    //         passes.insert(name, pass_vec);
+
+    //     },
+    // }
+
     
     let passes = pipelines.into_iter()
         .map(|(name, (pipeline, layout, wg_n))|{
@@ -1015,6 +1060,52 @@ pub fn setup_state(
     //     }
     state
 
+}
+
+fn make_pipelines_from_source<F: Fn(&str, &[u32; 3], &str) -> String>(
+    shaders: HashMap<&str, (&str, [u32; 3], [u32; 3])>,
+    preprocessor: F,
+    common_header: &str,
+    device: &wgpu::Device)
+    -> HashMap<String, (Rc<wgpu::ComputePipeline>, wgpu::BindGroupLayout, [u32; 3])>
+    {
+    
+    let n_workgroups = |dims: &[u32; 3], wgsize: &[u32; 3]| { 
+        let mut n_workgroups = [0, 0, 0];
+        for i in 0..3 {
+            n_workgroups[i] = (dims[i] + wgsize[i] - 1) / wgsize[i];
+        }
+        n_workgroups
+    };
+    
+    let output = shaders.into_iter().map(|(name, (source, dims, group_size))|{
+        let shader_source = preprocessor(source, &group_size, common_header);
+        let wg_n = n_workgroups(&dims, &group_size);
+        let bindgrouplayout = infer_compute_bindgroup_layout(&device, &shader_source);
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor{
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+        });
+
+        let pipelinelayout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{
+            label: None,
+            bind_group_layouts: &[&bindgrouplayout],
+            push_constant_ranges: &[wgpu::PushConstantRange{
+                stages: wgpu::ShaderStages::COMPUTE,
+                range: 0..16,
+            }],
+        });
+
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor{
+            label: None,
+            layout: Some(&pipelinelayout),
+            module: &shader,
+            entry_point: "main",
+        });
+        (name.to_string(), (Rc::new(pipeline), bindgrouplayout, wg_n))
+    }).collect::<HashMap<_, _>>();
+
+    output
 }
 
 pub fn inspect_buffers<P: AsRef<std::path::Path>>(
