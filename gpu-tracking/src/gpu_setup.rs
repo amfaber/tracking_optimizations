@@ -8,6 +8,141 @@ use wgpu_fft::{self, fft::{FftPlan, FftPass}, FullComputePass, infer_compute_bin
 
 
 
+struct SeparableConvolution<const N: usize>{
+    input_pass: FullComputePass,
+    passes: [FullComputePass; 2],
+}
+
+impl<const N: usize> SeparableConvolution<N>{
+    fn new<'a>(
+        device: &wgpu::Device,
+        pipeline: &(Rc<wgpu::ComputePipeline>, wgpu::BindGroupLayout, [u32; 3]),
+        input_buffer: &wgpu::Buffer,
+        output_buffer: &wgpu::Buffer,
+        temp_buffer: &wgpu::Buffer,
+        additional_buffers: impl IntoIterator<Item = &'a wgpu::Buffer>,
+    ) -> Self{
+        let mut bind_group_entries_output_first = vec![
+            wgpu::BindGroupEntry{
+                binding: 0,
+                resource: output_buffer.as_entire_binding(),
+            },
+            
+            wgpu::BindGroupEntry{
+                binding: 1,
+                resource: temp_buffer.as_entire_binding(),
+            },
+        ];
+        let mut bind_group_entries_temp_first = vec![
+            wgpu::BindGroupEntry{
+                binding: 0,
+                resource: temp_buffer.as_entire_binding(),
+            },
+
+            wgpu::BindGroupEntry{
+                binding: 1,
+                resource: output_buffer.as_entire_binding(),
+            },
+        ];
+
+        let first_out = if N % 2 == 0{
+            temp_buffer
+        } else {
+            output_buffer
+        };
+        
+        let mut bind_group_entries_input = vec![
+            wgpu::BindGroupEntry{
+                binding: 0,
+                resource: input_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry{
+                binding: 1,
+                resource: first_out.as_entire_binding(),
+            },
+        ];
+
+        for (i, additional_buffer) in additional_buffers.into_iter().enumerate(){
+            bind_group_entries_output_first.push(
+                wgpu::BindGroupEntry{
+                    binding: i as u32 + 2,
+                    resource: additional_buffer.as_entire_binding(),
+                }
+            );
+
+            bind_group_entries_temp_first.push(
+                wgpu::BindGroupEntry{
+                    binding: i as u32 + 2,
+                    resource: additional_buffer.as_entire_binding(),
+                }
+            );
+
+            bind_group_entries_input.push(
+                wgpu::BindGroupEntry{
+                    binding: i as u32 + 2,
+                    resource: additional_buffer.as_entire_binding(),
+                }
+            );
+        }
+
+        let bind_group_output_first = device.create_bind_group(&wgpu::BindGroupDescriptor{
+            label: None,
+            layout: &pipeline.1,
+            entries: &bind_group_entries_output_first[..],
+        });
+
+        let bind_group_temp_first = device.create_bind_group(&wgpu::BindGroupDescriptor{
+            label: None,
+            layout: &pipeline.1,
+            entries: &bind_group_entries_temp_first[..],
+        });
+
+        let bind_group_input = device.create_bind_group(&wgpu::BindGroupDescriptor{
+            label: None,
+            layout: &pipeline.1,
+            entries: &bind_group_entries_input[..],
+        });
+
+
+        let full_output_first = FullComputePass{
+            pipeline: Rc::clone(&pipeline.0),
+            bindgroup: bind_group_output_first,
+            wg_n: pipeline.2.clone(),
+        };
+
+        let full_temp_first = FullComputePass{
+            pipeline: Rc::clone(&pipeline.0),
+            bindgroup: bind_group_temp_first,
+            wg_n: pipeline.2.clone(),
+        };
+
+        let full_input = FullComputePass{
+            pipeline: Rc::clone(&pipeline.0),
+            bindgroup: bind_group_input,
+            wg_n: pipeline.2.clone(),
+        };
+        
+        let base = if N % 2 == 0{
+            [full_temp_first, full_output_first]
+        } else{
+            [full_output_first, full_temp_first]
+        };
+
+        Self{
+            passes: base,
+            input_pass: full_input,
+        }
+    }
+
+    fn execute(&self, encoder: &mut wgpu::CommandEncoder){
+        let input = std::iter::once(&self.input_pass);
+        for (dim, pass) in input.chain(self.passes.iter().cycle().take(N)).enumerate(){
+            let push_constants = [dim as u32];
+            pass.execute(encoder, bytemuck::cast_slice(&push_constants));
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct TrackpyParams{
     
@@ -592,6 +727,7 @@ pub fn setup_state(
             ("init_gauss", (include_str!("shaders/log_style/init_gauss.wgsl"), init_wg_dims, workgroup_size1d)),
             ("logspace_max", (include_str!("shaders/log_style/logspace_max.wgsl"), wg_dims, workgroup_size1d)),
             ("walk", (include_str!("shaders/walk.wgsl"), [10000, 1, 1], workgroup_size1d)),
+            ("separable_log.wgsl", (include_str!("shaders/log_style/separable_log.wgsl"), wg_dims, workgroup_size2d)),
             // ("characterize", (include_str!("shaders/characterize.wgsl"), [10000, 1, 1], workgroup_size1d)),
         ]);
         
@@ -794,6 +930,18 @@ pub fn setup_state(
             })
         .collect::<HashMap<_, _>>();
     
+    let passes = HashMap::from(
+        {
+            let name = "separable_log".to_string();
+            let pipeline = &pipelines[&name];
+            let pass = SeparableConvolution::new(
+                &device,
+                pipeline,
+                input_buffer,
+            );
+            [(name.clone(), name)]
+        }
+    );
     
     let passes = pipelines.into_iter()
         .map(|(name, (pipeline, layout, wg_n))|{
