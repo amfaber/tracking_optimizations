@@ -3,7 +3,6 @@ use wgpu::{self, BufferBinding, ComputePass};
 use std::{collections::HashMap, hash::Hash, char::ParseCharError, rc::Rc};
 use bytemuck;
 use crate::{FullComputePass, infer_compute_bindgroup_layout};
-use regex;
 
 // #[derive(bytemuck::Pod, bytemuck::Zeroable)]
 // #[repr(C)]
@@ -14,8 +13,6 @@ pub struct FftParams{
     pub current_dim: u32,
     pub inverse: u32,
 }
-
-
 
 pub struct FftPass<const N: usize>{
     passes: [FullComputePass; N],

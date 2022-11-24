@@ -6,8 +6,6 @@ use pollster::FutureExt;
 use wgpu::{Buffer, Device, self, util::{DeviceExt, BufferInitDescriptor}, ComputePipeline, BindGroupLayout};
 use wgpu_fft::{self, fft::{FftPlan, FftPass}, FullComputePass, infer_compute_bindgroup_layout};
 
-
-
 #[derive(Clone)]
 pub struct TrackpyParams{
     
@@ -643,15 +641,14 @@ pub fn setup_state(
     }).collect::<HashMap<_, _>>();
     */
 
-    let shaders = shaders.iter().map(|(&name, (source, dims, group_size))|{
-        let shader_source = preprocess_source(source, group_size, common_header);
+    let shaders = shaders.into_iter().map(|(name, (source, dims, group_size))|{
+        let shader_source = preprocess_source(source, &group_size, common_header);
         let bindgrouplayout = infer_compute_bindgroup_layout(&device, &shader_source);
-
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor{
             label: None,
             source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
-        (name, (shader, n_workgroups(dims, group_size), bindgrouplayout))
+        (name, (shader, n_workgroups(&dims, &group_size), bindgrouplayout))
     }).collect::<HashMap<_, _>>();
     
     let pipelines = shaders.into_iter().map(|(name, (shader, wg_n, bindgrouplayout))|{

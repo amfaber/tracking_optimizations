@@ -225,8 +225,6 @@ fn submit_work(
     encoder.clear_buffer(particles_buffer, 0, None);
     state.queue.submit(Some(encoder.finish()));
     index
-
-    
 }
 
 
@@ -429,7 +427,6 @@ fn post_process<A: IntoSlice>(
             raw_properties.1.as_ref().map(|bg_medians| output.push(bg_medians[idx]));
             raw_properties.2.as_ref().map(|corrected| output.push(corrected[idx]));
         });
-
     }
 }
 
@@ -443,10 +440,16 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
     mut pos_iter: Option<impl Iterator<Item = (usize, Vec<[my_dtype; 2]>)>>,
     // all_frames: Option<&Array3<my_dtype>>,
     ) -> (output_type, Vec<(String, String)>){
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        default_panic(panic_info);
+        std::process::exit(1);
+    }));
+    
     let state = gpu_setup::setup_state(&tracking_params, dims, debug, pos_iter.is_some());
 
     let (circle_inds, middle_most) = kernels::circle_inds((tracking_params.diameter as i32 / 2) as f32);
-    let mut wait_gpu_time = if verbosity > 0 {Some(0.) } else {None};
+    let mut wait_gpu_time = if verbosity > 0 { Some(0.) } else {None};
 
     let (inp_sender,
         inp_receiver) = std::sync::mpsc::channel::<channel_type>();
