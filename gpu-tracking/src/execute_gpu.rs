@@ -10,7 +10,7 @@ use std::{collections::VecDeque, time::Instant, sync::mpsc::Sender, path::Path, 
 use wgpu::{Buffer, SubmissionIndex};
 use crate::{kernels, into_slice::IntoSlice,
     gpu_setup::{
-    self, GpuState, TrackpyGpuState, Style, TrackingParams, GpuBuffers, GpuStateFlavor, any_as_u8_slice, inspect_buffers
+    self, GpuState, ParamStyle, TrackingParams, GpuStateFlavor, any_as_u8_slice, inspect_buffers
 }, linking::{
     Linker, FrameSubsetter
 }, decoderiter::{
@@ -84,11 +84,14 @@ fn submit_work(
     positions: Option<Vec<[my_dtype; 2]>>,
     ) -> SubmissionIndex {
     
-    let atomic_filtered_buffer = state.atomic_filtered_buffer();
-    let frame_buffer = state.frame_buffer();
-    let result_buffer = state.result_buffer();
-    let particles_buffer = state.particles_buffer();
-    let atomic_buffer = state.atomic_buffer();
+    // let atomic_filtered_buffer = state.common;
+    // let frame_buffer = &state.common_buffers.frame_buffer;
+    // let result_buffer = &state.common_buffers.result_buffer;
+    // let particles_buffer = &state.common_buffers.particles_buffer;
+    // let atomic_buffer = &state.common_buffers.atomic_buffer;
+    // let atomic_filtered_buffer = &state.common_buffers.atomic_filtered_buffer;
+    
+    let common_buffers = &state.common_buffers;
 
     let mut encoder =
     state.device.create_command_encoder(&Default::default());
@@ -96,12 +99,12 @@ fn submit_work(
 
     
     encoder.copy_buffer_to_buffer(staging_buffer, 0,
-        &frame_buffer, 0, state.pic_byte_size);
+        &common_buffers.frame_buffer, 0, state.pic_byte_size);
     
     
 
     match state.flavor{
-        GpuStateFlavor::Trackpy(ref flavor) => {
+        GpuStateFlavor::Trackpy{ ref order, .. } => {
 
             if let Some(ref positions) = positions {
                 let positions = positions.iter().map(|pos| ResultRow{
@@ -116,9 +119,9 @@ fn submit_work(
                     ecc: 0.,
                 }).collect::<Vec<_>>();
                 state.queue.write_buffer(staging_buffer, state.pic_byte_size, bytemuck::cast_slice(&positions));
-                state.queue.write_buffer(atomic_filtered_buffer, 0, bytemuck::cast_slice(&[positions.len() as u32]));
+                state.queue.write_buffer(&common_buffers.atomic_filtered_buffer, 0, bytemuck::cast_slice(&[positions.len() as u32]));
                 encoder.copy_buffer_to_buffer(staging_buffer, state.pic_byte_size,
-                    result_buffer, 0, state.pic_byte_size);
+                    &common_buffers.result_buffer, 0, state.pic_byte_size);
             };
             // let buffers = &flavor.buffers;
             
@@ -131,14 +134,14 @@ fn submit_work(
             //     cpass.dispatch_workgroups(wg_n[0], wg_n[1], wg_n[2]);
             // });
             
-            for cpassname in flavor.order.iter(){
+            for cpassname in order.iter(){
                 let fullpass = &state.passes[cpassname][0];
                 fullpass.execute(&mut encoder, &[]);
             }
             
         },
-        GpuStateFlavor::Log(ref flavor) => {
-            let buffers = &flavor.buffers;
+        GpuStateFlavor::Log{ ref buffers, ref sigmas, .. } => {
+            // let buffers = &flavor.buffers;
             
             let (pad_raw, push_constants) = &buffers.raw_padded.1;
             pad_raw.execute(&mut encoder, bytemuck::cast_slice(push_constants));
@@ -168,7 +171,7 @@ fn submit_work(
                 ifft.execute(&mut encoder, true, true);
                 
                 let find_max = &state.passes["logspace_max"][(i-1) % 3];
-                let sigma = flavor.sigmas[i-1];
+                let sigma = sigmas[i-1];
                 let push_constants_tuple = (edge, sigma);
                 let push_constants = unsafe{ any_as_u8_slice(&push_constants_tuple) };
                 find_max.execute(&mut encoder, push_constants);
@@ -187,7 +190,7 @@ fn submit_work(
             edge = 1;
             
             let find_max = &state.passes["logspace_max"][(n_sigma - 1) % 3];
-            let sigma = flavor.sigmas[n_sigma - 1];
+            let sigma = sigmas[n_sigma - 1];
             let push_constants_tuple = (edge, sigma);
             let push_constants = unsafe{ any_as_u8_slice(&push_constants_tuple) };
             find_max.execute(&mut encoder, push_constants);
@@ -196,8 +199,8 @@ fn submit_work(
             // let copy_size = (copy_size[0] * copy_size[1] * 8) as u64;
             // let copy_size = 1670012;
             // dbg!(&copy_size);
-            inspect_buffers(&[&buffers.particles_buffer, &buffers.atomic_buffer],
-            &buffers.staging_buffers[0],
+            inspect_buffers(&[&common_buffers.particles_buffer, &common_buffers.atomic_buffer],
+            &common_buffers.staging_buffers[0],
             &state.queue,
             encoder,
             &state.device,
@@ -209,9 +212,9 @@ fn submit_work(
         }
     }
 
-    let output_buffer = &result_buffer;
+    let output_buffer = &common_buffers.result_buffer;
     
-    encoder.copy_buffer_to_buffer(atomic_filtered_buffer, 0,
+    encoder.copy_buffer_to_buffer(&common_buffers.atomic_filtered_buffer, 0,
         staging_buffer, 0, 4);
     encoder.copy_buffer_to_buffer(output_buffer, 0,
         staging_buffer, 4, state.pic_byte_size);
@@ -219,10 +222,10 @@ fn submit_work(
     let index = state.queue.submit(Some(encoder.finish()));
     let mut encoder =
         state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-    encoder.clear_buffer(result_buffer, 0, None);
-    encoder.clear_buffer(atomic_buffer, 0, None);
-    encoder.clear_buffer(atomic_filtered_buffer, 0, None);
-    encoder.clear_buffer(particles_buffer, 0, None);
+    encoder.clear_buffer(&common_buffers.result_buffer, 0, None);
+    encoder.clear_buffer(&common_buffers.atomic_buffer, 0, None);
+    encoder.clear_buffer(&common_buffers.atomic_filtered_buffer, 0, None);
+    encoder.clear_buffer(&common_buffers.particles_buffer, 0, None);
     state.queue.submit(Some(encoder.finish()));
     index
 }
@@ -259,8 +262,8 @@ fn get_work(
     let particle_data_endpoint = (n_parts as usize)*MY_DTYPE_SIZE*N_RESULT_COLUMNS + MY_DTYPE_SIZE;
     let results = bytemuck::cast_slice::<u8, ResultRow>(&data[MY_DTYPE_SIZE..particle_data_endpoint]).to_vec();
     let global_max = match tracking_params.style{
-        Style::Trackpy(ref params) => None,
-        Style::Log(ref params) => Some(*bytemuck::from_bytes::<f32>(&data[particle_data_endpoint..(particle_data_endpoint+MY_DTYPE_SIZE)]))
+        ParamStyle::Trackpy{ .. } => None,
+        ParamStyle::Log{ .. } => Some(*bytemuck::from_bytes::<f32>(&data[particle_data_endpoint..(particle_data_endpoint+MY_DTYPE_SIZE)]))
     };
 
     drop(data);
@@ -414,8 +417,8 @@ fn post_process<A: IntoSlice>(
 
     let part_ids = linker.map(|linker| linker.advance(&relevant_points));
     let include_r = match tracking_params.style{
-        Style::Log(ref _params) => true,
-        Style::Trackpy(ref _params) => false,
+        ParamStyle::Log{ .. } => true,
+        ParamStyle::Trackpy{ .. } => false,
     };
     for (idx, row) in relevant_points.iter().enumerate(){
         output.push(frame_index as my_dtype);
@@ -497,7 +500,7 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
             })
         };
         
-        let mut free_staging_buffers = state.staging_buffers().iter().collect::<Vec<&wgpu::Buffer>>();
+        let mut free_staging_buffers = state.common_buffers.staging_buffers.iter().collect::<Vec<&wgpu::Buffer>>();
         
         let mut in_use_staging_buffers = VecDeque::new();
         let (frame, positions, mut frame_index) = match pos_iter{

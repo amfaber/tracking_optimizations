@@ -145,23 +145,30 @@ impl<const N: usize> SeparableConvolution<N>{
     }
 }
 
-#[derive(Clone)]
-pub struct TrackpyParams{
+// #[derive(Clone)]
+// pub struct TrackpyParams{
     
-}
+// }
+
+// #[derive(Clone)]
+// pub struct LogParams{
+//     pub min_sigma: my_dtype,
+//     pub max_sigma: my_dtype,
+//     pub n_sigma: usize,
+//     pub log_spacing: bool,
+// }
 
 #[derive(Clone)]
-pub struct LogParams{
-    pub min_sigma: my_dtype,
-    pub max_sigma: my_dtype,
-    pub n_sigma: usize,
-    pub log_spacing: bool,
-}
+pub enum ParamStyle{
+    Trackpy{
 
-#[derive(Clone)]
-pub enum Style{
-    Trackpy(TrackpyParams),
-    Log(LogParams),
+    },
+    Log{
+        min_sigma: my_dtype,
+        max_sigma: my_dtype,
+        n_sigma: usize,
+        log_spacing: bool,
+    },
 }
 
 
@@ -188,7 +195,7 @@ pub struct TrackingParams{
     pub bg_radius: Option<my_dtype>,
     pub gap_radius: Option<my_dtype>,
     pub varcheck: Option<my_dtype>,
-    pub style: Style,
+    pub style: ParamStyle,
 }
 
 impl Default for TrackingParams{
@@ -215,9 +222,9 @@ impl Default for TrackingParams{
             bg_radius: None,
             gap_radius: None,
             varcheck: None,
-            style: Style::Trackpy(TrackpyParams{
+            style: ParamStyle::Trackpy{
 
-            })
+            }
         }
     }
 }
@@ -235,29 +242,40 @@ pub struct GpuParams{
     pub margin: i32,
     pub var_factor: f32,
 }
-pub struct TrackpyGpuBuffers{
+
+pub struct CommonBuffers{
     pub staging_buffers: Vec<Buffer>,
     pub frame_buffer: Buffer,
     pub result_buffer: Buffer,
     pub atomic_buffer: Buffer,
     pub particles_buffer: Buffer,
     pub atomic_filtered_buffer: Buffer,
-    
+    pub param_buffer: Buffer,
+}
+
+pub struct TrackpyGpuBuffers{
+    // pub staging_buffers: Vec<Buffer>,
+    // pub frame_buffer: Buffer,
+    // pub result_buffer: Buffer,
+    // pub atomic_buffer: Buffer,
+    // pub particles_buffer: Buffer,
+    // pub atomic_filtered_buffer: Buffer,
+
     pub processed_buffer: Buffer,
     pub centers_buffer: Buffer,
     pub masses_buffer: Buffer,
     pub max_rows: Buffer,
-    pub param_buffer: Buffer,
+    // pub param_buffer: Buffer,
 }
 
 pub struct LogGpuBuffers{
-    pub staging_buffers: Vec<Buffer>,
-    pub frame_buffer: Buffer,
-    pub result_buffer: Buffer,
-    pub atomic_buffer: Buffer,
-    pub particles_buffer: Buffer,
-    pub atomic_filtered_buffer: Buffer,
-    pub param_buffer: Buffer,
+    // pub staging_buffers: Vec<Buffer>,
+    // pub frame_buffer: Buffer,
+    // pub result_buffer: Buffer,
+    // pub atomic_buffer: Buffer,
+    // pub particles_buffer: Buffer,
+    // pub atomic_filtered_buffer: Buffer,
+    // pub param_buffer: Buffer,
     
     pub raw_padded: (Buffer, (FullComputePass, [u32; 4]), FftPass<2>),
     pub logspace_buffers: Vec<(Buffer, Vec<FullComputePass>, FftPass<2>, SeparableConvolution<2>)>,
@@ -269,28 +287,284 @@ pub struct LogGpuBuffers{
 }
 
 
-pub struct TrackpyGpuState{
-    pub order: Vec<String>,
-    pub buffers: TrackpyGpuBuffers,
+impl CommonBuffers{
+    fn create(
+        tracking_params: &TrackingParams,
+        device: &wgpu::Device,
+        size: u64,
+        dims: &[u32; 2],
+        ) -> Self{
+        let result_buffer_depth = if tracking_params.characterize { 7 } else { 3 };
+        let mut staging_buffers = Vec::new();
+        for i in 0..2{
+            let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(format!("Staging {}", i).as_str()),
+                size: 8*size,
+                // size: ((result_buffer_depth + tracking_params.cpu_processed as u64) * size) as u64,
+                usage: wgpu::BufferUsages::COPY_SRC 
+                | wgpu::BufferUsages::COPY_DST 
+                | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            staging_buffers.push(staging_buffer);
+        }
+        
+        let frame_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        
+        
+        let result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: (result_buffer_depth * size) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        
+        let atomic_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let atomic_filtered_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let particles_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let params = gpuparams_from_tracking_params(&tracking_params, *dims);
+
+        let param_buffer = unsafe{
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Width Buffer"),
+                contents: any_as_u8_slice(&params),
+                usage: wgpu::BufferUsages::UNIFORM
+            })
+        };
+
+        Self {
+            staging_buffers,
+            frame_buffer,
+            result_buffer,
+            atomic_buffer,
+            particles_buffer,
+            atomic_filtered_buffer,
+            param_buffer,
+        }
+    }
 }
 
 
-pub struct LogGpuState{
-    pub fftplan: FftPlan,
-    pub buffers: LogGpuBuffers,
-    pub sigmas: Vec<my_dtype>,
+
+impl TrackpyGpuBuffers{
+    fn create(
+        tracking_params: &TrackingParams,
+        device: &wgpu::Device,
+        size: u64,
+        dims: &[u32; 2],
+        // pipelines: &mut HashMap<String, (Rc<ComputePipeline>, BindGroupLayout, [u32; 3])>
+        ) -> Self{
+        
+        let processed_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: size,
+            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        
+        let centers_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: (2 * size) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        
+        
+        let masses_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        
+    
+        let max_rows = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        Self{
+            centers_buffer,
+            masses_buffer,
+            max_rows,
+            processed_buffer,
+        }
+    }
 }
 
-pub enum GpuBuffers{
-    Trackpy(TrackpyGpuBuffers),
-    Log(LogGpuBuffers)
+
+impl LogGpuBuffers{
+    fn create(
+        tracking_params: &TrackingParams,
+        device: &wgpu::Device,
+        size: u64,
+        dims: &[u32; 2],
+        fftplan: &FftPlan,
+        common_buffers: &CommonBuffers,
+        pipelines: &mut HashMap<String, (Rc<ComputePipeline>, BindGroupLayout, [u32; 3])>
+    ) -> Self {
+        let (min_sigma, max_sigma, n_sigma, log_spacing) = if let ParamStyle::Log { min_sigma, max_sigma, n_sigma, log_spacing } = tracking_params.style{
+            (min_sigma, max_sigma, n_sigma, log_spacing)
+        } else {panic!()};
+
+        let frame_buffer = &common_buffers.frame_buffer;
+        let param_buffer = &common_buffers.param_buffer;
+
+        let laplacian: [f32; 9] = [
+            -1., -1., -1.,
+            -1.,  8., -1.,
+            -1., -1., -1.,
+        ];
+
+        let laplacian_buffer = device.create_buffer_init(&BufferInitDescriptor{
+            label: None,
+            contents: bytemuck::cast_slice(&laplacian),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        });
+
+        let padded_laplacian_buffer = fftplan.create_buffer(device, false);
+
+        // let mut encoder = device.create_command_encoder(&Default::default());
+        // fftplan.pad(device, &mut encoder, &laplacian_buffer, &padded_laplacian_buffer, &[3, 3]);
+        
+        let laplacian_fft_pass = fftplan.fft_pass(&padded_laplacian_buffer, device);
+
+        let filter_buffers: Vec<_> = (0..n_sigma).map(|_|{
+            let buffer = fftplan.create_buffer(device, false);
+            let pass = fftplan.fft_pass(&buffer, device);
+            let laplace_convolve = fftplan.inplace_spectral_convolution_pass(device, &buffer, &padded_laplacian_buffer);
+            (buffer, pass, laplace_convolve)
+            // buffer
+        }).collect();
+
+        let raw_padded = fftplan.create_buffer(device, false);
+        let raw_pad_pass = fftplan.pad_pass(device, &frame_buffer, &raw_padded, dims);
+        let raw_fft_pass = fftplan.fft_pass(&raw_padded, device);
+        let raw_padded = (raw_padded, raw_pad_pass, raw_fft_pass);
+        
+        let separable_pipeline = pipelines.remove("separable_log").unwrap();
+        let temp_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: size,
+            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let logspace_buffers: Vec<_> = (0..3)
+        .map(|_|{
+            let log_space_buffer = fftplan.create_buffer(device, false);
+            let fftpass = fftplan.fft_pass(&log_space_buffer, device);
+            let convolutionpasses = filter_buffers.iter().map(|(filterbuffer, _fftpass, _lap_conv)|{
+                fftplan.spectral_convolution_pass(device, &raw_padded.0, filterbuffer, &log_space_buffer)
+            }).collect();
+            let separable_pass = SeparableConvolution::<2>::new(
+                device,
+                &separable_pipeline,
+                &log_space_buffer,
+                frame_buffer,
+                &temp_buffer,
+                [param_buffer],
+            );
+            (log_space_buffer, convolutionpasses, fftpass, separable_pass)
+            // buffer
+        }).collect();
+
+        let global_max = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        Self{
+            filter_buffers,
+            global_max,
+            laplacian_buffer: (padded_laplacian_buffer, laplacian_fft_pass),
+            logspace_buffers,
+            raw_padded,
+            temp_buffer,
+            unpadded_laplace: (laplacian_buffer, [3, 3]),
+        }
+    }
 }
+
+// pub struct TrackpyGpuState{
+//     pub order: Vec<String>,
+//     pub buffers: GpuBuffers,
+// }
+
+
+// pub struct LogGpuState{
+//     pub fftplan: FftPlan,
+//     pub buffers: LogGpuBuffers,
+//     pub sigmas: Vec<my_dtype>,
+// }
+
+// pub enum GpuBuffers{
+//     Trackpy{
+//         staging_buffers: Vec<Buffer>,
+//         frame_buffer: Buffer,
+//         result_buffer: Buffer,
+//         atomic_buffer: Buffer,
+//         particles_buffer: Buffer,
+//         atomic_filtered_buffer: Buffer,
+        
+//         processed_buffer: Buffer,
+//         centers_buffer: Buffer,
+//         masses_buffer: Buffer,
+//         max_rows: Buffer,
+//         param_buffer: Buffer,
+//     },
+
+//     Log{
+//         staging_buffers: Vec<Buffer>,
+//         frame_buffer: Buffer,
+//         result_buffer: Buffer,
+//         atomic_buffer: Buffer,
+//         particles_buffer: Buffer,
+//         atomic_filtered_buffer: Buffer,
+//         param_buffer: Buffer,
+        
+//         raw_padded: (Buffer, (FullComputePass, [u32; 4]), FftPass<2>),
+//         logspace_buffers: Vec<(Buffer, Vec<FullComputePass>, FftPass<2>, SeparableConvolution<2>)>,
+//         filter_buffers: Vec<(Buffer, FftPass<2>, FullComputePass)>,
+//         laplacian_buffer: (Buffer, FftPass<2>),
+//         unpadded_laplace: (Buffer, [u32; 2]),
+//         global_max: Buffer,
+//         temp_buffer: Buffer,
+//     }
+// }
 
 pub struct GpuState{
     pub device: Device,
     pub queue: wgpu::Queue,
+    pub common_buffers: CommonBuffers,
     // pub bind_groups: HashMap<String, Vec<wgpu::BindGroup>>,
     // pub pipelines: HashMap<String, (ComputePipeline, wgpu::BindGroupLayout, [u32; 3])>,
+    // pub buffers: GpuBuffers,
     pub passes: HashMap<String, Vec<FullComputePass>>,
     pub pic_size: usize,
     pub result_read_depth: u64,
@@ -299,8 +573,15 @@ pub struct GpuState{
 }
 
 pub enum GpuStateFlavor{
-    Trackpy(TrackpyGpuState),
-    Log(LogGpuState),
+    Trackpy{
+        order: Vec<String>,
+        buffers: TrackpyGpuBuffers,
+    },
+    Log{
+        fftplan: FftPlan,
+        buffers: LogGpuBuffers,
+        sigmas: Vec<my_dtype>,
+    },
 }
 
 // pub enum GpuStateFlavor{
@@ -309,60 +590,18 @@ pub enum GpuStateFlavor{
 // }
 
 impl GpuState{
-    pub fn staging_buffers(&self) -> &Vec<Buffer>{
-        match self.flavor{
-            GpuStateFlavor::Trackpy(ref flavor) => &flavor.buffers.staging_buffers,
-            GpuStateFlavor::Log(ref flavor) => &flavor.buffers.staging_buffers,
-        }
-    }
-    
-    pub fn atomic_filtered_buffer(&self) -> &Buffer{
-        match self.flavor{
-            GpuStateFlavor::Trackpy(ref flavor) => &flavor.buffers.atomic_filtered_buffer,
-            GpuStateFlavor::Log(ref flavor) => &flavor.buffers.atomic_filtered_buffer,
-        }
-    }
-
-    pub fn frame_buffer(&self) -> &Buffer{
-        match self.flavor{
-            GpuStateFlavor::Trackpy(ref flavor) => &flavor.buffers.frame_buffer,
-            GpuStateFlavor::Log(ref flavor) => &flavor.buffers.frame_buffer,
-        }
-    }
-
-    pub fn result_buffer(&self) -> &Buffer{
-        match self.flavor{
-            GpuStateFlavor::Trackpy(ref flavor) => &flavor.buffers.result_buffer,
-            GpuStateFlavor::Log(ref flavor) => &flavor.buffers.result_buffer,
-        }
-    }
-
-    pub fn atomic_buffer(&self) -> &Buffer{
-        match self.flavor{
-            GpuStateFlavor::Trackpy(ref flavor) => &flavor.buffers.atomic_buffer,
-            GpuStateFlavor::Log(ref flavor) => &flavor.buffers.atomic_buffer,
-        }
-    }
-
-    pub fn particles_buffer(&self) -> &Buffer{
-        match self.flavor{
-            GpuStateFlavor::Trackpy(ref flavor) => &flavor.buffers.particles_buffer,
-            GpuStateFlavor::Log(ref flavor) => &flavor.buffers.particles_buffer,
-        }
-    }
-
 
     fn setup_buffers(&self){
 
         match self.flavor{
-            GpuStateFlavor::Trackpy(ref flavor) => {
+            GpuStateFlavor::Trackpy{..} => {
 
             },
-            GpuStateFlavor::Log(ref flavor) => {
-                let buffers = &flavor.buffers;
+            GpuStateFlavor::Log{ref buffers, ref fftplan, ref sigmas, ..} => {
+                // let buffers = &flavor.buffers;
                 
                 let mut encoder = self.device.create_command_encoder(&Default::default());
-                let (pad_pass, push_constants) = flavor.fftplan.pad_pass(&self.device, &buffers.unpadded_laplace.0, &buffers.laplacian_buffer.0, &buffers.unpadded_laplace.1);
+                let (pad_pass, push_constants) = fftplan.pad_pass(&self.device, &buffers.unpadded_laplace.0, &buffers.laplacian_buffer.0, &buffers.unpadded_laplace.1);
                 pad_pass.execute(&mut encoder, bytemuck::cast_slice(&push_constants));
 
 
@@ -370,8 +609,8 @@ impl GpuState{
                 laplace_fft.execute(&mut encoder, false, false);
 
 
-                let gauss_size = (flavor.sigmas[flavor.sigmas.len() - 1] * 4. + 0.5) as u32 * 2 + 1;
-                let iterator = buffers.filter_buffers.iter().zip(self.passes["init_gauss"].iter()).zip(&flavor.sigmas);
+                let gauss_size = (sigmas[sigmas.len() - 1] * 4. + 0.5) as u32 * 2 + 1;
+                let iterator = buffers.filter_buffers.iter().zip(self.passes["init_gauss"].iter()).zip(sigmas);
                 for (((_filter_buffer, fft, lap_convolve), init), sigma) in iterator{
                     // let push_constants = panic!("figure out push_constants. Limits to the gaussians are still missing");
                     let push_constants = (*sigma, gauss_size, gauss_size);
@@ -416,217 +655,218 @@ pub unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
     )
 }
 
-pub fn create_buffers(tracking_params: &TrackingParams,
-    device: &wgpu::Device,
-    size: u64,
-    dims: &[u32; 2],
-    fftplan: Option<&FftPlan>,
-    pipelines: &mut HashMap<String, (Rc<ComputePipeline>, BindGroupLayout, [u32; 3])>
-    ) -> GpuBuffers {
+// pub fn create_buffers(
+//     tracking_params: &TrackingParams,
+//     device: &wgpu::Device,
+//     size: u64,
+//     dims: &[u32; 2],
+//     fftplan: Option<&FftPlan>,
+//     pipelines: &mut HashMap<String, (Rc<ComputePipeline>, BindGroupLayout, [u32; 3])>
+//     ) -> GpuBuffers {
     
-    let result_buffer_depth = if tracking_params.characterize { 7 } else { 3 };
-    let mut staging_buffers = Vec::new();
-    for i in 0..2{
-        let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(format!("Staging {}", i).as_str()),
-            size: 8*size,
-            // size: ((result_buffer_depth + tracking_params.cpu_processed as u64) * size) as u64,
-            usage: wgpu::BufferUsages::COPY_SRC 
-            | wgpu::BufferUsages::COPY_DST 
-            | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        staging_buffers.push(staging_buffer);
-    }
+//     let result_buffer_depth = if tracking_params.characterize { 7 } else { 3 };
+//     let mut staging_buffers = Vec::new();
+//     for i in 0..2{
+//         let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+//             label: Some(format!("Staging {}", i).as_str()),
+//             size: 8*size,
+//             // size: ((result_buffer_depth + tracking_params.cpu_processed as u64) * size) as u64,
+//             usage: wgpu::BufferUsages::COPY_SRC 
+//             | wgpu::BufferUsages::COPY_DST 
+//             | wgpu::BufferUsages::MAP_READ,
+//             mapped_at_creation: false,
+//         });
+//         staging_buffers.push(staging_buffer);
+//     }
     
-    let frame_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
+//     let frame_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+//         label: None,
+//         size: size,
+//         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+//         mapped_at_creation: false,
+//     });
     
     
-    let result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: (result_buffer_depth * size) as u64,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
+//     let result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+//         label: None,
+//         size: (result_buffer_depth * size) as u64,
+//         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+//         mapped_at_creation: false,
+//     });
     
-    let atomic_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: 4,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
+//     let atomic_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+//         label: None,
+//         size: 4,
+//         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+//         mapped_at_creation: false,
+//     });
 
-    let atomic_filtered_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: 4,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
+//     let atomic_filtered_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+//         label: None,
+//         size: 4,
+//         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+//         mapped_at_creation: false,
+//     });
 
-    let particles_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let params = gpuparams_from_tracking_params(&tracking_params, *dims);
+//     let particles_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+//         label: None,
+//         size,
+//         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+//         mapped_at_creation: false,
+//     });
+//     let params = gpuparams_from_tracking_params(&tracking_params, *dims);
 
-    let param_buffer = unsafe{
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Width Buffer"),
-            contents: any_as_u8_slice(&params),
-            usage: wgpu::BufferUsages::UNIFORM
-        })
-    };
+//     let param_buffer = unsafe{
+//         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+//             label: Some("Width Buffer"),
+//             contents: any_as_u8_slice(&params),
+//             usage: wgpu::BufferUsages::UNIFORM
+//         })
+//     };
     
-    match &tracking_params.style{
-    Style::Trackpy(styleparams) => {
+//     match &tracking_params.style{
+//     Style::Trackpy(styleparams) => {
         
-        let processed_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: size,
-            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+//         let processed_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+//             label: None,
+//             size: size,
+//             usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+//             mapped_at_creation: false,
+//         });
         
-        let centers_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: (2 * size) as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+//         let centers_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+//             label: None,
+//             size: (2 * size) as u64,
+//             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+//             mapped_at_creation: false,
+//         });
         
         
-        let masses_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+//         let masses_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+//             label: None,
+//             size: size,
+//             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+//             mapped_at_creation: false,
+//         });
 
         
     
-        let max_rows = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+//         let max_rows = device.create_buffer(&wgpu::BufferDescriptor {
+//             label: None,
+//             size: size,
+//             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+//             mapped_at_creation: false,
+//         });
         
-        GpuBuffers::Trackpy(TrackpyGpuBuffers{
-            staging_buffers,
-            frame_buffer,
-            processed_buffer,
-            centers_buffer,
-            masses_buffer,
-            result_buffer,
-            param_buffer,
-            max_rows,
-            atomic_buffer,
-            particles_buffer,
-            atomic_filtered_buffer,
-        })
-    },
-    Style::Log(styleparams) => {
-        // let GpuStateFlavor::Log(flavor) = flavor else { panic!() };
+//         GpuBuffers::Trackpy{
+//             staging_buffers,
+//             frame_buffer,
+//             processed_buffer,
+//             centers_buffer,
+//             masses_buffer,
+//             result_buffer,
+//             param_buffer,
+//             max_rows,
+//             atomic_buffer,
+//             particles_buffer,
+//             atomic_filtered_buffer,
+//         }
+//     },
+//     Style::Log(styleparams) => {
+//         // let GpuStateFlavor::Log(flavor) = flavor else { panic!() };
 
-        let fftplan = fftplan.unwrap();
+//         let fftplan = fftplan.unwrap();
 
-        let laplacian: [f32; 9] = [
-            -1., -1., -1.,
-            -1.,  8., -1.,
-            -1., -1., -1.,
-        ];
+//         let laplacian: [f32; 9] = [
+//             -1., -1., -1.,
+//             -1.,  8., -1.,
+//             -1., -1., -1.,
+//         ];
 
-        let laplacian_buffer = device.create_buffer_init(&BufferInitDescriptor{
-            label: None,
-            contents: bytemuck::cast_slice(&laplacian),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        });
+//         let laplacian_buffer = device.create_buffer_init(&BufferInitDescriptor{
+//             label: None,
+//             contents: bytemuck::cast_slice(&laplacian),
+//             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+//         });
 
-        let padded_laplacian_buffer = fftplan.create_buffer(device, false);
+//         let padded_laplacian_buffer = fftplan.create_buffer(device, false);
 
-        // let mut encoder = device.create_command_encoder(&Default::default());
-        // fftplan.pad(device, &mut encoder, &laplacian_buffer, &padded_laplacian_buffer, &[3, 3]);
+//         // let mut encoder = device.create_command_encoder(&Default::default());
+//         // fftplan.pad(device, &mut encoder, &laplacian_buffer, &padded_laplacian_buffer, &[3, 3]);
         
-        let laplacian_fft_pass = fftplan.fft_pass(&padded_laplacian_buffer, device);
+//         let laplacian_fft_pass = fftplan.fft_pass(&padded_laplacian_buffer, device);
 
-        let filter_buffers: Vec<_> = (0..styleparams.n_sigma).map(|_|{
-            let buffer = fftplan.create_buffer(device, false);
-            let pass = fftplan.fft_pass(&buffer, device);
-            let laplace_convolve = fftplan.inplace_spectral_convolution_pass(device, &buffer, &padded_laplacian_buffer);
-            (buffer, pass, laplace_convolve)
-            // buffer
-        }).collect();
+//         let filter_buffers: Vec<_> = (0..styleparams.n_sigma).map(|_|{
+//             let buffer = fftplan.create_buffer(device, false);
+//             let pass = fftplan.fft_pass(&buffer, device);
+//             let laplace_convolve = fftplan.inplace_spectral_convolution_pass(device, &buffer, &padded_laplacian_buffer);
+//             (buffer, pass, laplace_convolve)
+//             // buffer
+//         }).collect();
 
-        let raw_padded = fftplan.create_buffer(device, false);
-        let raw_pad_pass = fftplan.pad_pass(device, &frame_buffer, &raw_padded, dims);
-        let raw_fft_pass = fftplan.fft_pass(&raw_padded, device);
-        let raw_padded = (raw_padded, raw_pad_pass, raw_fft_pass);
+//         let raw_padded = fftplan.create_buffer(device, false);
+//         let raw_pad_pass = fftplan.pad_pass(device, &frame_buffer, &raw_padded, dims);
+//         let raw_fft_pass = fftplan.fft_pass(&raw_padded, device);
+//         let raw_padded = (raw_padded, raw_pad_pass, raw_fft_pass);
         
-        let separable_pipeline = pipelines.remove("separable_log").unwrap();
-        let temp_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: size,
-            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+//         let separable_pipeline = pipelines.remove("separable_log").unwrap();
+//         let temp_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+//             label: None,
+//             size: size,
+//             usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+//             mapped_at_creation: false,
+//         });
 
-        let logspace_buffers: Vec<_> = (0..3)
-        .map(|_|{
-            let log_space_buffer = fftplan.create_buffer(device, false);
-            let fftpass = fftplan.fft_pass(&log_space_buffer, device);
-            let convolutionpasses = filter_buffers.iter().map(|(filterbuffer, _fftpass, _lap_conv)|{
-                fftplan.spectral_convolution_pass(device, &raw_padded.0, filterbuffer, &log_space_buffer)
-            }).collect();
-            let separable_pass = SeparableConvolution::<2>::new(
-                device,
-                &separable_pipeline,
-                &log_space_buffer,
-                &frame_buffer,
-                &temp_buffer,
-                [&param_buffer],
-            );
-            (log_space_buffer, convolutionpasses, fftpass, separable_pass)
-            // buffer
-        }).collect();
+//         let logspace_buffers: Vec<_> = (0..3)
+//         .map(|_|{
+//             let log_space_buffer = fftplan.create_buffer(device, false);
+//             let fftpass = fftplan.fft_pass(&log_space_buffer, device);
+//             let convolutionpasses = filter_buffers.iter().map(|(filterbuffer, _fftpass, _lap_conv)|{
+//                 fftplan.spectral_convolution_pass(device, &raw_padded.0, filterbuffer, &log_space_buffer)
+//             }).collect();
+//             let separable_pass = SeparableConvolution::<2>::new(
+//                 device,
+//                 &separable_pipeline,
+//                 &log_space_buffer,
+//                 &frame_buffer,
+//                 &temp_buffer,
+//                 [&param_buffer],
+//             );
+//             (log_space_buffer, convolutionpasses, fftpass, separable_pass)
+//             // buffer
+//         }).collect();
 
-        let global_max = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+//         let global_max = device.create_buffer(&wgpu::BufferDescriptor {
+//             label: None,
+//             size: 4,
+//             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+//             mapped_at_creation: false,
+//         });
 
         
         
 
 
-        GpuBuffers::Log(LogGpuBuffers{
-            staging_buffers,
-            frame_buffer,
-            result_buffer,
-            atomic_buffer,
-            particles_buffer,
-            atomic_filtered_buffer,
-            param_buffer,
+//         GpuBuffers::Log(LogGpuBuffers{
+//             staging_buffers,
+//             frame_buffer,
+//             result_buffer,
+//             atomic_buffer,
+//             particles_buffer,
+//             atomic_filtered_buffer,
+//             param_buffer,
 
-            raw_padded,
-            logspace_buffers,
-            filter_buffers,
-            laplacian_buffer: (padded_laplacian_buffer, laplacian_fft_pass),
-            unpadded_laplace: (laplacian_buffer, [3, 3]),
-            global_max,
-            temp_buffer,
-        })
-    }
-    }
-}
+//             raw_padded,
+//             logspace_buffers,
+//             filter_buffers,
+//             laplacian_buffer: (padded_laplacian_buffer, laplacian_fft_pass),
+//             unpadded_laplace: (laplacian_buffer, [3, 3]),
+//             global_max,
+//             temp_buffer,
+//         })
+//     }
+//     }
+// }
 
 
 
@@ -690,7 +930,7 @@ pub fn setup_state(
         if tracking_params.varcheck.is_some(){
             result = result.replace("//_feat_varcheck ", "");
         }
-        if let Style::Log(ref params) = tracking_params.style{
+        if let ParamStyle::Log{..} = tracking_params.style{
             result = result.replace("//_feat_LoG ", "");
         }
         result.replace("@workgroup_size(_)",
@@ -699,10 +939,14 @@ pub fn setup_state(
 
     let wg_dims = [dims[0], dims[1], 1];
     let common_header = include_str!("shaders/params.wgsl");
+
+    let common_buffers = CommonBuffers::create(
+        &tracking_params, &device, size * 2, dims
+    );
     
     let (flavor, pipelines, common_header) = match &tracking_params.style{
         
-    Style::Trackpy(params) => {
+    ParamStyle::Trackpy{..} => {
             
         let mut shaders = HashMap::from([
             ("max_rows", (include_str!("shaders/max_rows.wgsl"), wg_dims, workgroup_size2d)),
@@ -728,26 +972,28 @@ pub fn setup_state(
 
         let order = order.into_iter().flatten().collect();
         
-        let GpuBuffers::Trackpy(buffers) = create_buffers(&tracking_params, &device, size * 2, dims, None, &mut pipelines) else {unreachable!()};
-        
-        let flavor = GpuStateFlavor::Trackpy(TrackpyGpuState {
+        // let GpuBuffers::Trackpy(buffers) = create_buffers(&tracking_params, &device, size * 2, dims, None, &mut pipelines) else {unreachable!()};
+        let buffers = TrackpyGpuBuffers::create(
+            &tracking_params, &device, size * 2, dims
+        );
+
+        let flavor = GpuStateFlavor::Trackpy{
             order,
             buffers,
-        });
+        };
 
 
         (flavor, pipelines, common_header)
     },
-    Style::Log(params) => {
+    ParamStyle::Log{ max_sigma, min_sigma, log_spacing, n_sigma, .. } => {
         // let common_header = "";
 
         let fftshaders = wgpu_fft::fft::compile_shaders(&device, 
             Some(&workgroup_size2d),
             Some(&workgroup_size1d));
-        let gauss_size = (params.max_sigma * 4. + 0.5) as u32 * 2 + 1;
+        let gauss_size = (max_sigma * 4. + 0.5) as u32 * 2 + 1;
         let fft_shape = wgpu_fft::fft::get_shape(dims, &[gauss_size, gauss_size]);
-        let fftplan = Some(wgpu_fft::fft::FftPlan::create(&fft_shape, fftshaders, &device, &queue));
-        let init_wg_dims = [gauss_size, gauss_size, 1];
+        let fftplan = wgpu_fft::fft::FftPlan::create(&fft_shape, fftshaders, &device, &queue);        let init_wg_dims = [gauss_size, gauss_size, 1];
         
         let shaders = HashMap::from([
 
@@ -761,28 +1007,31 @@ pub fn setup_state(
         let mut pipelines = 
         make_pipelines_from_source(shaders, preprocess_source, common_header, &device);
         
-        let GpuBuffers::Log(buffers) = create_buffers(&tracking_params, &device, size, dims, fftplan.as_ref(), &mut pipelines) else {unreachable!()};
-        
-        let sigmas = if params.log_spacing{
-            let mut start = params.min_sigma.log(10.);
-            let end = params.max_sigma.log(10.);
-            let diff = (end - start) / params.n_sigma as my_dtype;
-            let mut out = (0..(params.n_sigma - 1)).map(|_| {let temp = start; start += diff; temp.powf(10.)}).collect::<Vec<_>>();
+        // let GpuBuffers::Log(buffers) = create_buffers(&tracking_params, &device, size, dims, fftplan.as_ref(), &mut pipelines) else {unreachable!()};
+        let buffers = LogGpuBuffers::create(
+            &tracking_params, &device, size, dims, &fftplan, &common_buffers, &mut pipelines,
+        );
+
+        let sigmas = if *log_spacing{
+            let mut start = min_sigma.log(10.);
+            let end = max_sigma.log(10.);
+            let diff = (end - start) / *n_sigma as my_dtype;
+            let mut out = (0..(n_sigma - 1)).map(|_| {let temp = start; start += diff; temp.powf(10.)}).collect::<Vec<_>>();
             out.push(start);
             out
-        } else{
-            let mut start = params.min_sigma;
-            let end = params.max_sigma;
-            let diff = (end - start) / params.n_sigma as my_dtype;
-            let mut out = (0..(params.n_sigma - 1)).map(|_| {let temp = start; start += diff; temp}).collect::<Vec<_>>();
+        } else {
+            let mut start = *min_sigma;
+            let end = *max_sigma;
+            let diff = (end - start) / *n_sigma as my_dtype;
+            let mut out = (0..(n_sigma - 1)).map(|_| {let temp = start; start += diff; temp}).collect::<Vec<_>>();
             out.push(start);
             out
         };
-        let flavor = GpuStateFlavor::Log(LogGpuState{
-            fftplan: fftplan.unwrap(),
+        let flavor = GpuStateFlavor::Log{
+            fftplan,
             buffers,
             sigmas,
-        });
+        };
         (flavor, pipelines, common_header)
     },
     };
@@ -849,17 +1098,17 @@ pub fn setup_state(
     
     
     let bind_group_entries = match flavor{
-    GpuStateFlavor::Trackpy(ref flavor) => {
-        let buffers = &flavor.buffers;
+    GpuStateFlavor::Trackpy{ref buffers, ..} => {
+        // let buffers = &flavor.buffers;
             // let bind_group_entries = 
             HashMap::from([
             ("preprocess_rows", vec![vec![
-                Some((0, &buffers.param_buffer)),
-                Some((1, &buffers.frame_buffer)),
+                Some((0, &common_buffers.param_buffer)),
+                Some((1, &common_buffers.frame_buffer)),
                 Some((3, &buffers.centers_buffer)),
             ]]),
             ("preprocess_cols", vec![vec![
-                Some((0, &buffers.param_buffer)),
+                Some((0, &common_buffers.param_buffer)),
                 Some((2, &buffers.centers_buffer)),
                 Some((3, &buffers.processed_buffer)), 
             ]]),
@@ -872,74 +1121,74 @@ pub fn setup_state(
             //     if tracking_params.characterize {Some((6, &buffers.result_buffer))} else {None},
             // ]),
             ("max_rows", vec![vec![
-                Some((0, &buffers.param_buffer)),
+                Some((0, &common_buffers.param_buffer)),
                 Some((1, &buffers.processed_buffer)), 
                 Some((2, &buffers.max_rows)),
             ]]),
             ("extract_max", vec![vec![
-                Some((0, &buffers.param_buffer)),
+                Some((0, &common_buffers.param_buffer)),
                 Some((1, &buffers.processed_buffer)), 
                 Some((2, &buffers.max_rows)),
-                Some((3, &buffers.atomic_buffer)),
-                Some((4, &buffers.particles_buffer))
+                Some((3, &common_buffers.atomic_buffer)),
+                Some((4, &common_buffers.particles_buffer))
             ]]),
             ("walk", vec![vec![
-                Some((0, &buffers.param_buffer)),
+                Some((0, &common_buffers.param_buffer)),
                 Some((1, &buffers.processed_buffer)), 
-                Some((2, &buffers.particles_buffer)),
-                Some((3, &buffers.atomic_buffer)),
-                Some((4, &buffers.atomic_filtered_buffer)),
-                Some((5, &buffers.result_buffer)),
-                Some((6, &buffers.frame_buffer)),
+                Some((2, &common_buffers.particles_buffer)),
+                Some((3, &common_buffers.atomic_buffer)),
+                Some((4, &common_buffers.atomic_filtered_buffer)),
+                Some((5, &common_buffers.result_buffer)),
+                Some((6, &common_buffers.frame_buffer)),
                 // if tracking_params.varcheck.is_some() {Some((6, &buffers.frame_buffer))} else {None},
             ]]),
 
             ("characterize", vec![vec![
-                Some((0, &buffers.param_buffer)),
+                Some((0, &common_buffers.param_buffer)),
                 Some((1, &buffers.processed_buffer)), 
-                Some((2, &buffers.frame_buffer)),
-                Some((3, &buffers.atomic_filtered_buffer)),
-                Some((4, &buffers.result_buffer)),
+                Some((2, &common_buffers.frame_buffer)),
+                Some((3, &common_buffers.atomic_filtered_buffer)),
+                Some((4, &common_buffers.result_buffer)),
             ]]),
                 
         ])
     },
 
-    GpuStateFlavor::Log(ref flavor) => {
-        let buffers = &flavor.buffers;
+    GpuStateFlavor::Log{ref buffers, ref fftplan, ..} => {
+        // let buffers = &flavor.buffers;
         HashMap::from([
             ("init_gauss", 
                 buffers.filter_buffers.iter().map(|(buffer)|{
                     vec![
-                        Some((0, &flavor.fftplan.gpu_side_params)),
+                        Some((0, &fftplan.gpu_side_params)),
                         Some((1, &buffer.0)),
                     ]
                 }).collect()),
             
             ("logspace_max", (0..3).map(|i| {
                 vec![
-                    Some((0, &flavor.fftplan.gpu_side_params)),
-                    Some((1, &buffers.param_buffer)),
+                    Some((0, &fftplan.gpu_side_params)),
+                    Some((1, &common_buffers.param_buffer)),
                     Some((2, &buffers.logspace_buffers[(i-1) % 3].0)),
                     Some((3, &buffers.logspace_buffers[i].0)),
                     Some((4, &buffers.logspace_buffers[(i+1) % 3].0)),
-                    Some((5, &buffers.atomic_buffer)),
-                    Some((6, &buffers.particles_buffer)),
+                    Some((5, &common_buffers.atomic_buffer)),
+                    Some((6, &common_buffers.particles_buffer)),
                     Some((7, &buffers.global_max)),
                     ]}).collect::<Vec<_>>()),
             
             ("walk", buffers.logspace_buffers.iter().map(|(tup)| {
                 let logspace_buffer = &tup.0;
             vec![
-                Some((0, &buffers.param_buffer)),
+                Some((0, &common_buffers.param_buffer)),
                 Some((1, logspace_buffer)), 
-                Some((2, &buffers.particles_buffer)),
-                Some((3, &buffers.atomic_buffer)),
-                Some((4, &buffers.atomic_filtered_buffer)),
-                Some((5, &buffers.result_buffer)),
-                Some((6, &buffers.frame_buffer)),
+                Some((2, &common_buffers.particles_buffer)),
+                Some((3, &common_buffers.atomic_buffer)),
+                Some((4, &common_buffers.atomic_filtered_buffer)),
+                Some((5, &common_buffers.result_buffer)),
+                Some((6, &common_buffers.frame_buffer)),
                 // if tracking_params.varcheck.is_some() {Some((6, &buffers.frame_buffer))} else {None},
-                Some((7, &flavor.fftplan.gpu_side_params)),
+                Some((7, &fftplan.gpu_side_params)),
             ]}).collect::<Vec<_>>()),
 
             // ("characterize", )
@@ -1034,6 +1283,7 @@ pub fn setup_state(
         device,
         queue,
         passes,
+        common_buffers,
         // bind_groups,
         // pipelines,
         pic_byte_size: size,

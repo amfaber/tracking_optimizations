@@ -1,9 +1,21 @@
 // #[cfg(feature = "python")]
+
 use pyo3::{prelude::*, types::PyDict};
 // #[cfg(feature = "python")]
 use numpy::{IntoPyArray, PyReadonlyArray3, PyReadonlyArray2, PyArray2, PyArray1, PyArrayDyn, PyArray3};
 
-
+macro_rules! not_implemented {
+    ($name:ident) => {
+        if $name.is_some(){
+            panic!("{} is not implemented", stringify!($name));
+        }
+    };
+    
+    ($name:ident, $($names:ident), +) => {
+        not_implemented!($name);
+        not_implemented!($($names), +);
+    };
+}
 
 // #[cfg(feature = "python")]
 macro_rules! make_args {
