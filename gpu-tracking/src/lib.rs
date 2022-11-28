@@ -10,6 +10,7 @@ pub mod slice_wrapper;
 pub type my_dtype = f32;
 pub mod gpu_setup;
 pub mod linking;
+pub mod utils;
 // #[cfg(feature = "python")]
 // pub mod python_bindings;
 use linking::FrameSubsetter;

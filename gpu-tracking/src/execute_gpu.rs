@@ -10,11 +10,13 @@ use std::{collections::VecDeque, time::Instant, sync::mpsc::Sender, path::Path, 
 use wgpu::{Buffer, SubmissionIndex};
 use crate::{kernels, into_slice::IntoSlice,
     gpu_setup::{
-    self, GpuState, ParamStyle, TrackingParams, GpuStateFlavor, any_as_u8_slice, inspect_buffers
+    self, GpuState, ParamStyle, TrackingParams, GpuStateFlavor
 }, linking::{
     Linker, FrameSubsetter
 }, decoderiter::{
     IterDecoder, self
+}, utils::{
+    any_as_u8_slice, inspect_buffers,
 }};
 use kd_tree::{self, KdPoint};
 use ndarray_stats::{QuantileExt, MaybeNanExt};
@@ -100,8 +102,6 @@ fn submit_work(
     
     encoder.copy_buffer_to_buffer(staging_buffer, 0,
         &common_buffers.frame_buffer, 0, state.pic_byte_size);
-    
-    
 
     match state.flavor{
         GpuStateFlavor::Trackpy{ ref order, .. } => {
@@ -141,8 +141,8 @@ fn submit_work(
             
         },
         GpuStateFlavor::Log{ ref buffers, ref sigmas, .. } => {
-            // let buffers = &flavor.buffers;
             
+            /* fft approach
             let (pad_raw, push_constants) = &buffers.raw_padded.1;
             pad_raw.execute(&mut encoder, bytemuck::cast_slice(push_constants));
 
@@ -209,6 +209,53 @@ fn submit_work(
 
             encoder.copy_buffer_to_buffer(&buffers.global_max, 0, staging_buffer, 4+state.pic_byte_size, 4);
             encoder.clear_buffer(&buffers.global_max, 0, None);
+            */
+            
+
+            encoder.clear_buffer(&buffers.logspace_buffers[2].0, 0, None);
+            
+            let n_sigma = buffers.filter_buffers.len();
+            let mut iterator = sigmas.iter().enumerate();
+            
+            let (i, sigma) = iterator.next().unwrap();
+            let modder = buffers.logspace_buffers.len();
+            let convolution = &buffers.logspace_buffers[i % modder].3;
+            convolution.execute(&mut encoder, bytemuck::cast_slice(&[*sigma]));
+            dbg!(sigmas);
+            
+            let mut edge = -1;
+            
+            for (i, sigma) in iterator{
+                let convolution = &buffers.logspace_buffers[i % modder].3;
+                
+                convolution.execute(&mut encoder, bytemuck::cast_slice(&[*sigma]));
+                
+                
+                // let find_max = &state.passes["logspace_max"][(i-1) % 3];
+                // let push_constants_tuple = (edge, *sigma);
+                // let push_constants = unsafe{ any_as_u8_slice(&push_constants_tuple) };
+                // find_max.execute(&mut encoder, push_constants);
+                
+                // let walk = &state.passes["walk"][(i-1) % 3];
+                // walk.execute(&mut encoder, &[]);
+                // encoder.clear_buffer(&buffers.particles_buffer, 0, None);
+                // encoder.clear_buffer(&buffers.atomic_buffer, 0, None);
+                
+                edge = 0;
+            }
+
+            // let to_print = &buffers.logspace_buffers[i % 3].0;
+            let to_print = buffers.logspace_buffers.iter().map(|tup| &tup.0).collect::<Vec<_>>();
+            // to_print.as_slice()
+            inspect_buffers(to_print.as_slice(),
+                &common_buffers.staging_buffers[0],
+                &state.queue,
+                encoder,
+                &state.device,
+                // copy_size,
+                "testing");
+
+            
         }
     }
 

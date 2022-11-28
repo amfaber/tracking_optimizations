@@ -1,5 +1,5 @@
 #![allow(warnings)]
-use gpu_tracking::gpu_setup::Style;
+use gpu_tracking::gpu_setup::{ParamStyle};
 use ndarray::{Array2, s};
 use pollster::FutureExt;
 use std::io::Write;
@@ -8,7 +8,7 @@ use tiff::decoder::{Decoder, DecodingResult};
 use gpu_tracking::{
     execute_gpu::{self, execute_gpu, execute_ndarray},
     decoderiter::IterDecoder,
-    gpu_setup::{TrackingParams, LogParams, TrackpyParams}};
+    gpu_setup::{TrackingParams}};
 use futures;
 use futures_intrusive;
 pub type my_dtype = f32;
@@ -87,12 +87,12 @@ fn main() -> anyhow::Result<()> {
         // bg_radius: Some((60 as f32).sqrt()),
         // gap_radius: Some(0.5),
         // varcheck: Some(1.),
-        style: Style::Log(LogParams{
+        style: ParamStyle::Log{
             min_sigma: 10.,
             max_sigma: 20.,
             n_sigma: 10,
             log_spacing: false,
-        }),
+        },
         ..Default::default()
     };
     // let mut decoderiter = match debug {
