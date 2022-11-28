@@ -221,7 +221,7 @@ fn submit_work(
             let modder = buffers.logspace_buffers.len();
             let convolution = &buffers.logspace_buffers[i % modder].3;
             convolution.execute(&mut encoder, bytemuck::cast_slice(&[*sigma]));
-            dbg!(sigmas);
+            // dbg!(sigmas);
             
             let mut edge = -1;
             
@@ -231,10 +231,10 @@ fn submit_work(
                 convolution.execute(&mut encoder, bytemuck::cast_slice(&[*sigma]));
                 
                 
-                // let find_max = &state.passes["logspace_max"][(i-1) % 3];
-                // let push_constants_tuple = (edge, *sigma);
-                // let push_constants = unsafe{ any_as_u8_slice(&push_constants_tuple) };
-                // find_max.execute(&mut encoder, push_constants);
+                let find_max = &state.passes["logspace_max"][(i-1) % 3];
+                let push_constants_tuple = (edge, *sigma);
+                let push_constants = unsafe{ any_as_u8_slice(&push_constants_tuple) };
+                find_max.execute(&mut encoder, push_constants);
                 
                 // let walk = &state.passes["walk"][(i-1) % 3];
                 // walk.execute(&mut encoder, &[]);

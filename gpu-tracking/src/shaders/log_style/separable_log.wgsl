@@ -33,14 +33,17 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   var u: i32;
   var v: i32;
   var u_stride: i32;
+  var u_bound: i32;
   if dim == 0u {
     u = i32(global_id.x);
     v = i32(global_id.y);
     u_stride = params.pic_ncols;
+    u_bound = params.pic_nrows;
   } else {
     u = i32(global_id.y);
     v = i32(global_id.x) * params.pic_ncols;
     u_stride = 1;
+    u_bound = params.pic_ncols;
   }
 
   // var gauss_norm = 0.0;
@@ -48,7 +51,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   for (var i: i32 = -rint; i <= rint; i = i + 1) {
     let x = f32(i);
     let pic_u = u + i;
-    if (pic_u < 0) || (pic_u >= i32(params.pic_ncols)) {
+    if (pic_u < 0) || (pic_u >= u_bound) {
       continue;
     }
     let pic_idx = pic_idx_base + i * u_stride;
@@ -64,12 +67,15 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   }
   
   let sqrt2pi = 2.5066282746310002;
-  var norm = sqrt2pi * sigma;
+  var norm: f32;
   if dim == diff_dim {
-    norm *= sigma2 * sigma2;
+    norm = 1./(sqrt2pi*sigma*sigma2);
+    // norm *= sigma2 * sigma2;
+  } else {
+    norm = 1./(sqrt2pi*sigma);
   }
   // let norm = 1.;
-  let result = gauss_sum/norm;
+  let result = gauss_sum * norm;
   if dim == 0u && diff_dim == 0u{
     final_output[pic_idx_base] = 0.0;
   }

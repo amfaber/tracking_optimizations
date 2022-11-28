@@ -308,7 +308,7 @@ impl LogGpuBuffers{
             mapped_at_creation: false,
         });
 
-        let logspace_buffers: Vec<_> = (0..10)
+        let logspace_buffers: Vec<_> = (0..3)
         .map(|_|{
             // let log_space_buffer = fftplan.create_buffer(device, false);
             let log_space_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -581,14 +581,14 @@ pub fn setup_state(
             let sigmas = if *log_spacing{
                 let mut start = min_sigma.log(10.);
                 let end = max_sigma.log(10.);
-                let diff = (end - start) / *n_sigma as my_dtype;
+                let diff = (end - start) / (*n_sigma - 1) as my_dtype;
                 let mut out = (0..(n_sigma - 1)).map(|_| {let temp = start; start += diff; temp.powf(10.)}).collect::<Vec<_>>();
                 out.push(start);
                 out
             } else {
                 let mut start = *min_sigma;
                 let end = *max_sigma;
-                let diff = (end - start) / *n_sigma as my_dtype;
+                let diff = (end - start) / (*n_sigma - 1) as my_dtype;
                 let mut out = (0..(n_sigma - 1)).map(|_| {let temp = start; start += diff; temp}).collect::<Vec<_>>();
                 out.push(start);
                 out
@@ -814,4 +814,3 @@ fn make_pipelines_from_source<F: Fn(&str, &[u32; 3], &str) -> String>(
 
     output
 }
-
