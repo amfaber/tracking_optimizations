@@ -1,20 +1,3 @@
-// struct params{
-//   pic_nrows: i32,
-//   pic_ncols: i32,
-//   preprocess_nrows: i32,
-//   preprocess_ncols: i32,
-//   sigma2: f32,
-//   // constant_nrows: i32,
-//   // constant_ncols: i32,
-//   circle_nrows: i32,
-//   circle_ncols: i32,
-//   dilation_nrows: i32,
-//   dilation_ncols: i32,
-//   max_iterations: u32,
-//   threshold: f32,
-//   minmass: f32,
-// }
-
 struct ParticleLocation{
     x: i32,
     y: i32,
@@ -48,8 +31,8 @@ var<storage, read_write> results: array<f32>;
 @group(0) @binding(6)
 var<storage, read> raw_frame: array<f32>;
 
-//_feat_LoG @group(0) @binding(7)
-//_feat_LoG var<uniform> shape: Shape;
+// //_feat_LoG @group(0) @binding(7)
+// //_feat_LoG var<uniform> shape: Shape;
 
 
 fn get_center(u: i32, v: i32, kernel_rows: i32, kernel_cols: i32, transform: vec2<i32>) -> vec3<f32>{
@@ -73,8 +56,8 @@ fn get_center(u: i32, v: i32, kernel_rows: i32, kernel_cols: i32, transform: vec
       if (pic_u < 0 || pic_u >= params.pic_nrows || pic_v < 0 || pic_v >= params.pic_ncols) {
         continue;
       }
-      //_feat_LoG let pic_u = (pic_u + transform[0]) % i32(shape.nrows);
-      //_feat_LoG let pic_v = (pic_v + transform[1]) % i32(shape.ncols);
+      // //_feat_LoG let pic_u = (pic_u + transform[0]) % i32(shape.nrows);
+      // //_feat_LoG let pic_v = (pic_v + transform[1]) % i32(shape.ncols);
       let pic_idx = pic_u * params.pic_ncols + pic_v;
       let data = processed_buffer[pic_idx];
 
@@ -205,7 +188,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   let picuv = vec2<i32>(particle_location.x, particle_location.y);
 
   let pad_offset = vec2<i32>(0, 0);
-  //_feat_LoG let pad_offset = vec2<i32>((i32(shape.nrows) - params.pic_nrows) / 2, (i32(shape.ncols) - params.pic_ncols));
+  // //_feat_LoG let pad_offset = vec2<i32>((i32(shape.nrows) - params.pic_nrows) / 2, (i32(shape.ncols) - params.pic_ncols));
 
   let r = particle_location.r;
   let log_space = particle_location.log_space;
@@ -225,8 +208,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   //_feat_varcheck }
   //_feat_varcheck let varcheck = variance_check(final_coords[0], final_coords[1], kernel_rows, kernel_cols);
 
-
-  if (final_coords[2] > params.minmass && varcheck) {
+  let minmass = params.minmass;
+  // let minmass = -10000000.;
+  if (final_coords[2] > minmass && varcheck) {
     let part_id = atomicAdd(&n_particles_filtered, 1u);
     let n_res = 9u;
     results[part_id * n_res + 0u] = final_coords[0];

@@ -33,11 +33,17 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let nrows = shape.nrows;
     let ncols = shape.ncols;
     
-    let sqrt2pi = 2.5066282746310002;
+    // let sqrt2pi = 2.5066282746310002;
+    let pi = 3.141592653589793;
+
     let x = f32(i - i32(nrows)/2);
     let y = f32(j - i32(ncols)/2);
+    let r2 = x*x + y*y;
+    let sigma2 = sigma*sigma;
+
     let idx = iu32 * ncols + ju32;
-    let gauss_evaluation = 1./(sigma*sqrt2pi)*exp(-0.5*(x*x+y*y) / (sigma * sigma));
-    buffer[idx] = vec2<f32>(gauss_evaluation, 0.);
+    // let log = 1./(sigma*sqrt2pi)*exp(-0.5*(x*x+y*y) / (sigma * sigma));
+    let log = 1./(pi*sigma2)*(1.-r2/(2.*sigma2))*exp(-0.5*r2 / sigma2);
+    buffer[idx] = vec2<f32>(log, 0.);
 
 }

@@ -5,3 +5,5 @@ idk/*
 *.vsi
 *.oex
 *.pyd
+*.pyc
+*.npy

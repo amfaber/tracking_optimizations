@@ -2,17 +2,19 @@ use bencher::black_box;
 use bytemuck::{Pod, Zeroable};
 use futures_intrusive;
 type my_dtype = f32;
+type my_dtype_u = u32;
 use image::Frame;
 use ndarray::{Array2, ArrayView3, Axis, ArrayView, Array3, ArrayView2};
+use num_traits::Pow;
 use pollster::FutureExt;
 use tiff::decoder::Decoder;
-use std::{collections::VecDeque, time::Instant, sync::mpsc::Sender, path::Path, fs::File, io::Write};
+use std::{collections::{VecDeque, HashMap}, time::Instant, sync::mpsc::Sender, path::Path, fs::File, io::Write, marker::PhantomData, f32::consts::PI};
 use wgpu::{Buffer, SubmissionIndex};
 use crate::{kernels, into_slice::IntoSlice,
     gpu_setup::{
     self, GpuState, ParamStyle, TrackingParams, GpuStateFlavor
 }, linking::{
-    Linker, FrameSubsetter
+    Linker, FrameSubsetter, ReturnDistance
 }, decoderiter::{
     IterDecoder, self
 }, utils::{
@@ -85,7 +87,6 @@ fn submit_work(
     debug: bool,
     positions: Option<Vec<[my_dtype; 2]>>,
     ) -> SubmissionIndex {
-    
     // let atomic_filtered_buffer = state.common;
     // let frame_buffer = &state.common_buffers.frame_buffer;
     // let result_buffer = &state.common_buffers.result_buffer;
@@ -140,122 +141,128 @@ fn submit_work(
             }
             
         },
-        GpuStateFlavor::Log{ ref buffers, ref sigmas, .. } => {
+        GpuStateFlavor::Log{ ref buffers, ref radii, .. } => {
             
-            /* fft approach
-            let (pad_raw, push_constants) = &buffers.raw_padded.1;
-            pad_raw.execute(&mut encoder, bytemuck::cast_slice(push_constants));
+            state.passes["preprocess_rows"][0].execute(&mut encoder, &[]);
+            state.passes["preprocess_cols"][0].execute(&mut encoder, &[]);
+            
+            // let fft = false;
+            // if fft{
+            //     let modder = buffers.logspace_buffers.len();
 
-
-            let fft_raw = &buffers.raw_padded.2;
-            fft_raw.execute(&mut encoder, false, false);
-
-            encoder.clear_buffer(&buffers.logspace_buffers[2].0, 0, None);
-            
-            let n_sigma = buffers.filter_buffers.len();
-            let mut iterator = 0..n_sigma;
-            
-            let i = iterator.next().unwrap();
-            let convolution = &buffers.logspace_buffers[i % 3].1[i];
-            convolution.execute(&mut encoder, &[]);
-            
-            let ifft = &buffers.logspace_buffers[i % 3].2;
-            ifft.execute(&mut encoder, true, true);
-            let mut edge: i32 = -1;
-            
-            for i in iterator{
-                let convolution = &buffers.logspace_buffers[i % 3].1[i];
-                convolution.execute(&mut encoder, &[]);
+            //     let (pad_raw, push_constants) = &buffers.raw_padded.1;
+            //     pad_raw.execute(&mut encoder, bytemuck::cast_slice(push_constants));
+    
+            //     let fft_raw = &buffers.raw_padded.2;
+            //     fft_raw.execute(&mut encoder, false, false);
+    
+            //     encoder.clear_buffer(&buffers.logspace_buffers[2].0, 0, None);
                 
-                let ifft = &buffers.logspace_buffers[i % 3].2;
-                ifft.execute(&mut encoder, true, true);
+            //     let n_sigma = buffers.filter_buffers.len();
+            //     let mut iterator = 0..n_sigma;
                 
-                let find_max = &state.passes["logspace_max"][(i-1) % 3];
-                let sigma = sigmas[i-1];
-                let push_constants_tuple = (edge, sigma);
-                let push_constants = unsafe{ any_as_u8_slice(&push_constants_tuple) };
-                find_max.execute(&mut encoder, push_constants);
+            //     let i = iterator.next().unwrap();
+            //     let convolution = &buffers.logspace_buffers[i % modder].1[i];
+            //     convolution.execute(&mut encoder, &[]);
                 
-                // let walk = &state.passes["walk"][(i-1) % 3];
-                // walk.execute(&mut encoder, &[]);
-                // encoder.clear_buffer(&buffers.particles_buffer, 0, None);
-                // encoder.clear_buffer(&buffers.atomic_buffer, 0, None);
+            //     let ifft = &buffers.logspace_buffers[i % modder].2;
+            //     ifft.execute(&mut encoder, true, true);
+            //     let mut edge: i32 = -1;
                 
-                edge = 0;
-            }
-
-            encoder.clear_buffer(&buffers.logspace_buffers[n_sigma % 3].0, 0, None);
+            //     for i in iterator{
+            //         let convolution = &buffers.logspace_buffers[i % modder].1[i];
+            //         convolution.execute(&mut encoder, &[]);
+                    
+            //         let ifft = &buffers.logspace_buffers[i % modder].2;
+            //         ifft.execute(&mut encoder, true, true);
+                    
+            //         let find_max = &state.passes["logspace_max"][(i-1) % 3];
+            //         let sigma = sigmas[i-1];
+            //         let push_constants_tuple = (edge, sigma);
+            //         let push_constants = unsafe{ any_as_u8_slice(&push_constants_tuple) };
+            //         find_max.execute(&mut encoder, push_constants);
+                    
+            //         // let walk = &state.passes["walk"][(i-1) % 3];
+            //         // walk.execute(&mut encoder, &[]);
+            //         // encoder.clear_buffer(&buffers.particles_buffer, 0, None);
+            //         // encoder.clear_buffer(&buffers.atomic_buffer, 0, None);
+                    
+            //         edge = 0;
+            //     }
+    
+                
+            //     // encoder.clear_buffer(&buffers.logspace_buffers[n_sigma % modder].0, 0, None);
+                
+            //     edge = 1;
+                
+            //     let find_max = &state.passes["logspace_max"][(n_sigma - 1) % modder];
+            //     let sigma = sigmas[n_sigma - 1];
+            //     let push_constants_tuple = (edge, sigma);
+            //     let push_constants = unsafe{ any_as_u8_slice(&push_constants_tuple) };
+            //     find_max.execute(&mut encoder, push_constants);
+                
+            //     encoder.copy_buffer_to_buffer(&buffers.global_max, 0, staging_buffer, 4+state.pic_byte_size, 4);
+            //     encoder.clear_buffer(&buffers.global_max, 0, None);
+            // } else {
+                // encoder.clear_buffer(&buffers.logspace_buffers[2].0, 0, None);
+                
+            let n_radii = radii.len();
+            let mut iterator = radii.iter().enumerate();
             
-            
-            edge = 1;
-            
-            let find_max = &state.passes["logspace_max"][(n_sigma - 1) % 3];
-            let sigma = sigmas[n_sigma - 1];
-            let push_constants_tuple = (edge, sigma);
-            let push_constants = unsafe{ any_as_u8_slice(&push_constants_tuple) };
-            find_max.execute(&mut encoder, push_constants);
-
-            // let copy_size = flavor.fftplan.params.dims;
-            // let copy_size = (copy_size[0] * copy_size[1] * 8) as u64;
-            // let copy_size = 1670012;
-            // dbg!(&copy_size);
-            inspect_buffers(&[&common_buffers.particles_buffer, &common_buffers.atomic_buffer],
-            &common_buffers.staging_buffers[0],
-            &state.queue,
-            encoder,
-            &state.device,
-            // copy_size,
-            "testing");
-
-            encoder.copy_buffer_to_buffer(&buffers.global_max, 0, staging_buffer, 4+state.pic_byte_size, 4);
-            encoder.clear_buffer(&buffers.global_max, 0, None);
-            */
-            
-
-            encoder.clear_buffer(&buffers.logspace_buffers[2].0, 0, None);
-            
-            let n_sigma = buffers.filter_buffers.len();
-            let mut iterator = sigmas.iter().enumerate();
-            
-            let (i, sigma) = iterator.next().unwrap();
+            let (i, radius) = iterator.next().unwrap();
             let modder = buffers.logspace_buffers.len();
-            let convolution = &buffers.logspace_buffers[i % modder].3;
-            convolution.execute(&mut encoder, bytemuck::cast_slice(&[*sigma]));
+            let convolution = &buffers.logspace_buffers[i % modder].1;
+            let sigma = radius / (2 as my_dtype).sqrt();
+            convolution.execute(&mut encoder, bytemuck::cast_slice(&[sigma]));
             // dbg!(sigmas);
             
             let mut edge = -1;
             
-            for (i, sigma) in iterator{
-                let convolution = &buffers.logspace_buffers[i % modder].3;
-                
-                convolution.execute(&mut encoder, bytemuck::cast_slice(&[*sigma]));
-                
+            for (i, radius) in iterator{
+                let convolution = &buffers.logspace_buffers[i % modder].1;
+                let sigma = radius / (2 as my_dtype).sqrt();
+                // dbg!((&radius, &sigma));
+                convolution.execute(&mut encoder, bytemuck::cast_slice(&[sigma]));
                 
                 let find_max = &state.passes["logspace_max"][(i-1) % 3];
-                let push_constants_tuple = (edge, *sigma);
+                let prev_radius = radii[i-1];
+                let push_constants_tuple = (edge, prev_radius);
                 let push_constants = unsafe{ any_as_u8_slice(&push_constants_tuple) };
                 find_max.execute(&mut encoder, push_constants);
                 
-                // let walk = &state.passes["walk"][(i-1) % 3];
-                // walk.execute(&mut encoder, &[]);
-                // encoder.clear_buffer(&buffers.particles_buffer, 0, None);
-                // encoder.clear_buffer(&buffers.atomic_buffer, 0, None);
-                
+                let walk = &state.passes["walk"][(i-1) % 3];
+                walk.execute(&mut encoder, &[]);
+                encoder.clear_buffer(&common_buffers.particles_buffer, 0, None);
+                encoder.clear_buffer(&common_buffers.atomic_buffer, 0, None);
                 edge = 0;
             }
-
-            // let to_print = &buffers.logspace_buffers[i % 3].0;
-            let to_print = buffers.logspace_buffers.iter().map(|tup| &tup.0).collect::<Vec<_>>();
-            // to_print.as_slice()
-            inspect_buffers(to_print.as_slice(),
-                &common_buffers.staging_buffers[0],
-                &state.queue,
-                encoder,
-                &state.device,
-                // copy_size,
-                "testing");
-
             
+            edge = 1;
+            
+            let find_max = &state.passes["logspace_max"][(n_radii - 1) % modder];
+            let radius = radii[n_radii - 1];
+            let push_constants_tuple = (edge, radius);
+            let push_constants = unsafe{ any_as_u8_slice(&push_constants_tuple) };
+            find_max.execute(&mut encoder, push_constants);
+            
+            let walk = &state.passes["walk"][(n_radii - 1) % modder];
+            walk.execute(&mut encoder, &[]);
+            encoder.clear_buffer(&common_buffers.particles_buffer, 0, None);
+            encoder.clear_buffer(&common_buffers.atomic_buffer, 0, None);
+            // }
+            
+            // let to_print = buffers.logspace_buffers.iter().map(|tup| &tup.0).collect::<Vec<_>>();
+            // let to_print = vec![&common_buffers.particles_buffer, &common_buffers.atomic_buffer];
+            // let to_print = vec![&common_buffers.result_buffer, &common_buffers.atomic_filtered_buffer];
+            // let to_print = vec![&common_buffers.processed_buffer];
+            // inspect_buffers(to_print.as_slice(),
+            //     &common_buffers.staging_buffers[0],
+            //     &state.queue,
+            //     encoder,
+            //     &state.device,
+            //     // copy_size,
+            //     "testing");
+
         }
     }
 
@@ -292,6 +299,7 @@ fn get_work(
     circle_inds: &Vec<[i32; 2]>,
     dims: &[u32; 2],
     ) -> Option<(Vec<ResultRow>, usize)> {
+    println!("getting frame: {}", frame_index);
     let buffer_slice = finished_staging_buffer.slice(..);
     let (sender, receiver) = 
             futures_intrusive::channel::shared::oneshot_channel();
@@ -353,13 +361,141 @@ pub fn column_names(params: TrackingParams) -> Vec<(String, String)>{
     names.iter().map(|(name, t)| (name.to_string(), t.to_string())).collect()
 }
 
+pub struct PostProcessKernels<F1, F2>
+where F1: Fn(my_dtype) -> (Vec<[i32; 2]>, usize), F2: Fn(my_dtype) -> Vec<[i32; 2]>{
+    // r2: Array2<my_dtype>,
+    // sin: Array2<my_dtype>,
+    // cos: Array2<my_dtype>,
+    
+    raw_sig_inds: FloatMemoizer<(Vec<[i32; 2]>, usize), F1>,
+    raw_bg_inds: FloatMemoizer<Vec<[i32; 2]>, F2>,
+}
 
-pub struct PostProcessKernels{
-    r2: Array2<my_dtype>,
-    sin: Array2<my_dtype>,
-    cos: Array2<my_dtype>,
-    raw_sig_inds: Option<Vec<[i32; 2]>>,
-    raw_bg_inds: Option<Vec<[i32; 2]>>,
+struct FloatMemoizer<O, F>
+where F: Fn(my_dtype) -> O{
+    map: HashMap<my_dtype_u, O>,
+    function: Box<F>,
+}
+
+impl<O, F> FloatMemoizer<O, F>
+where F: Fn(my_dtype) -> O{
+    pub fn new(function: F) -> Self{
+        Self{
+            map: HashMap::new(),
+            function: Box::new(function),
+        }
+    }
+
+    pub fn call(&mut self, args: my_dtype) -> &O{
+        self.map.entry(args.to_bits()).or_insert((self.function)(args))
+    }
+}
+
+
+fn filter_close_trackpy(results: &Vec<ResultRow>, separation: my_dtype) -> Vec<ResultRow>{
+    
+    let tree = kd_tree::KdIndexTree::build_by_ordered_float(&results);
+    let output = results.iter().enumerate()
+    .map(|(idx, query)| {
+        let mass = query.mass;
+        let neighbors = tree.within_radius_rd(query, separation);
+        // let neighbors = tree.within_radius(query, tracking_params.separation as my_dtype);
+        let mut keep_point = true;
+        for (&neighbor_idx, distance) in neighbors{
+            let neighbor_mass = results[neighbor_idx].mass;
+            if neighbor_idx != idx{
+                if mass < neighbor_mass{
+                    keep_point = false;
+                    break;
+                } else if mass == neighbor_mass{
+                    if idx > neighbor_idx{
+                        keep_point = false;
+                        break;
+                    }
+                }
+            }
+        }
+        if keep_point{
+            Some(*query)
+        } else {
+            None
+        }
+    }).flatten().collect::<Vec<_>>();
+
+    return output
+}
+
+fn prune_blobs_log(results: &Vec<ResultRow>, overlap_threshold: my_dtype) -> Vec<ResultRow> {
+
+    fn disk_overlap(d: my_dtype, r1: my_dtype, r2: my_dtype) -> my_dtype{
+        
+        fn make_acos(d: my_dtype, r1: my_dtype, r2: my_dtype, r1s: my_dtype, r2s: my_dtype) -> my_dtype{
+            let mut ratio: my_dtype = (d.pow(2) + r1s - r2s) / (2f32 * d * r1);
+            ratio = ratio.clamp(-1., 1.);
+            return ratio.acos()
+        }
+        let r1s = r1.pow(2);
+        let r2s = r2.pow(2);
+        let acos1 = make_acos(d, r1, r2, r1s, r2s);
+        let acos2 = make_acos(d, r2, r1, r2s, r1s);
+
+        let a = -d + r2 + r1;
+        let b =  d - r2 + r1;
+        let c =  d + r2 - r1;
+        let d =  d + r2 + r1;
+        let area = r1s + acos1 + r2s * acos2 - 0.5 * (a * b * c * d).abs().sqrt();
+
+        let overlap = area / (PI * r1s.min(r2s));
+        return overlap
+    }
+
+    fn blob_overlap(blob1: &ResultRow, blob2: &ResultRow, distance: my_dtype) -> my_dtype{
+        if distance > blob1.r + blob2.r{
+            return 0.
+        } else if distance <= (blob1.r - blob2.r).abs() {
+            return 1.
+        } else {
+            return disk_overlap(distance, blob1.r, blob2.r)
+        }
+    }
+    let tree = kd_tree::KdIndexTree::build_by_ordered_float(&results);
+    // let mut output = Vec::new();
+
+    let mut to_keep: Vec<_> = results.iter().map(|ele| Some(ele)).collect();
+
+    // This is pretty much a copy-paste from skimage's feature.blob's _prune_blobs.
+    // It is not invariant to the order of the blobs, which in turn can make it non-deterministic
+    // as we have no guarantees on the ordering of the blobs received from the gpu.
+    // It can be made deterministic by first sorting the results.
+
+    for idx in 0..results.len(){
+        let query = match to_keep[idx]{
+            None => continue,
+            Some(query) => query,
+        };
+
+        let query_radius = query.r * 2.;
+        let neighbors = tree.within_radius_rd(query, query_radius);
+        for (&neighbor_idx, distance) in neighbors{
+            if neighbor_idx == idx{
+                continue
+            }
+            let neighbor = match to_keep[neighbor_idx]{
+                Some(neighbor) => neighbor,
+                None => continue,
+            };
+            if blob_overlap(query, neighbor, distance) > overlap_threshold{
+                if query.r > neighbor.r{
+                    to_keep[neighbor_idx] = None
+                } else {
+                    to_keep[idx] = None
+                }
+            }
+        }
+    }
+
+    let output: Vec<_> = to_keep.into_iter().flatten().cloned().collect();
+    output
 }
 
 fn post_process<A: IntoSlice>(
@@ -370,7 +506,7 @@ fn post_process<A: IntoSlice>(
     linker: Option<&mut Linker>,
     neighborhoods: Option<Vec<f32>>,
     neighborhood_size: usize,
-    kernels: Option<&PostProcessKernels>,
+    kernels: Option<&mut PostProcessKernels<impl Fn(my_dtype) -> (Vec<[i32; 2]>, usize), impl Fn(my_dtype) -> Vec<[i32; 2]>>>,
     middle_most: usize,
     frame: Option<A>,
     dims: &[u32; 2],
@@ -378,38 +514,28 @@ fn post_process<A: IntoSlice>(
     ) -> () {
     
     let N = results.len();
-    let relevant_points = match tracking_params.filter_close{
-        true => {
-            let tree = kd_tree::KdIndexTree::build_by_ordered_float(&results);
-            results.iter().enumerate()
-            .map(|(idx, query)| {
-                let mass = query.mass;
-                let neighbors = tree.within_radius(query, tracking_params.separation as my_dtype);
-                let mut keep_point = true;
-                for &neighbor_idx in neighbors{
-                    let neighbor_mass = results[neighbor_idx].mass;
-                    if neighbor_idx != idx{
-                        if mass < neighbor_mass{
-                            keep_point = false;
-                            break;
-                        } else if mass == neighbor_mass{
-                            if idx > neighbor_idx{
-                                keep_point = false;
-                                break;
-                            }
-                        }
-                    }
-                }
-                if keep_point{
-                    Some(*query)
-                } else {
-                    None
-                }
-            }).flatten().collect::<Vec<_>>()
+    let relevant_points = match tracking_params.style{
+        ParamStyle::Trackpy{filter_close, separation, ..} => {
+            if filter_close{
+                filter_close_trackpy(&results, separation as my_dtype)
+            } else {
+                results
+            }
         },
-        false => {
-            results
-        }
+        ParamStyle::Log{ overlap_threshold, ..} => {
+            if overlap_threshold > 0.{
+                prune_blobs_log(&results, overlap_threshold)
+                
+            } else {
+                results
+            }
+        },
+        // true => {
+        //     filter_close_trackpy(&results, tracking_params.separation as my_dtype)
+        // },
+        // false => {
+        //     results
+        // }
     };
     
 
@@ -429,37 +555,86 @@ fn post_process<A: IntoSlice>(
     // });
 
     let raw_properties = frame.map(|inner| {
+        
         let frame = inner.into_slice();
         let dims = [dims[0] as usize, dims[1] as usize];
         let frame = ArrayView::from_shape(dims, frame).unwrap();
         let kernels = kernels.unwrap();
-        let raw_sig_inds = kernels.raw_sig_inds.as_ref().unwrap();
-        let raw_bg_inds = kernels.raw_bg_inds.as_ref();
-        let mut sig = Vec::with_capacity(N * raw_sig_inds.len());
-        let mut bg = raw_bg_inds.map(|_| Vec::with_capacity(N * raw_sig_inds.len()));
-        
+
+        // let raw_sig_inds = kernels.raw_sig_inds.as_ref().unwrap();
+        // let raw_bg_inds = kernels.raw_bg_inds.as_ref();
+        let (mut raw_sig_inds, mut raw_bg_inds) = match tracking_params.style{
+            ParamStyle::Trackpy{ .. } => {
+                let radius = tracking_params.sig_radius.unwrap();
+                let (raw_sig_inds, _) = kernels.raw_sig_inds.call(radius);
+                let raw_bg_inds = kernels.raw_bg_inds.call(radius);
+                (Some(raw_sig_inds), Some(raw_bg_inds))
+            },
+            ParamStyle::Log { .. } => {
+                (None, None)
+            }
+        };
+        // let mut sig = Vec::with_capacity(N * raw_sig_inds.len());
+        // let mut bg = raw_bg_inds.map(|_| Vec::with_capacity(N * raw_sig_inds.len()));
+        // let mut bg = Vec::with_capacity(N * raw_bg_inds.len());
+        let mut sig = Vec::new();
+        let mut bg = Vec::new();
+
+        let mut sig_sums = Vec::new();
+        let mut bg_medians = Vec::new();
+        let mut correcteds = Vec::new();
+
+
         for row in relevant_points.iter() {
+            match tracking_params.style{
+                ParamStyle::Trackpy{ .. } => {},
+                ParamStyle::Log{ .. } => {
+                    let (inner_raw_sig_inds, _) = kernels.raw_sig_inds.call(row.r);
+                    let inner_raw_bg_inds = kernels.raw_bg_inds.call(row.r);
+                    raw_sig_inds = Some(inner_raw_sig_inds);
+                    raw_bg_inds = Some(inner_raw_bg_inds);
+                },
+            }
+            let raw_sig_inds = raw_sig_inds.unwrap();
+            let raw_bg_inds = raw_bg_inds.unwrap();
             let middle_index = [row.x.round() as i32, row.y as i32];
             for ind in raw_sig_inds{
                 let curidx = [(middle_index[0] + ind[0]) as usize, (middle_index[1] + ind[1]) as usize];
-                sig.push(*frame.get(curidx).unwrap_or(&my_dtype::NAN));
+                match frame.get(curidx){
+                    Some(val) => {
+                        sig.push(*val);
+                    },
+                    None => {}
+                };
+                // sig.push(*frame.get(curidx).unwrap_or(&my_dtype::NAN));
             }
-            bg.as_mut().map(|bg|{
-                for ind in raw_bg_inds.unwrap(){
-                    let curidx = [(middle_index[0] + ind[0]) as usize, (middle_index[1] + ind[1]) as usize];
-                    bg.push(*frame.get(curidx).unwrap_or(&my_dtype::NAN));
-                }
-            });
+            // bg.as_mut().map(|bg|{
+            for ind in raw_bg_inds{
+                let curidx = [(middle_index[0] + ind[0]) as usize, (middle_index[1] + ind[1]) as usize];
+                match frame.get(curidx){
+                    Some(val) => {
+                        bg.push(*val);
+                    },
+                    None => {}
+                };
+            }
+            let sig_sum: my_dtype = sig.iter().sum();
+            bg.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let bg_median = if bg.len() == 0{
+                0.
+            } else {
+                bg[bg.len()/2]
+            };
+            let corrected = sig_sum - bg_median * raw_sig_inds.len() as f32;
+
+            sig_sums.push(sig_sum);
+            bg_medians.push(bg_median);
+            correcteds.push(corrected);
+            sig.clear();
+            bg.clear();
         }
-        let sig = ndarray::Array::from_shape_vec((relevant_points.len(), raw_sig_inds.len()), sig).unwrap();
-        let bg = bg.map(|bg| ndarray::Array::from_shape_vec((relevant_points.len(), raw_bg_inds.unwrap().len()), bg).unwrap());
-        let sig_sums = sig.fold_axis_skipnan(Axis(1),
-        noisy_float::NoisyFloat::new(0 as my_dtype), |&acc, &next|{ acc + next }).mapv(|x| x.raw());
-        let bg_medians = bg.map(|mut bg|{
-            bg.quantile_axis_skipnan_mut(Axis(1), noisy_float::types::n64(0.5), &ndarray_stats::interpolate::Linear).unwrap()});
-        let corrected = bg_medians.as_ref().map(|bg_medians|{
-             &sig_sums - bg_medians * raw_sig_inds.len() as f32});
-        (sig_sums, bg_medians, corrected)
+        
+        (sig_sums, bg_medians, correcteds)
     });
 
     let part_ids = linker.map(|linker| linker.advance(&relevant_points));
@@ -474,8 +649,10 @@ fn post_process<A: IntoSlice>(
         part_ids.as_ref().map(|part_ids| output.push(part_ids[idx] as my_dtype));
         raw_properties.as_ref().map(|raw_properties|{
             output.push(raw_properties.0[idx]);
-            raw_properties.1.as_ref().map(|bg_medians| output.push(bg_medians[idx]));
-            raw_properties.2.as_ref().map(|corrected| output.push(corrected[idx]));
+            output.push(raw_properties.1[idx]);
+            output.push(raw_properties.2[idx]);
+            // raw_properties.1.as_ref().map(|bg_medians| output.push(bg_medians[idx]));
+            // raw_properties.2.as_ref().map(|corrected| output.push(corrected[idx]));
         });
     }
 }
@@ -498,11 +675,13 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
     
     let state = gpu_setup::setup_state(&tracking_params, dims, debug, pos_iter.is_some());
 
-    let (circle_inds, middle_most) = kernels::circle_inds((tracking_params.diameter as i32 / 2) as f32);
+    let (circle_inds, middle_most) = kernels::circle_inds((0 as i32 / 2) as f32);
+    // let (circle_inds, middle_most) = kernels::circle_inds((tracking_params.diameter as i32 / 2) as f32);
     let mut wait_gpu_time = if verbosity > 0 { Some(0.) } else {None};
 
     let (inp_sender,
-        inp_receiver) = std::sync::mpsc::channel::<channel_type>();
+        inp_receiver) = std::sync::mpsc::channel();
+        // inp_receiver) = std::sync::mpsc::channel::<channel_type>();
     
     let (frame_sender,
         frame_receiver) = std::sync::mpsc::channel::<Option<A>>();
@@ -510,20 +689,28 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
     let output = std::thread::scope(|scope|{
         let handle = {
             let neighborhood_size = circle_inds.len();
-            let radius = tracking_params.diameter as i32 / 2;
+            let radius = 0;
+            // let radius = tracking_params.diameter as i32 / 2;
             let thread_tracking_params = tracking_params.clone();
             let mut linker = tracking_params.search_range
             .map(|range| Linker::new(range, tracking_params.memory.unwrap_or(0)));
             
             scope.spawn(move ||{
-                let kernels = Some(
+                let raw_sig_inds = FloatMemoizer::new(kernels::circle_inds);
+                let raw_bg_inds = FloatMemoizer::new(|radius| {
+                    kernels::annulus_inds(tracking_params.bg_radius.unwrap_or(radius), 
+                    tracking_params.gap_radius.unwrap_or(0.) + radius)
+                });
+                let mut kernels = Some(
                     PostProcessKernels{
-                        r2: ndarray::Array::from_shape_vec((1, neighborhood_size), kernels::r2_in_circle(radius)).unwrap(),
-                        sin: ndarray::Array::from_shape_vec((1, neighborhood_size), kernels::sin_in_circle(radius)).unwrap(),
-                        cos: ndarray::Array::from_shape_vec((1, neighborhood_size), kernels::cos_in_circle(radius)).unwrap(),
-                        raw_sig_inds: tracking_params.sig_radius.map(|radius| kernels::circle_inds(radius).0),
-                        raw_bg_inds: tracking_params.bg_radius.zip(tracking_params.sig_radius).zip(tracking_params.gap_radius)
-                        .map(|((bg_radius, sig_radius), gap_radius)| kernels::annulus_inds(bg_radius, sig_radius + gap_radius)),
+                        // r2: ndarray::Array::from_shape_vec((1, neighborhood_size), kernels::r2_in_circle(radius)).unwrap(),
+                        // sin: ndarray::Array::from_shape_vec((1, neighborhood_size), kernels::sin_in_circle(radius)).unwrap(),
+                        // cos: ndarray::Array::from_shape_vec((1, neighborhood_size), kernels::cos_in_circle(radius)).unwrap(),
+                        // raw_sig_inds: tracking_params.sig_radius.map(|radius| kernels::circle_inds(radius).0),
+                        // raw_bg_inds: tracking_params.bg_radius.zip(tracking_params.sig_radius).zip(tracking_params.gap_radius)
+                        // .map(|((bg_radius, sig_radius), gap_radius)| kernels::annulus_inds(bg_radius, sig_radius + gap_radius)),
+                        raw_sig_inds,
+                        raw_bg_inds,
                     }
                 );
                 let mut output: output_type = Vec::with_capacity(100000);
@@ -538,11 +725,14 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
                                 neighborhoods, global_max) = inp;
                             let frame = frame_receiver.recv().unwrap();
                             post_process(results, &mut output, frame_index, debug, linker.as_mut(),
-                                neighborhoods, neighborhood_size, kernels.as_ref(), middle_most, frame, dims, &thread_tracking_params);
+                                neighborhoods, neighborhood_size, kernels.as_mut(), middle_most, frame, dims, &thread_tracking_params);
                         }
                     }
                 }
                 thread_sleep.map(|thread_sleep| println!("Thread sleep: {} s", thread_sleep));
+                for key in kernels.as_ref().unwrap().raw_sig_inds.map.keys(){
+                    dbg!(key);
+                }
                 output
             })
         };
@@ -566,7 +756,9 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
         let mut old_submission =
             submit_work(frame.into_slice(), staging_buffer, &state, &tracking_params, debug, positions);
         
-        let send_frame = tracking_params.sig_radius.is_some();
+        let send_frame = tracking_params.sig_radius.is_some() |
+             matches!(tracking_params.style, ParamStyle::Log{ .. });
+        
         frame_sender.send(if send_frame{Some(frame)} else {None}).unwrap();
 
         loop{
@@ -596,7 +788,7 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
             let staging_buffer = free_staging_buffers.pop().unwrap();
             in_use_staging_buffers.push_back(staging_buffer);
             let new_submission = submit_work(frame.into_slice(), staging_buffer, &state, &tracking_params, debug, positions);
-            frame_sender.send(if send_frame{Some(frame)} else {None}).unwrap();
+            frame_sender.send(if send_frame {Some(frame)} else {None}).unwrap();
             
             let finished_staging_buffer = in_use_staging_buffers.pop_front().unwrap();
             
