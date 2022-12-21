@@ -78,9 +78,9 @@ def LoG_file(path, min_r, max_r, **kwargs):
 
 def load(path, ets_channel = 0, keys = None):
     extension = path.split(".")[1].lower()
-    if extension == "tif" | extension == "tiff":
+    if extension == "tif" or extension == "tiff":
         import tifffile
-        video = tifffile.imread(path, keys)
+        video = tifffile.imread(path, key = keys)
     elif extension == "ets":
         if keys is not None:
             keys = list(keys)
@@ -91,7 +91,7 @@ def load(path, ets_channel = 0, keys = None):
         raise ValueError("Unrecognized file format. Recognized formats: tiff, ets")
     return video
 
-def annotate(video, tracked_df, figax = None, r = None, frame = 0, imshow_kw = {}, circle_kw = {}, subplot_kw = {}):
+def annotate_image(image, tracked_df, figax = None, r = None, frame = 0, imshow_kw = {}, circle_kw = {}, subplot_kw = {}):
     import matplotlib.pyplot as plt
 
     circle_kw = {"fill": False, **circle_kw}
@@ -101,15 +101,13 @@ def annotate(video, tracked_df, figax = None, r = None, frame = 0, imshow_kw = {
     if r is None and not "r" in subset_df:
         r = 5
         print(f"Using default r of {r}")
-    else:
-        r = None
     if figax is None:
         fig, ax = plt.subplots(**subplot_kw)
     else:
         fig, ax = figax
-    ax.imshow(video[frame], **imshow_kw)
+    ax.imshow(image, **imshow_kw)
 
-    for row in tracked_df.iterrows():
+    for _idx, row in subset_df.iterrows():
         if r is None:
             inner_r = row["r"]
         else:
@@ -117,4 +115,12 @@ def annotate(video, tracked_df, figax = None, r = None, frame = 0, imshow_kw = {
         x, y = row["x"], row["y"]
         ax.add_patch(plt.Circle((x, y), inner_r, **circle_kw))
     return (fig, ax)
-        
+
+def annotate_video(video, tracked_df, frame, **kwargs):
+    image = video[frame]
+    return annotate_image(image, tracked_df, frame = frame, **kwargs)
+
+def annotate_file(path, tracked_df, ets_channel = 0, frame = 0, **kwargs):
+    image = load(path, ets_channel = ets_channel, keys = [frame])[0]
+    return annotate_image(image, tracked_df, frame = frame, **kwargs)
+    

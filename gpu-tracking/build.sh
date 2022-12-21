@@ -1,0 +1,1 @@
+pip install $(echo $(maturin build --release) | perl -lne 'print $1 if /([^\s]+$)/') --force-reinstall
