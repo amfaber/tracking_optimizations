@@ -214,14 +214,12 @@ fn submit_work(
             let convolution = &buffers.logspace_buffers[i % modder].1;
             let sigma = radius / (2 as my_dtype).sqrt();
             convolution.execute(&mut encoder, bytemuck::cast_slice(&[sigma]));
-            // dbg!(sigmas);
             
             let mut edge = -1;
             
             for (i, radius) in iterator{
                 let convolution = &buffers.logspace_buffers[i % modder].1;
                 let sigma = radius / (2 as my_dtype).sqrt();
-                // dbg!((&radius, &sigma));
                 convolution.execute(&mut encoder, bytemuck::cast_slice(&[sigma]));
                 
                 let find_max = &state.passes["logspace_max"][(i-1) % 3];
@@ -299,7 +297,7 @@ fn get_work(
     circle_inds: &Vec<[i32; 2]>,
     dims: &[u32; 2],
     ) -> Option<(Vec<ResultRow>, usize)> {
-    println!("getting frame: {}", frame_index);
+    // println!("getting frame: {}", frame_index);
     let buffer_slice = finished_staging_buffer.slice(..);
     let (sender, receiver) = 
             futures_intrusive::channel::shared::oneshot_channel();
@@ -337,6 +335,10 @@ fn get_work(
 
 pub fn column_names(params: TrackingParams) -> Vec<(String, String)>{
     let mut names = vec![("frame", "int"), ("y", "float"), ("x", "float"), ("mass", "float")];
+
+    if let ParamStyle::Log{ .. } = params.style{
+        names.push(("r", "float"))
+    }
     
     if params.characterize{
         names.push(("Rg", "float"));
@@ -349,14 +351,12 @@ pub fn column_names(params: TrackingParams) -> Vec<(String, String)>{
         names.push(("particle", "int"));
     }
     
-    if params.sig_radius.is_some(){
+    if params.sig_radius.is_some() | matches!(params.style, ParamStyle::Log{ .. }){
         names.push(("raw_mass", "float"));
-    }
-
-    if params.bg_radius.is_some(){
         names.push(("raw_bg_median", "float"));
         names.push(("raw_mass_corrected", "float"));
     }
+
     
     names.iter().map(|(name, t)| (name.to_string(), t.to_string())).collect()
 }
@@ -523,7 +523,7 @@ fn post_process<A: IntoSlice>(
             }
         },
         ParamStyle::Log{ overlap_threshold, ..} => {
-            if overlap_threshold > 0.{
+            if overlap_threshold < 1.{
                 prune_blobs_log(&results, overlap_threshold)
                 
             } else {
@@ -597,7 +597,7 @@ fn post_process<A: IntoSlice>(
             }
             let raw_sig_inds = raw_sig_inds.unwrap();
             let raw_bg_inds = raw_bg_inds.unwrap();
-            let middle_index = [row.x.round() as i32, row.y as i32];
+            let middle_index = [row.x.round() as i32, row.y.round() as i32];
             for ind in raw_sig_inds{
                 let curidx = [(middle_index[0] + ind[0]) as usize, (middle_index[1] + ind[1]) as usize];
                 match frame.get(curidx){
@@ -685,34 +685,33 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
     
     let (frame_sender,
         frame_receiver) = std::sync::mpsc::channel::<Option<A>>();
+
+    let send_frame = tracking_params.sig_radius.is_some() |
+         matches!(tracking_params.style, ParamStyle::Log{ .. });
+    
     
     let output = std::thread::scope(|scope|{
         let handle = {
             let neighborhood_size = circle_inds.len();
-            let radius = 0;
-            // let radius = tracking_params.diameter as i32 / 2;
             let thread_tracking_params = tracking_params.clone();
             let mut linker = tracking_params.search_range
-            .map(|range| Linker::new(range, tracking_params.memory.unwrap_or(0)));
-            
+                .map(|range| Linker::new(range, tracking_params.memory.unwrap_or(0)));
+            let thread_send_frame = send_frame.clone();
             scope.spawn(move ||{
-                let raw_sig_inds = FloatMemoizer::new(kernels::circle_inds);
-                let raw_bg_inds = FloatMemoizer::new(|radius| {
-                    kernels::annulus_inds(tracking_params.bg_radius.unwrap_or(radius), 
-                    tracking_params.gap_radius.unwrap_or(0.) + radius)
-                });
-                let mut kernels = Some(
-                    PostProcessKernels{
-                        // r2: ndarray::Array::from_shape_vec((1, neighborhood_size), kernels::r2_in_circle(radius)).unwrap(),
-                        // sin: ndarray::Array::from_shape_vec((1, neighborhood_size), kernels::sin_in_circle(radius)).unwrap(),
-                        // cos: ndarray::Array::from_shape_vec((1, neighborhood_size), kernels::cos_in_circle(radius)).unwrap(),
-                        // raw_sig_inds: tracking_params.sig_radius.map(|radius| kernels::circle_inds(radius).0),
-                        // raw_bg_inds: tracking_params.bg_radius.zip(tracking_params.sig_radius).zip(tracking_params.gap_radius)
-                        // .map(|((bg_radius, sig_radius), gap_radius)| kernels::annulus_inds(bg_radius, sig_radius + gap_radius)),
-                        raw_sig_inds,
-                        raw_bg_inds,
-                    }
-                );
+                let mut kernels = if send_frame {
+                    let raw_sig_inds = FloatMemoizer::new(kernels::circle_inds);
+                    let raw_bg_inds = FloatMemoizer::new(|radius| {
+                            kernels::annulus_inds(tracking_params.bg_radius.unwrap_or(2.0*radius), 
+                            tracking_params.gap_radius.unwrap_or(0.) + radius)});
+                    Some(
+                        PostProcessKernels{
+                            raw_sig_inds,
+                            raw_bg_inds,
+                        }
+                    )
+                } else {
+                    None
+                };
                 let mut output: output_type = Vec::with_capacity(100000);
                 let mut thread_sleep = if verbosity > 0 {Some(0.)} else {None};
                 loop{
@@ -730,9 +729,6 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
                     }
                 }
                 thread_sleep.map(|thread_sleep| println!("Thread sleep: {} s", thread_sleep));
-                for key in kernels.as_ref().unwrap().raw_sig_inds.map.keys(){
-                    dbg!(key);
-                }
                 output
             })
         };
@@ -750,14 +746,11 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
                 (frames.next().unwrap(), None, 0)
             }
         };
-        // let mut frame_index = 0;
         let staging_buffer = free_staging_buffers.pop().unwrap();
         in_use_staging_buffers.push_back(staging_buffer);
         let mut old_submission =
             submit_work(frame.into_slice(), staging_buffer, &state, &tracking_params, debug, positions);
         
-        let send_frame = tracking_params.sig_radius.is_some() |
-             matches!(tracking_params.style, ParamStyle::Log{ .. });
         
         frame_sender.send(if send_frame{Some(frame)} else {None}).unwrap();
 
@@ -861,7 +854,6 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
 //             // .unwrap().write_all(bytemuck::cast_slice(&image)).unwrap();
 //             drop(data);
 //             state.buffers.processed_buffer.unmap();
-//             // dbg!(image);
 //         }
 
 //         post_process::<A>(results, &mut output, frame_index, debug, linker.as_mut(), None, 0, None, 0, None, dims, &tracking_params)

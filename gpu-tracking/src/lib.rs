@@ -24,9 +24,9 @@ use std::{fs::File, collections::HashMap};
 // #[cfg(feature = "python")]
 // use numpy::{self, PyArray2, PyReadonlyArray3, PyReadonlyArray2, IntoPyArray, PyArray1,};
 
-#[cfg(feature = "python")]
+// #[cfg(feature = "python")]
 pub mod python_bindings;
-#[cfg(feature = "python")]
+// #[cfg(feature = "python")]
 use crate::python_bindings::*;
 
 

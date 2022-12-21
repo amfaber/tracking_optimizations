@@ -2,6 +2,7 @@
 use futures;
 use futures_intrusive;
 use gpu_tracking::gpu_setup::ParamStyle;
+use gpu_tracking::linking::FrameSubsetter;
 use gpu_tracking::{
     decoderiter::IterDecoder,
     execute_gpu::{self, execute_gpu, execute_ndarray},
@@ -54,24 +55,24 @@ fn main() -> anyhow::Result<()> {
     // let results = execute_ndarray(&arr.view(), TrackingParams::default(), true);
     let params = TrackingParams {
         // diameter: 9,
-        // minmass: -1000000.,
+        minmass: 800.,
         // separation: 10,
         // filter_close: filter,
         // search_range: Some(9.),
         // characterize,
         // cpu_processed: processed_cpu,
-        // sig_radius: Some(3.),
+        // sig_radius: Some(2.),
         // bg_radius: Some((60 as f32).sqrt()),
         // gap_radius: Some(0.5),
         // varcheck: Some(1.),
-        style: ParamStyle::Log {
-            min_radius: 2.,
-            max_radius: 5.,
-            n_radii: 10,
-            log_spacing: false,
-            prune_blobs: true,
-            overlap_threshold: 0.,
-        },
+
+        // style: ParamStyle::Log {
+        //     min_radius: 2.,
+        //     max_radius: 5.,
+        //     n_radii: 10,
+        //     log_spacing: false,
+        //     overlap_threshold: 1.,
+        // },
         ..Default::default()
     };
     // let mut decoderiter = match debug {
@@ -87,9 +88,14 @@ fn main() -> anyhow::Result<()> {
     // dbg!(function_time);
     let now = Instant::now();
     let points = vec![
-        0f32, 300f32, 300f32, 0f32, 200f32, 200f32, 200f32, 300f32, 300f32, 2000f32, 200f32, 200f32,
+        0f32, 300f32, 300f32,
+        0f32, 200f32, 200f32,
+        200f32, 300f32, 300f32,
+        1999f32, 200f32, 200f32,
     ];
     let points = Array2::from_shape_vec((4, 3), points).unwrap();
+    let point_view = points.view();
+    let point_iter = FrameSubsetter::new(&point_view, 0, (1, 2));
     let (results, column_names) = execute_gpu::execute_gpu(
         decoderiter,
         &dims,
@@ -97,6 +103,7 @@ fn main() -> anyhow::Result<()> {
         debug,
         1,
         None::<std::vec::IntoIter<(usize, Vec<[my_dtype; 2]>)>>,
+        // Some(point_iter),
     );
     // let (results, column_names) = execute_gpu::execute_ndarray(&arr.view(), params, debug, 1, None);
     // let (results, shape) = execute_gpu(&mut decoderiter, &dims, params, debug, 1);
@@ -106,7 +113,7 @@ fn main() -> anyhow::Result<()> {
     // dbg!(&results);
     dbg!(&results.len());
 
-    std::fs::write("testing/dump.bin", bytemuck::cast_slice(&results));
+    // std::fs::write("testing/dump.bin", bytemuck::cast_slice(&results));
     // if debug{
     // let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).open("test").unwrap();
     // let raw_bytes = unsafe{std::slice::from_raw_parts(results.as_ptr() as *const u8, results.len() * std::mem::size_of::<my_dtype>())};

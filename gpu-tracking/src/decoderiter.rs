@@ -224,6 +224,13 @@ impl<R: Read + Seek> ETSIterator<R>{
     pub fn len(&self) -> usize{
         self.offsets.iter().flatten().count()
     }
+
+    pub fn seek(&mut self, to: usize){
+        match self.offsets.get(to){
+            Some(Some(_val)) => { self.current = to; },
+            _ => { panic!("Index not found in file.") },
+        }
+    }
 }
 
 impl<R: Read + Seek> Iterator for ETSIterator<R>{

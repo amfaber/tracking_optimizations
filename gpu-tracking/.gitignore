@@ -7,3 +7,6 @@ idk/*
 *.pyd
 *.pyc
 *.npy
+*.tif
+*.tiff
+*.svg

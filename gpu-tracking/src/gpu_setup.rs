@@ -28,7 +28,6 @@ pub enum ParamStyle{
         max_radius: my_dtype,
         n_radii: usize,
         log_spacing: bool,
-        prune_blobs: bool,
         overlap_threshold: my_dtype,
     },
 }
@@ -187,7 +186,7 @@ impl CommonBuffers{
             })
         };
 
-        dbg!(size);
+        // dbg!(size);
         let processed_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size,

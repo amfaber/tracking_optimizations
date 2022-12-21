@@ -36,20 +36,20 @@ features = ["derive"]
 version = "4.0.6"
 
 [dependencies.numpy]
-optional = true
+optional = false
 version = "0.17.2"
 
 [dependencies.pyo3]
 features = ["extension-module", "abi3-py37"]
-optional = true
+optional = false
 version = "0.17.1"
 
 [features]
-python = ["pyo3", "numpy"]
+# python = ["pyo3", "numpy"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 name = "gpu_tracking"
 
-#[profile.release]
-#debug = true
+# [profile.release]
+# debug = true
