@@ -33,6 +33,8 @@ pub enum ParamStyle{
 }
 
 
+
+
 #[derive(Clone)]
 pub struct TrackingParams{
     pub style: ParamStyle,
@@ -46,6 +48,7 @@ pub struct TrackingParams{
     pub bg_radius: Option<my_dtype>,
     pub gap_radius: Option<my_dtype>,
     pub varcheck: Option<my_dtype>,
+    pub truncate_preprocessed: bool,
 }
 
 impl Default for TrackingParams{
@@ -60,6 +63,7 @@ impl Default for TrackingParams{
             varcheck: None,
             max_iterations: 10,
             minmass: 0.,
+            truncate_preprocessed: true,
             style: ParamStyle::Trackpy{
                 diameter: 9,
                 noise_size: 1.,
@@ -70,7 +74,7 @@ impl Default for TrackingParams{
                 topn: 0,
                 maxsize: 0.0,
                 preprocess: true,
-                separation: 11,
+                separation: 10,
                 filter_close: true,
             }
         }
@@ -119,6 +123,8 @@ pub struct LogGpuBuffers{
     pub temp_buffer: Buffer,
     pub temp_buffer2: Buffer,
 }
+
+
 
 
 impl CommonBuffers{
@@ -173,7 +179,7 @@ impl CommonBuffers{
 
         let particles_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size,
+            size: size*8,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -365,6 +371,7 @@ pub struct GpuState{
     pub result_read_depth: u64,
     pub pic_byte_size: u64,
     pub flavor: GpuStateFlavor,
+    pub dims: [u32; 2],
 }
 
 pub enum GpuStateFlavor{
@@ -378,43 +385,6 @@ pub enum GpuStateFlavor{
         radii: Vec<my_dtype>,
     },
 }
-
-
-// impl GpuState{
-
-//     fn setup_buffers(&self){
-
-//         match self.flavor{
-//             GpuStateFlavor::Trackpy{..} => {
-
-//             },
-//             GpuStateFlavor::Log{ref buffers, ref fftplan, ref sigmas, ..} => {
-                
-//                 let mut encoder = self.device.create_command_encoder(&Default::default());
-//                 // let (pad_pass, push_constants) = fftplan.pad_pass(&self.device, &buffers.unpadded_laplace.0, &buffers.laplacian_buffer.0, &buffers.unpadded_laplace.1);
-//                 // pad_pass.execute(&mut encoder, bytemuck::cast_slice(&push_constants));
-
-
-//                 // let laplace_fft = &buffers.laplacian_buffer.1;
-//                 // laplace_fft.execute(&mut encoder, false, false);
-
-
-//                 let gauss_size = (sigmas[sigmas.len() - 1] * 4. + 0.5) as u32 * 2 + 1;
-//                 let iterator = buffers.filter_buffers.iter().zip(self.passes["init_log"].iter()).zip(sigmas);
-//                 for (((_filter_buffer, fft, _lap_convolve), init), sigma) in iterator{
-//                     // let push_constants = panic!("figure out push_constants. Limits to the gaussians are still missing");
-//                     let push_constants = (*sigma, gauss_size, gauss_size);
-                    
-//                     init.execute(&mut encoder, unsafe{ any_as_u8_slice(&push_constants) });
-
-//                     fft.execute(&mut encoder, false, false);
-//                     // lap_convolve.execute(&mut encoder, &[]);
-//                 }
-//                 self.queue.submit(Some(encoder.finish()));
-//             }
-//         }
-//     }
-// }
 
 
 fn gpuparams_from_tracking_params(params: &TrackingParams, pic_dims: [u32; 2]) -> GpuParams {
@@ -507,6 +477,9 @@ pub fn setup_state(
         if tracking_params.varcheck.is_some(){
             result = result.replace("//_feat_varcheck ", "");
         }
+        if tracking_params.truncate_preprocessed{
+            result = result.replace("//_feat_truncate_preprocessed ", "")
+        }
         if let ParamStyle::Log{..} = tracking_params.style{
             result = result.replace("//_feat_LoG ", "");
         }
@@ -530,8 +503,8 @@ pub fn setup_state(
                 ("extract_max", (include_str!("shaders/extract_max.wgsl"), wg_dims, workgroup_size2d)),
                 ("preprocess_rows", (include_str!("shaders/preprocess_rows.wgsl"), wg_dims, workgroup_size2d)),
                 ("preprocess_cols", (include_str!("shaders/preprocess_cols.wgsl"), wg_dims, workgroup_size2d)),
-                ("walk", (include_str!("shaders/walk.wgsl"), [10000, 1, 1], workgroup_size1d)),
-                ("characterize", (include_str!("shaders/characterize.wgsl"), [10000, 1, 1], workgroup_size1d)),
+                ("walk", (include_str!("shaders/walk.wgsl"), [40000, 1, 1], workgroup_size1d)),
+                ("characterize", (include_str!("shaders/characterize.wgsl"), [40000, 1, 1], workgroup_size1d)),
             ]);
 
             let mut pipelines = 
@@ -790,11 +763,14 @@ pub fn setup_state(
         pic_size,
         result_read_depth,
         flavor,
+        dims: dims.clone(),
     };
     // state.setup_buffers();
     state
 
 }
+
+
 
 fn make_pipelines_from_source<F: Fn(&str, &[u32; 3], &str) -> String>(
     shaders: HashMap<&str, (&str, [u32; 3], [u32; 3])>,
