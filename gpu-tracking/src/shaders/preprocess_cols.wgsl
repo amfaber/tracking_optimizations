@@ -51,11 +51,11 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   }
   
   let result = gauss_sum/gauss_norm - constant_sum/f32(kernel_rows * kernel_cols);
-  if (result < 1./255.){
-    processed_buffer[u * params.pic_ncols + v] = 0.0;
-  }
-  else{
+  //_feat_truncate_preprocessed if (result < 1./255.){
+    //_feat_truncate_preprocessed processed_buffer[u * params.pic_ncols + v] = 0.0;
+  //_feat_truncate_preprocessed }
+  //_feat_truncate_preprocessed else{
     processed_buffer[u * params.pic_ncols + v] = result;
-  }
+  //_feat_truncate_preprocessed }
 }
 

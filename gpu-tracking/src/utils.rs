@@ -1,6 +1,7 @@
 
 use wgpu_fft::FullComputePass;
 use std::rc::Rc;
+use wgpu::{self, util::DeviceExt};
 
 
 pub unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
@@ -13,6 +14,33 @@ pub unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
 pub struct SeparableConvolution<const N: usize>{
     input_pass: FullComputePass,
     passes: [FullComputePass; 2],
+}
+
+pub enum Dispatcher{
+    Direct([u32; 3]),
+    Indirect{
+        dispatcher: wgpu::Buffer,
+        resetter: wgpu::Buffer,
+    }
+}
+
+impl Dispatcher{
+    pub fn new_direct(dims: &[u32; 3], wgsize: &[u32; 3]) -> Self { 
+        let mut n_workgroups = [0, 0, 0];
+        for i in 0..3 {
+            n_workgroups[i] = (dims[i] + wgsize[i] - 1) / wgsize[i];
+        }
+        Self::Direct(n_workgroups)
+    }
+
+    pub fn new_indirect(device: &wgpu::Device, default: wgpu::util::DispatchIndirect) -> Self {
+        let dispatcher = device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
+            label: None,
+            contents: default.as_bytes(),
+            usage: wgpu::BufferUsages::STORAGE
+        });
+        
+    }
 }
 
 impl<const N: usize> SeparableConvolution<N>{
@@ -247,7 +275,9 @@ pub fn inspect_buffers<P: AsRef<std::path::Path>>(
         let data = slice.get_mapped_range()[..].to_vec();
         let mut path = path.clone();
         path.push(format!("dump{}.bin", i));
-        std::fs::write(&path, &data[..buffer.size() as usize]);
+        dbg!(std::env::current_dir().unwrap());
+        dbg!(&path);
+        std::fs::write(&path, &data[..buffer.size() as usize]).unwrap();
         drop(slice);
         mappable_buffer.unmap();
     }

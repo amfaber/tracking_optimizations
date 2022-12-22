@@ -51,5 +51,9 @@ version = "0.17.1"
 crate-type = ["cdylib", "rlib"]
 name = "gpu_tracking"
 
-# [profile.release]
+[profile.release]
+panic = 'abort'
+
+[profile.dev]
+panic = 'abort'
 # debug = true

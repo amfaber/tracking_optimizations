@@ -123,8 +123,6 @@ fn variance_check(u: f32, v: f32, kernel_rows: i32, kernel_cols: i32) -> bool{
 }
 
 fn walk(argpicuv: vec2<i32>, r: f32, transform: vec2<i32>) -> vec3<f32> {
-  // var adjust_u = 0;
-  // var adjust_v = 0;
   var picuv = argpicuv;
   var changed = false;
   var center_and_mass: vec3<f32>;

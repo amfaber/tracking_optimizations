@@ -31,10 +31,57 @@ struct Args {
     // processed_cpu: Option<bool>,
 }
 
-fn main() -> anyhow::Result<()> {
+
+fn test_trackpy_easy(){
     let args: Args = Args::parse();
     let now_top = Instant::now();
-    let path = args.input.unwrap_or("../emily_tracking/sample_vids/s_20.tif".to_string());
+    let path = args.input.unwrap_or("testing/easy_test_data.tif".to_string());
+    let debug = args.debug.unwrap_or(false);
+    let filter = args.filter.unwrap_or(true);
+    let characterize = args.characterize.unwrap_or(false);
+    let file = fs::File::open(&path).expect("didn't find the file");
+    let mut decoder = Decoder::new(file).expect("Can't create decoder");
+    let (width, height) = decoder.dimensions().unwrap();
+    let dims = [height, width];
+    let mut decoderiter = IterDecoder::from(decoder);
+    let params = TrackingParams {
+        style: ParamStyle::Trackpy {
+            separation: 8,
+            diameter: 7,
+            maxsize: 0.0,
+            noise_size: 1.,
+            smoothing_size: 7,
+            threshold: 0.0,
+            invert: false,
+            percentile: 0.,
+            topn: 0,
+            preprocess: true,
+            filter_close: true,
+        },
+        minmass: 800.,
+        truncate_preprocessed: false,
+        ..Default::default()
+    };
+    let now = Instant::now();
+    let (results, column_names) = execute_gpu::execute_file(
+        &path,
+        Some(1),
+        params,
+        debug,
+        1,
+        None::<std::vec::IntoIter<(usize, Vec<[my_dtype; 2]>)>>,
+    );
+    let function_time = now.elapsed().as_millis() as f64 / 1000.;
+    dbg!(function_time);
+    dbg!(&results.shape());
+
+}
+
+
+fn test_unedited(){
+    let args: Args = Args::parse();
+    let now_top = Instant::now();
+    let path = args.input.unwrap_or("testing/easy_test_data.tif".to_string());
     // let path = args
     //     .input
     //     .unwrap_or("testing/scuffed_blobs_1C_even_dims.tif".to_string());
@@ -122,5 +169,8 @@ fn main() -> anyhow::Result<()> {
 
     // let total = now_top.elapsed().as_millis() as f64 / 1000.;
     // dbg!(total);
-    Ok(())
+}
+
+fn main(){
+    test_trackpy_easy()
 }

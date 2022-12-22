@@ -50,6 +50,7 @@ macro_rules! make_args {
             bg_radius: Option<my_dtype>,
             gap_radius: Option<my_dtype>,
             varcheck: Option<my_dtype>,
+            truncate_preprocessed: Option<bool>,
             $($postargs)*
         ) -> $outtype {
             not_implemented!(maxsize, threshold, invert, percentile,
@@ -70,6 +71,7 @@ macro_rules! make_args {
             let max_iterations = max_iterations.unwrap_or(10);
             let characterize = characterize.unwrap_or(false);
             let gap_radius = bg_radius.map(|_| gap_radius.unwrap_or(0.));
+            let truncate_preprocessed = truncate_preprocessed.unwrap_or(false);
 
     
             let $params = TrackingParams {
@@ -96,7 +98,8 @@ macro_rules! make_args {
                 sig_radius,
                 bg_radius,
                 gap_radius,
-                varcheck
+                varcheck,
+                truncate_preprocessed,
             };
             $body
         }
@@ -128,6 +131,8 @@ macro_rules! make_log_args {
             bg_radius: Option<my_dtype>,
             gap_radius: Option<my_dtype>,
             varcheck: Option<my_dtype>,
+            truncate_preprocessed: Option<bool>,
+
             $($postargs)*
         ) -> $outtype {
             
@@ -140,6 +145,7 @@ macro_rules! make_log_args {
             let max_iterations = max_iterations.unwrap_or(10);
             let characterize = characterize.unwrap_or(false);
             let gap_radius = bg_radius.map(|_| gap_radius.unwrap_or(0.));
+            let truncate_preprocessed = truncate_preprocessed.unwrap_or(false);
 
             // neither search_range nor memory are unwrapped as linking is optional on the Rust side.
     
@@ -160,7 +166,8 @@ macro_rules! make_log_args {
                 sig_radius,
                 bg_radius,
                 gap_radius,
-                varcheck
+                varcheck,
+                truncate_preprocessed,
             };
             $body
         }
@@ -193,11 +200,13 @@ make_args!(
     },
     {
         points_to_characterize: Option<PyReadonlyArray2<my_dtype>>,
+        debug: Option<bool>,
     }
     ) -> (&'py PyArray2<my_dtype>, Py<PyAny>) => params{
+        let debug = debug.unwrap_or(false);
         let array = pyarr.as_array();
         let points_rust_array = points_to_characterize.as_ref().map(|arr| arr.as_array());
-        let (res, columns) = execute_ndarray(&array, params, false, 0, points_rust_array.as_ref());
+        let (res, columns) = execute_ndarray(&array, params, debug, 0, points_rust_array.as_ref());
         (res.into_pyarray(py), columns.into_py(py))
     }
 );
@@ -212,15 +221,17 @@ make_args!(
         {
             channel: Option<usize>,
             points_to_characterize: Option<PyReadonlyArray2<my_dtype>>,
+            debug: Option<bool>,
         }
         ) -> (&'py PyArray2<my_dtype>, Py<PyAny>) => params {
+        let debug = debug.unwrap_or(false);
 
         let points_rust_array = points_to_characterize.as_ref().map(|arr| arr.as_array());
         let mut pos_iter = points_rust_array.as_ref().map(|points| 
             FrameSubsetter::new(points, 0, (1, 2)));
 
         let (res, columns) = execute_file(
-            &filename, channel, params, false, 0, pos_iter);
+            &filename, channel, params, debug, 0, pos_iter);
         (res.into_pyarray(py), columns.into_py(py))
     }
 );
@@ -231,14 +242,16 @@ make_log_args!(
     {
         py: Python<'py>,
         pyarr: PyReadonlyArray3<my_dtype>,
+        debug: Option<bool>,
     },
     {
         points_to_characterize: Option<PyReadonlyArray2<my_dtype>>,
     }
     ) -> (&'py PyArray2<my_dtype>, Py<PyAny>) => params{
+    let debug = debug.unwrap_or(false);
     let array = pyarr.as_array();
     let points_rust_array = points_to_characterize.as_ref().map(|arr| arr.as_array());
-    let (res, columns) = execute_ndarray(&array, params, false, 0, points_rust_array.as_ref());
+    let (res, columns) = execute_ndarray(&array, params, debug, 0, points_rust_array.as_ref());
     (res.into_pyarray(py), columns.into_py(py))
 }
 );
@@ -252,15 +265,16 @@ make_log_args!(
         {
             channel: Option<usize>,
             points_to_characterize: Option<PyReadonlyArray2<my_dtype>>,
+            debug: Option<bool>,
         }
         ) -> (&'py PyArray2<my_dtype>, Py<PyAny>) => params {
-
+        let debug = debug.unwrap_or(false);
         let points_rust_array = points_to_characterize.as_ref().map(|arr| arr.as_array());
         let mut pos_iter = points_rust_array.as_ref().map(|points| 
             FrameSubsetter::new(points, 0, (1, 2)));
 
         let (res, columns) = execute_file(
-            &filename, channel, params, false, 0, pos_iter);
+            &filename, channel, params, debug, 0, pos_iter);
         (res.into_pyarray(py), columns.into_py(py))
     }
 );

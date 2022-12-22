@@ -8,7 +8,7 @@ use ndarray::{Array2, ArrayView3, Axis, ArrayView, Array3, ArrayView2};
 use num_traits::Pow;
 use pollster::FutureExt;
 use tiff::decoder::Decoder;
-use std::{collections::{VecDeque, HashMap}, time::Instant, sync::mpsc::Sender, path::Path, fs::File, io::Write, marker::PhantomData, f32::consts::PI};
+use std::{collections::{VecDeque, HashMap}, time::Instant, sync::mpsc::Sender, path::Path, fs::{File, self}, io::Write, marker::PhantomData, f32::consts::PI};
 use wgpu::{Buffer, SubmissionIndex};
 use crate::{kernels, into_slice::IntoSlice,
     gpu_setup::{
@@ -138,6 +138,19 @@ fn submit_work(
             for cpassname in order.iter(){
                 let fullpass = &state.passes[cpassname][0];
                 fullpass.execute(&mut encoder, &[]);
+            }
+            if debug{
+                let to_print = vec![
+                    &state.common_buffers.processed_buffer,
+                    &state.common_buffers.atomic_buffer,
+                    &state.common_buffers.atomic_filtered_buffer,
+                    &state.common_buffers.particles_buffer,
+                    ];
+                fs::write("processed_buffer/shape0.dump", bytemuck::cast_slice(&[state.dims[0], state.dims[1], 0]));
+                fs::write("processed_buffer/shape1.dump", bytemuck::cast_slice(&[1u32, 1]));
+                fs::write("processed_buffer/shape2.dump", bytemuck::cast_slice(&[1u32, 1]));
+                fs::write("processed_buffer/shape3.dump", bytemuck::cast_slice(&[((state.pic_size * 8) / 4) as u32, 4, 2]));
+                inspect_buffers(&to_print[..], staging_buffer, &state.queue, encoder, &state.device, "processed_buffer");
             }
             
         },
@@ -667,11 +680,6 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
     mut pos_iter: Option<impl Iterator<Item = (usize, Vec<[my_dtype; 2]>)>>,
     // all_frames: Option<&Array3<my_dtype>>,
     ) -> (output_type, Vec<(String, String)>){
-    let default_panic = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |panic_info| {
-        default_panic(panic_info);
-        std::process::exit(1);
-    }));
     
     let state = gpu_setup::setup_state(&tracking_params, dims, debug, pos_iter.is_some());
 
@@ -890,7 +898,8 @@ pub fn execute_ndarray<'a>(
     (res, column_names)
 }
 
-pub fn execute_file(path: &str,
+pub fn execute_file(
+    path: &str,
     channel: Option<usize>,
     params: TrackingParams,
     debug: bool,
@@ -908,8 +917,8 @@ pub fn execute_file(path: &str,
             let (width, height) = decoder.dimensions().unwrap();
             let dims = [height, width];
             let iterator = IterDecoder::from(decoder);
-            let n_frames = if debug {1} else {usize::MAX};
-            let iterator = iterator.take(n_frames);
+            // let n_frames = if debug {1} else {usize::MAX};
+            // let iterator = iterator.take(n_frames);
             let (res, column_names) = 
                 // if debug {
                 //     sequential_execute(iterator, &dims, params, debug, verbosity)
@@ -924,8 +933,8 @@ pub fn execute_file(path: &str,
             let iterator = parser.iterate_channel(
                 file, channel.unwrap_or(0))
                 .flatten().map(|vec| vec.into_iter().map(|x| x as f32).collect::<Vec<_>>());
-            let n_frames = if debug {1} else {usize::MAX};
-            let iterator = iterator.take(n_frames);
+            // let n_frames = if debug {1} else {usize::MAX};
+            // let iterator = iterator.take(n_frames);
             let (res, column_names) = 
                 // if debug{
                 //     sequential_execute(iterator, &dims, params, debug, verbosity)
