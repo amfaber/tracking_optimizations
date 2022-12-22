@@ -1,5 +1,4 @@
 
-use wgpu_fft::FullComputePass;
 use std::rc::Rc;
 use wgpu::{self, util::DeviceExt};
 
@@ -39,14 +38,50 @@ impl Dispatcher{
             contents: default.as_bytes(),
             usage: wgpu::BufferUsages::STORAGE
         });
+
+        let resetter = device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
+            label: None,
+            contents: default.as_bytes(),
+            usage: wgpu::BufferUsages::STORAGE
+        });
         
+        Self::Indirect{
+            dispatcher,
+            resetter,
+        }
+    }
+}
+
+pub struct FullComputePass{
+    pub bindgroup: wgpu::BindGroup,
+    pub dispatcher: Dispatcher,
+    pub pipeline: Rc<wgpu::ComputePipeline>,
+}
+
+
+impl FullComputePass{
+    pub fn execute(&self, encoder: &mut wgpu::CommandEncoder, push_constants: &[u8]){
+        let mut cpass = encoder.begin_compute_pass(&Default::default());
+        cpass.set_bind_group(0, &self.bindgroup, &[]);
+        cpass.set_pipeline(&self.pipeline);
+        if push_constants.len() > 0{
+            cpass.set_push_constants(0, push_constants);
+        }
+        match self.dispatcher{
+            Dispatcher::Direct(ref wg_n) => {
+                cpass.dispatch_workgroups(wg_n[0], wg_n[1], wg_n[2]);
+            },
+            Dispatcher::Indirect { ref dispatcher, .. } => {
+                cpass.dispatch_workgroups_indirect(dispatcher, 0);
+            }
+        }
     }
 }
 
 impl<const N: usize> SeparableConvolution<N>{
     pub fn new<'a>(
         device: &wgpu::Device,
-        pipeline: &(Rc<wgpu::ComputePipeline>, wgpu::BindGroupLayout, [u32; 3]),
+        pipeline: &(Rc<wgpu::ComputePipeline>, wgpu::BindGroupLayout, Dispatcher),
         input_buffer: &wgpu::Buffer,
         output_buffer: &wgpu::Buffer,
         temp_buffer: &wgpu::Buffer,
@@ -183,7 +218,7 @@ pub struct Laplace<const N: usize>{
 impl<const N: usize> Laplace<N>{
     pub fn new<'a>(
         device: &wgpu::Device,
-        pipeline: &(Rc<wgpu::ComputePipeline>, wgpu::BindGroupLayout, [u32; 3]),
+        pipeline: &(Rc<wgpu::ComputePipeline>, wgpu::BindGroupLayout, Dispatcher),
         input_buffer: &wgpu::Buffer,
         output_buffer: &'a wgpu::Buffer,
         temp1: &wgpu::Buffer,

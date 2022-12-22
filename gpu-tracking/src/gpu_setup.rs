@@ -4,7 +4,7 @@ use crate::{my_dtype, utils::*};
 
 use pollster::FutureExt;
 use wgpu::{Buffer, Device, self, util::{DeviceExt, BufferInitDescriptor}, ComputePipeline, BindGroupLayout};
-use wgpu_fft::{self, fft::{FftPlan, FftPass}, FullComputePass, infer_compute_bindgroup_layout};
+use wgpu_fft::{self, fft::{FftPlan, FftPass}, infer_compute_bindgroup_layout};
 
 
 #[derive(Clone)]
@@ -264,7 +264,7 @@ impl LogGpuBuffers{
         dims: &[u32; 2],
         // fftplan: &FftPlan,
         common_buffers: &CommonBuffers,
-        pipelines: &mut HashMap<String, (Rc<ComputePipeline>, BindGroupLayout, [u32; 3])>
+        pipelines: &mut HashMap<String, (Rc<ComputePipeline>, BindGroupLayout, Dispatcher)>
     ) -> Self {
         let (min_radius, max_radius, n_radii, log_spacing) = if let ParamStyle::Log { min_radius, max_radius, n_radii, log_spacing, .. } = tracking_params.style{
             (min_radius, max_radius, n_radii, log_spacing)
@@ -499,12 +499,12 @@ pub fn setup_state(
         ParamStyle::Trackpy{..} => {
                 
             let mut shaders = HashMap::from([
-                ("max_rows", (include_str!("shaders/max_rows.wgsl"), wg_dims, workgroup_size2d)),
-                ("extract_max", (include_str!("shaders/extract_max.wgsl"), wg_dims, workgroup_size2d)),
-                ("preprocess_rows", (include_str!("shaders/preprocess_rows.wgsl"), wg_dims, workgroup_size2d)),
-                ("preprocess_cols", (include_str!("shaders/preprocess_cols.wgsl"), wg_dims, workgroup_size2d)),
-                ("walk", (include_str!("shaders/walk.wgsl"), [40000, 1, 1], workgroup_size1d)),
-                ("characterize", (include_str!("shaders/characterize.wgsl"), [40000, 1, 1], workgroup_size1d)),
+                ("max_rows", (include_str!("shaders/max_rows.wgsl"), Dispatcher::new_direct(&wg_dims, &workgroup_size2d), workgroup_size2d)),
+                // ("extract_max", (include_str!("shaders/extract_max.wgsl"), wg_dims, workgroup_size2d)),
+                // ("preprocess_rows", (include_str!("shaders/preprocess_rows.wgsl"), wg_dims, workgroup_size2d)),
+                // ("preprocess_cols", (include_str!("shaders/preprocess_cols.wgsl"), wg_dims, workgroup_size2d)),
+                // ("walk", (include_str!("shaders/walk.wgsl"), [40000, 1, 1], workgroup_size1d)),
+                // ("characterize", (include_str!("shaders/characterize.wgsl"), [40000, 1, 1], workgroup_size1d)),
             ]);
 
             let mut pipelines = 
@@ -549,11 +549,15 @@ pub fn setup_state(
             
             let shaders = HashMap::from([
                 // ("init_log", (include_str!("shaders/log_style/init_log.wgsl"), init_wg_dims, workgroup_size1d)),
-                ("logspace_max", (include_str!("shaders/log_style/logspace_max.wgsl"), wg_dims, workgroup_size1d)),
-                ("walk", (include_str!("shaders/walk.wgsl"), [10000, 1, 1], workgroup_size1d)),
-                ("separable_log", (include_str!("shaders/log_style/separable_log.wgsl"), wg_dims, workgroup_size2d)),
-                ("preprocess_rows", (include_str!("shaders/preprocess_rows.wgsl"), wg_dims, workgroup_size2d)),
-                ("preprocess_cols", (include_str!("shaders/preprocess_cols.wgsl"), wg_dims, workgroup_size2d)),
+                
+                
+                // ("logspace_max", (include_str!("shaders/log_style/logspace_max.wgsl"), Dispatcher::new_direct(wg_dims,), workgroup_size1d)),
+                // ("walk", (include_str!("shaders/walk.wgsl"), [10000, 1, 1], workgroup_size1d)),
+                ("separable_log", (include_str!("shaders/log_style/separable_log.wgsl"), Dispatcher::new_direct(&wg_dims, &workgroup_size2d), workgroup_size2d)),
+                // ("preprocess_rows", (include_str!("shaders/preprocess_rows.wgsl"), wg_dims, workgroup_size2d)),
+                // ("preprocess_cols", (include_str!("shaders/preprocess_cols.wgsl"), wg_dims, workgroup_size2d)),
+
+
                 // ("characterize", (include_str!("shaders/characterize.wgsl"), [10000, 1, 1], workgroup_size1d)),
             ]);
             
@@ -745,7 +749,7 @@ pub fn setup_state(
             let pass = FullComputePass{
                 pipeline: Rc::clone(&pipeline),
                 bindgroup,
-                wg_n: wg_n.clone(),
+                dispatcher: wg_n,
             };
             pass
         }).collect::<Vec<_>>();
@@ -773,24 +777,24 @@ pub fn setup_state(
 
 
 fn make_pipelines_from_source<F: Fn(&str, &[u32; 3], &str) -> String>(
-    shaders: HashMap<&str, (&str, [u32; 3], [u32; 3])>,
+    shaders: HashMap<&str, (&str, Dispatcher, [u32; 3])>,
     preprocessor: F,
     common_header: &str,
     device: &wgpu::Device)
-    -> HashMap<String, (Rc<wgpu::ComputePipeline>, wgpu::BindGroupLayout, [u32; 3])>
+    -> HashMap<String, (Rc<wgpu::ComputePipeline>, wgpu::BindGroupLayout, Dispatcher)>
     {
     
-    let n_workgroups = |dims: &[u32; 3], wgsize: &[u32; 3]| { 
-        let mut n_workgroups = [0, 0, 0];
-        for i in 0..3 {
-            n_workgroups[i] = (dims[i] + wgsize[i] - 1) / wgsize[i];
-        }
-        n_workgroups
-    };
+    // let n_workgroups = |dims: &[u32; 3], wgsize: &[u32; 3]| { 
+    //     let mut n_workgroups = [0, 0, 0];
+    //     for i in 0..3 {
+    //         n_workgroups[i] = (dims[i] + wgsize[i] - 1) / wgsize[i];
+    //     }
+    //     n_workgroups
+    // };
     
-    let output = shaders.into_iter().map(|(name, (source, dims, group_size))|{
+    let output = shaders.into_iter().map(|(name, (source, dispatcher, group_size))|{
         let shader_source = preprocessor(source, &group_size, common_header);
-        let wg_n = n_workgroups(&dims, &group_size);
+        // let wg_n = n_workgroups(&dims, &group_size);
         let bindgrouplayout = infer_compute_bindgroup_layout(&device, &shader_source);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor{
             label: None,
@@ -812,7 +816,7 @@ fn make_pipelines_from_source<F: Fn(&str, &[u32; 3], &str) -> String>(
             module: &shader,
             entry_point: "main",
         });
-        (name.to_string(), (Rc::new(pipeline), bindgrouplayout, wg_n))
+        (name.to_string(), (Rc::new(pipeline), bindgrouplayout, dispatcher))
     }).collect::<HashMap<_, _>>();
 
     output
