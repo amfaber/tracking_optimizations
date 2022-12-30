@@ -5,7 +5,7 @@ use ndarray::Array;
 use pyo3::{prelude::*, types::{PyDict, PyList}};
 // #[cfg(feature = "python")]
 use numpy::{IntoPyArray, PyReadonlyArray3, PyReadonlyArray2, PyArray2, PyArray1, PyArrayDyn, PyArray3};
-use crate::{execute_gpu::{execute_ndarray, execute_file}, decoderiter::{MinimalETSParser}, gpu_setup::{TrackingParams, ParamStyle}, linking};
+use crate::{execute_gpu::{execute_ndarray, execute_file}, decoderiter::MinimalETSParser, gpu_setup::{TrackingParams, ParamStyle}, linking};
 
 
 macro_rules! not_implemented {
@@ -46,11 +46,15 @@ macro_rules! make_args {
             characterize: Option<bool>,
             search_range: Option<my_dtype>,
             memory: Option<usize>,
-            sig_radius: Option<my_dtype>,
+            doughnut_correction: Option<bool>,
             bg_radius: Option<my_dtype>,
             gap_radius: Option<my_dtype>,
-            varcheck: Option<my_dtype>,
+            snr: Option<my_dtype>,
+            minmass_snr: Option<my_dtype>,
             truncate_preprocessed: Option<bool>,
+            correct_illumination: Option<bool>,
+            illumination_sigma: Option<my_dtype>,
+            adaptive_background: Option<usize>,
             $($postargs)*
         ) -> $outtype {
             not_implemented!(maxsize, threshold, invert, percentile,
@@ -71,10 +75,23 @@ macro_rules! make_args {
             let max_iterations = max_iterations.unwrap_or(10);
             let characterize = characterize.unwrap_or(false);
             let gap_radius = bg_radius.map(|_| gap_radius.unwrap_or(0.));
-            let truncate_preprocessed = truncate_preprocessed.unwrap_or(false);
+            let truncate_preprocessed = truncate_preprocessed.unwrap_or(true);
+            // let adaptive_background = adaptive_background.unwrap_or(false);
 
+            let doughnut_correction = doughnut_correction.unwrap_or(false);
+            
+            let illumination_sigma = match illumination_sigma{
+                Some(val) => Some(val),
+                None => {
+                    if correct_illumination.unwrap_or(false){
+                        Some(30.)
+                    } else {
+                        None
+                    }
+                }
+            };
     
-            let $params = TrackingParams {
+            let mut $params = TrackingParams {
                 style: ParamStyle::Trackpy{
                     diameter,
 
@@ -95,11 +112,15 @@ macro_rules! make_args {
                 search_range,
                 memory,
                 // cpu_processed,
-                sig_radius,
+                doughnut_correction,
                 bg_radius,
                 gap_radius,
-                varcheck,
+                snr,
+                minmass_snr,
                 truncate_preprocessed,
+                // correct_illumination,
+                illumination_sigma,
+                adaptive_background,
             };
             $body
         }
@@ -119,7 +140,7 @@ macro_rules! make_log_args {
             max_radius: my_dtype,
             n_radii: Option<usize>,
             log_spacing: Option<bool>,
-            prune_blobs: Option<bool>,
+            // prune_blobs: Option<bool>,
             overlap_threshold: Option<my_dtype>,
 
             minmass: Option<my_dtype>,
@@ -127,11 +148,15 @@ macro_rules! make_log_args {
             characterize: Option<bool>,
             search_range: Option<my_dtype>,
             memory: Option<usize>,
-            sig_radius: Option<my_dtype>,
+            doughnut_correction: Option<bool>,
             bg_radius: Option<my_dtype>,
             gap_radius: Option<my_dtype>,
-            varcheck: Option<my_dtype>,
+            snr: Option<my_dtype>,
+            minmass_snr: Option<my_dtype>,
             truncate_preprocessed: Option<bool>,
+            correct_illumination: Option<bool>,
+            illumination_sigma: Option<my_dtype>,
+            adaptive_background: Option<usize>,
 
             $($postargs)*
         ) -> $outtype {
@@ -145,11 +170,23 @@ macro_rules! make_log_args {
             let max_iterations = max_iterations.unwrap_or(10);
             let characterize = characterize.unwrap_or(false);
             let gap_radius = bg_radius.map(|_| gap_radius.unwrap_or(0.));
-            let truncate_preprocessed = truncate_preprocessed.unwrap_or(false);
+            let truncate_preprocessed = truncate_preprocessed.unwrap_or(true);
+            // let adaptive_background = adaptive_background.unwrap_or(false);
+            
+            let doughnut_correction = doughnut_correction.unwrap_or(false);
 
-            // neither search_range nor memory are unwrapped as linking is optional on the Rust side.
+            let illumination_sigma = match illumination_sigma{
+                Some(val) => Some(val),
+                None => {
+                    if correct_illumination.unwrap_or(false){
+                        Some(30.)
+                    } else {
+                        None
+                    }
+                }
+            };
     
-            let $params = TrackingParams {
+            let mut $params = TrackingParams {
                 style: ParamStyle::Log{
                     min_radius,
                     max_radius,
@@ -163,11 +200,14 @@ macro_rules! make_log_args {
                 search_range,
                 memory,
                 // cpu_processed,
-                sig_radius,
+                doughnut_correction,
                 bg_radius,
                 gap_radius,
-                varcheck,
+                snr,
+                minmass_snr,
                 truncate_preprocessed,
+                illumination_sigma,
+                adaptive_background,
             };
             $body
         }
@@ -206,6 +246,7 @@ make_args!(
         let debug = debug.unwrap_or(false);
         let array = pyarr.as_array();
         let points_rust_array = points_to_characterize.as_ref().map(|arr| arr.as_array());
+        if points_to_characterize.is_some(){ params.characterize = true };
         let (res, columns) = execute_ndarray(&array, params, debug, 0, points_rust_array.as_ref());
         (res.into_pyarray(py), columns.into_py(py))
     }
@@ -229,7 +270,7 @@ make_args!(
         let points_rust_array = points_to_characterize.as_ref().map(|arr| arr.as_array());
         let mut pos_iter = points_rust_array.as_ref().map(|points| 
             FrameSubsetter::new(points, 0, (1, 2)));
-
+        if points_to_characterize.is_some(){ params.characterize = true };
         let (res, columns) = execute_file(
             &filename, channel, params, debug, 0, pos_iter);
         (res.into_pyarray(py), columns.into_py(py))
@@ -242,10 +283,10 @@ make_log_args!(
     {
         py: Python<'py>,
         pyarr: PyReadonlyArray3<my_dtype>,
-        debug: Option<bool>,
     },
     {
         points_to_characterize: Option<PyReadonlyArray2<my_dtype>>,
+        debug: Option<bool>,
     }
     ) -> (&'py PyArray2<my_dtype>, Py<PyAny>) => params{
     let debug = debug.unwrap_or(false);

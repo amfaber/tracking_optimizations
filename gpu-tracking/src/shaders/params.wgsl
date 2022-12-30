@@ -14,5 +14,7 @@ struct Params{
   threshold: f32,
   minmass: f32,
   margin: i32,
-  var_factor: f32,
+  snr: f32,
+  minmass_snr: f32,
+  rough_snr_factor: f32,
 }

@@ -3,7 +3,8 @@
 # from .gpu_tracking import link_rust
 # from .gpu_tracking import batch_log
 # from .gpu_tracking import batch_file_log
-from .gpu_tracking import *
+# from .gpu_tracking import *
+from gpu_tracking import *
 import pandas as pd
 
 def batch(
@@ -91,12 +92,14 @@ def load(path, ets_channel = 0, keys = None):
         raise ValueError("Unrecognized file format. Recognized formats: tiff, ets")
     return video
 
-def annotate_image(image, tracked_df, figax = None, r = None, frame = 0, imshow_kw = {}, circle_kw = {}, subplot_kw = {}):
+def annotate_image(image, tracked_df, figax = None, r = None, frame = None, imshow_kw = {}, circle_kw = {}, subplot_kw = {}):
     import matplotlib.pyplot as plt
 
     circle_kw = {"fill": False, **circle_kw}
-
-    subset_df = tracked_df[tracked_df["frame"] == frame]
+    if frame is not None:
+        subset_df = tracked_df[tracked_df["frame"] == frame]
+    else:
+        subset_df = tracked_df
     
     if r is None and not "r" in subset_df:
         r = 5
@@ -116,7 +119,34 @@ def annotate_image(image, tracked_df, figax = None, r = None, frame = 0, imshow_
         ax.add_patch(plt.Circle((x, y), inner_r, **circle_kw))
     return (fig, ax)
 
-def annotate_video(video, tracked_df, frame, **kwargs):
+def annotate_image_plotly(image, tracked_df, figax = None, r = None, frame = None, imshow_kw = {}, circle_kw = {}, subplot_kw = {}):
+    from plotly import express as px
+    
+    if frame is not None:
+        subset_df = tracked_df[tracked_df["frame"] == frame]
+    else:
+        subset_df = tracked_df
+    
+    if r is None and "r" not in subset_df:
+        r = 5
+        print(f"Using default r of {r}")
+    fig = px.imshow(image, color_continuous_scale = "viridis", **imshow_kw)
+
+    for _idx, row in subset_df.iterrows():
+        if r is None:
+            inner_r = row["r"]
+        else:
+            inner_r = r
+        x, y = row["x"], row["y"]
+        fig.add_shape(
+            type = "circle", xref = "x", yref = "y",
+            x0 = x - inner_r, y0 = y - inner_r,
+            x1 = x + inner_r, y1 = y + inner_r,
+            line_color = "black", line_width = 1,
+        )
+    return fig
+
+def annotate_video(video, tracked_df, frame = 0, **kwargs):
     image = video[frame]
     return annotate_image(image, tracked_df, frame = frame, **kwargs)
 

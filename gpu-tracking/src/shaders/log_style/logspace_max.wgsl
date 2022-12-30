@@ -15,6 +15,12 @@ struct ParticleLocation{
     log_space: f32,
 }
 
+struct WorkgroupSize {
+    x: atomic<u32>,
+    y: atomic<u32>,
+    z: atomic<u32>,
+}
+
 // @group(0) @binding(0)
 // var<uniform> shape: Shape;
 
@@ -39,8 +45,17 @@ var<storage, read_write> n_particles: atomic<u32>;
 @group(0) @binding(5)
 var<storage, read_write> particles: array<ParticleLocation>;
 
-@group(0) @binding(6)
-var<storage, read_write> global_max: atomic<i32>;
+// @group(0) @binding(6)
+// var<storage, read_write> global_max: atomic<i32>;
+
+@group(0) @binding(7)
+var<storage, read_write> wg_size: WorkgroupSize;
+
+@group(0) @binding(8)
+var<storage, read> std_pic: f32;
+
+@group(0) @binding(9)
+var<storage, read> processed: array<f32>;
 
 var<push_constant> pc: PushConstants;
 
@@ -103,8 +118,12 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let flat_idx = ((i + row_transform) % pic_dims[0]) * stride + ((j + col_transform) % pic_dims[1]);
     // let center = middle[flat_idx][0];
     let center = middle[flat_idx];
+
+    if processed[flat_idx] < std_pic * params.snr * params.rough_snr_factor{
+        return;
+    }
     
-    if (center <= 0.2){
+    if (center <= 0.0){
         return;
     }
 
@@ -127,7 +146,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
 
     let idx = atomicAdd(&n_particles, 1u);
-    atomicMax(&global_max, i32(center));
+    // atomicMax(&global_max, i32(center));
     particles[idx] = ParticleLocation(i, j, pc.radius, center);
-
+    if ((idx % _workgroup1d_) == 0u){
+      atomicAdd(&wg_size.x, 1u);
+    }
 }

@@ -44,11 +44,14 @@ pub struct TrackingParams{
     pub search_range: Option<my_dtype>,
     pub memory: Option<usize>,
     // pub cpu_processed: bool,
-    pub sig_radius: Option<my_dtype>,
+    pub doughnut_correction: bool,
     pub bg_radius: Option<my_dtype>,
     pub gap_radius: Option<my_dtype>,
-    pub varcheck: Option<my_dtype>,
+    pub snr: Option<my_dtype>,
+    pub minmass_snr: Option<my_dtype>,
     pub truncate_preprocessed: bool,
+    pub illumination_sigma: Option<my_dtype>,
+    pub adaptive_background: Option<usize>,
 }
 
 impl Default for TrackingParams{
@@ -57,13 +60,16 @@ impl Default for TrackingParams{
             characterize: false,
             search_range: None,
             memory: None,
-            sig_radius: None,
+            doughnut_correction: false,
             bg_radius: None,
             gap_radius: None,
-            varcheck: None,
+            snr: None,
+            minmass_snr: None,
             max_iterations: 10,
             minmass: 0.,
             truncate_preprocessed: true,
+            illumination_sigma: None,
+            adaptive_background: None,
             style: ParamStyle::Trackpy{
                 diameter: 9,
                 noise_size: 1.,
@@ -91,7 +97,15 @@ pub struct GpuParams{
     pub shift_threshold: f32,
     pub minmass: f32,
     pub margin: i32,
-    pub var_factor: f32,
+    pub snr: f32,
+    pub minmass_snr: f32,
+    pub rough_snr_factor: f32,
+}
+
+pub struct IlluminationCorrecter{
+    pub buffer: wgpu::Buffer,
+    pub pass: SeparableConvolution<2>,
+    pub initialized: bool,
 }
 
 pub struct CommonBuffers{
@@ -99,15 +113,23 @@ pub struct CommonBuffers{
     pub frame_buffer: Buffer,
     pub result_buffer: Buffer,
     pub atomic_buffer: Buffer,
+    pub atomic_buffer2: Buffer,
     pub particles_buffer: Buffer,
+    pub particles_buffer2: Buffer,
     pub atomic_filtered_buffer: Buffer,
     pub param_buffer: Buffer,
     pub processed_buffer: Buffer,
+    // pub sum_buffer: Buffer,
+    pub counter_buffer: Buffer,
+    pub std_buffer: Buffer,
+    pub illumination_correcter: Option<IlluminationCorrecter>,
+    pub temp_buffer: Buffer,
+    pub raw_frame: Option<Buffer>,
 }
 
 pub struct TrackpyGpuBuffers{
     // pub processed_buffer: Buffer,
-    pub centers_buffer: Buffer,
+    // pub temp_buffer: Buffer,
     pub masses_buffer: Buffer,
     pub max_rows: Buffer,
 }
@@ -120,11 +142,9 @@ pub struct LogGpuBuffers{
     // pub laplacian_buffer: (Buffer, FftPass<2>),
     // pub unpadded_laplace: (Buffer, [u32; 2]),
     pub global_max: Buffer,
-    pub temp_buffer: Buffer,
+    // pub temp_buffer: Buffer,
     pub temp_buffer2: Buffer,
 }
-
-
 
 
 impl CommonBuffers{
@@ -133,8 +153,9 @@ impl CommonBuffers{
         device: &wgpu::Device,
         size: u64,
         dims: &[u32; 2],
+        pipelines: &mut HashMap<String, (Rc<ComputePipeline>, BindGroupLayout, Option<Rc<Dispatcher>>)>,
         ) -> Self{
-        let result_buffer_depth = if tracking_params.characterize { 7 } else { 3 };
+        // let result_buffer_depth = if tracking_params.characterize { 7 } else { 3 };
         let mut staging_buffers = Vec::new();
         for i in 0..2{
             let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -154,11 +175,19 @@ impl CommonBuffers{
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        
+
+        let raw_frame = if tracking_params.adaptive_background.is_some() & tracking_params.characterize{
+            Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            }))
+        } else { None };
         
         let result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: (result_buffer_depth * size) as u64,
+            size: (size * 4) as u64,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
@@ -166,7 +195,16 @@ impl CommonBuffers{
         let atomic_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size: 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC |
+                wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
+            mapped_at_creation: false,
+        });
+
+        let atomic_buffer2 = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC |
+                wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
             mapped_at_creation: false,
         });
 
@@ -179,10 +217,18 @@ impl CommonBuffers{
 
         let particles_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: size*8,
+            size,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        
+        let particles_buffer2 = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        
         let params = gpuparams_from_tracking_params(&tracking_params, *dims);
         let param_buffer = unsafe{
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -192,7 +238,28 @@ impl CommonBuffers{
             })
         };
 
-        // dbg!(size);
+        // let sum_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        //     label: None,
+        //     size: 4 * 50,
+        //     usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+        //     mapped_at_creation: false,
+        // });
+        
+        let counter_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let std_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC |
+                 wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
+            mapped_at_creation: false,
+        });
+        
         let processed_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size,
@@ -200,15 +267,57 @@ impl CommonBuffers{
             mapped_at_creation: false,
         });
         
+        let temp_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: (2 * size) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        
+        let illumination_correcter = if (tracking_params.illumination_sigma.is_some()) {
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size,
+                usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let pipeline = pipelines.remove("smooth_mean_frame").unwrap();
+            let conv = SeparableConvolution::new(
+                device,
+                &pipeline,
+                &buffer,
+                &buffer,
+                &temp_buffer,
+                [&param_buffer],
+            );
+            let correcter = IlluminationCorrecter{
+                buffer,
+                pass: conv,
+                initialized: false,
+            };
+            Some(correcter)
+            }
+        else {
+            None
+        };
+        
         Self {
             staging_buffers,
             frame_buffer,
             result_buffer,
             atomic_buffer,
+            atomic_buffer2,
             particles_buffer,
+            particles_buffer2,
             atomic_filtered_buffer,
             param_buffer,
             processed_buffer,
+            // sum_buffer,
+            counter_buffer,
+            std_buffer,
+            illumination_correcter,
+            temp_buffer,
+            raw_frame,
         }
     }
 }
@@ -223,22 +332,12 @@ impl TrackpyGpuBuffers{
         dims: &[u32; 2],
         ) -> Self{
         
-        let centers_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: (2 * size) as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        
-        
         let masses_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-
-        
     
         let max_rows = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -247,7 +346,7 @@ impl TrackpyGpuBuffers{
             mapped_at_creation: false,
         });
         Self{
-            centers_buffer,
+            // temp_buffer,
             masses_buffer,
             max_rows,
             // processed_buffer,
@@ -264,7 +363,7 @@ impl LogGpuBuffers{
         dims: &[u32; 2],
         // fftplan: &FftPlan,
         common_buffers: &CommonBuffers,
-        pipelines: &mut HashMap<String, (Rc<ComputePipeline>, BindGroupLayout, Dispatcher)>
+        pipelines: &mut HashMap<String, (Rc<ComputePipeline>, BindGroupLayout, Option<Rc<Dispatcher>>)>
     ) -> Self {
         let (min_radius, max_radius, n_radii, log_spacing) = if let ParamStyle::Log { min_radius, max_radius, n_radii, log_spacing, .. } = tracking_params.style{
             (min_radius, max_radius, n_radii, log_spacing)
@@ -303,12 +402,12 @@ impl LogGpuBuffers{
         // let raw_padded = (raw_padded, raw_pad_pass, raw_fft_pass);
         
         let separable_pipeline = pipelines.remove("separable_log").unwrap();
-        let temp_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: size * 2,
-            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        // let temp_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        //     label: None,
+        //     size: size * 2,
+        //     usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        //     mapped_at_creation: false,
+        // });
 
         let temp_buffer2 = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -335,7 +434,7 @@ impl LogGpuBuffers{
                 &separable_pipeline,
                 frame_buffer,
                 &log_space_buffer,
-                &temp_buffer,
+                &common_buffers.temp_buffer,
                 &temp_buffer2,
                 [param_buffer]
             );
@@ -355,7 +454,7 @@ impl LogGpuBuffers{
             // laplacian_buffer: (padded_laplacian_buffer, laplacian_fft_pass),
             logspace_buffers,
             // raw_padded,
-            temp_buffer,
+            // temp_buffer,
             // unpadded_laplace: (laplacian_buffer, [3, 3]),
             temp_buffer2,
         }
@@ -368,10 +467,12 @@ pub struct GpuState{
     pub common_buffers: CommonBuffers,
     pub passes: HashMap<String, Vec<FullComputePass>>,
     pub pic_size: usize,
-    pub result_read_depth: u64,
+    // pub result_read_depth: u64,
     pub pic_byte_size: u64,
     pub flavor: GpuStateFlavor,
     pub dims: [u32; 2],
+    pub std_pass: Option<StdArray>,
+    pub characterize: Option<FullComputePass>,
 }
 
 pub enum GpuStateFlavor{
@@ -414,7 +515,9 @@ fn gpuparams_from_tracking_params(params: &TrackingParams, pic_dims: [u32; 2]) -
         shift_threshold: 0.6,
         minmass: params.minmass,
         margin,
-        var_factor: params.varcheck.unwrap_or(0.0),
+        snr: params.snr.unwrap_or(0.0),
+        minmass_snr: params.minmass_snr.unwrap_or(0.0),
+        rough_snr_factor: if params.adaptive_background.is_some() { 0.5 } else {1.0},
     }
 }
 
@@ -438,6 +541,7 @@ pub fn setup_state(
     let mut desc = wgpu::DeviceDescriptor::default();
     desc.features = wgpu::Features::MAPPABLE_PRIMARY_BUFFERS | wgpu::Features::PUSH_CONSTANTS;
     desc.limits.max_push_constant_size = 16;
+    desc.limits.max_storage_buffers_per_shader_stage = 12;
     // desc.limits.max_compute_invocations_per_workgroup = 1024;
     let (device, queue) = adapter
     .request_device(&desc, None)
@@ -447,21 +551,21 @@ pub fn setup_state(
     let workgroup_size2d = [16u32, 16, 1];
     let workgroup_size1d = [256u32, 1, 1];
 
-    let n_workgroups = |dims: &[u32; 3], wgsize: &[u32; 3]| { 
-        let mut n_workgroups = [0, 0, 0];
-        for i in 0..3 {
-            n_workgroups[i] = (dims[i] + wgsize[i] - 1) / wgsize[i];
-        }
-        n_workgroups
-    };
+    // let n_workgroups = |dims: &[u32; 3], wgsize: &[u32; 3]| { 
+    //     let mut n_workgroups = [0, 0, 0];
+    //     for i in 0..3 {
+    //         n_workgroups[i] = (dims[i] + wgsize[i] - 1) / wgsize[i];
+    //     }
+    //     n_workgroups
+    // };
 
-    let result_read_depth: u64 = match debug{
-        false => match tracking_params.characterize{
-            false => 3,
-            true => 7,
-        },
-        true => 2,
-    };
+    // let result_read_depth: u64 = match debug{
+    //     false => match tracking_params.characterize{
+    //         false => 3,
+    //         true => 7,
+    //     },
+    //     true => 2,
+    // };
     
     let pic_size = dims.iter().product::<u32>() as usize;
     let slice_size = pic_size * std::mem::size_of::<my_dtype>();
@@ -474,50 +578,101 @@ pub fn setup_state(
         if characterize_new_points{
             result = result.replace("//_feat_characterize_points ", "");
         }
-        if tracking_params.varcheck.is_some(){
-            result = result.replace("//_feat_varcheck ", "");
-        }
+        // if tracking_params.varcheck.is_some(){
+            // result = result.replace("//_feat_varcheck ", "");
+        // }
         if tracking_params.truncate_preprocessed{
             result = result.replace("//_feat_truncate_preprocessed ", "")
         }
         if let ParamStyle::Log{..} = tracking_params.style{
             result = result.replace("//_feat_LoG ", "");
         }
-        result.replace("@workgroup_size(_)",
-        format!("@workgroup_size({}, {}, {})", wg_size[0], wg_size[1], wg_size[2]).as_str())
+        result = result.replace("@workgroup_size(_)",
+        format!("@workgroup_size({}, {}, {})", wg_size[0], wg_size[1], wg_size[2]).as_str());
+        result = result.replace("_workgroup1d_", format!("{}u", wg_size[0]).as_str());
+        result
     };
 
     let wg_dims = [dims[0], dims[1], 1];
+    let wg_dims_1d = [dims[0] * dims[1], 1, 1];
     let common_header = include_str!("shaders/params.wgsl");
 
-    let common_buffers = CommonBuffers::create(
-        &tracking_params, &device, size, dims
-    );
+    let direct_dispatcher1d = Rc::new(Dispatcher::new_direct(&wg_dims_1d, &workgroup_size1d));
+    let direct_dispatcher2d = Rc::new(Dispatcher::new_direct(&wg_dims, &workgroup_size2d));
+    let indirect_default = wgpu::util::DispatchIndirect{ x: 0, y: 1, z: 1 };
+    let indirect_dispatcher = Rc::new(Dispatcher::new_indirect(&device, indirect_default));
+    let indirect_dispatcher2 = Rc::new(Dispatcher::new_indirect(&device, indirect_default));
+    let indirect_dispatcher_result = Rc::new(Dispatcher::new_indirect(&device, indirect_default));
+
+    let mut shaders = HashMap::new();
+    shaders.extend([
+        ("preprocess_rows", (include_str!("shaders/preprocess_rows.wgsl"), Some(Rc::clone(&direct_dispatcher2d)), workgroup_size2d)),
+        ("preprocess_cols", (include_str!("shaders/preprocess_cols.wgsl"), Some(Rc::clone(&direct_dispatcher2d)), workgroup_size2d)),
+        ("walk", (include_str!("shaders/walk.wgsl"), Some(Rc::clone(&indirect_dispatcher)), workgroup_size1d)),
+    ]);
+
+    // let shader = std::fs::read_to_string("src/shaders/characterize.wgsl").unwrap();
+    if tracking_params.characterize | characterize_new_points {
+        shaders.extend([
+            ("characterize", (include_str!("shaders/characterize.wgsl"), Some(Rc::clone(&indirect_dispatcher_result)), workgroup_size1d)),
+            // ("characterize", (shader.as_str(), Some(Rc::clone(&indirect_dispatcher_result)), workgroup_size1d))
+        ]);
+    }
     
-    let (flavor, pipelines, common_header) = match &tracking_params.style{
+    if tracking_params.snr.is_some() | tracking_params.minmass_snr.is_some() {
+        shaders.extend([
+            ("sum_image_outplace", (include_str!("shaders/sum_image_outplace.wgsl"), None, workgroup_size1d)),
+            ("std_image", (include_str!("shaders/std_image.wgsl"), None, workgroup_size1d)),
+            ("last_reduction", (include_str!("shaders/last_reduction.wgsl"), None, [1, 1, 1])),
+            ("sum_image_inplace", (include_str!("shaders/sum_image_inplace.wgsl"), None, workgroup_size1d)),
+        ]);
+    }
+    
+    if tracking_params.illumination_sigma.is_some(){
+        shaders.extend([
+            ("sum_frames", (include_str!("shaders/correct_illumination/sum_frames.wgsl"), Some(Rc::clone(&direct_dispatcher1d)), workgroup_size1d)),
+            ("divide_frames", (include_str!("shaders/correct_illumination/divide_frames.wgsl"), Some(Rc::clone(&direct_dispatcher1d)), workgroup_size1d)),
+            ("smooth_mean_frame", (include_str!("shaders/correct_illumination/smooth_mean_frame.wgsl"), Some(Rc::clone(&direct_dispatcher2d)), workgroup_size2d)),
+            ("correct_illumination", (include_str!("shaders/correct_illumination/correct_illumination.wgsl"), Some(Rc::clone(&direct_dispatcher1d)), workgroup_size1d)),
+        ]);
+    }
+
+    if tracking_params.adaptive_background.is_some(){
+        shaders.extend([
+            ("adaptive_filter", (include_str!("shaders/adaptive_filter.wgsl"), Some(Rc::clone(&indirect_dispatcher2)), workgroup_size1d)),
+        ]);
+    }
+
+    let (flavor, mut pipelines, common_header, common_buffers) = match &tracking_params.style{
         
         ParamStyle::Trackpy{..} => {
-                
-            let mut shaders = HashMap::from([
-                ("max_rows", (include_str!("shaders/max_rows.wgsl"), Dispatcher::new_direct(&wg_dims, &workgroup_size2d), workgroup_size2d)),
-                // ("extract_max", (include_str!("shaders/extract_max.wgsl"), wg_dims, workgroup_size2d)),
-                // ("preprocess_rows", (include_str!("shaders/preprocess_rows.wgsl"), wg_dims, workgroup_size2d)),
-                // ("preprocess_cols", (include_str!("shaders/preprocess_cols.wgsl"), wg_dims, workgroup_size2d)),
-                // ("walk", (include_str!("shaders/walk.wgsl"), [40000, 1, 1], workgroup_size1d)),
-                // ("characterize", (include_str!("shaders/characterize.wgsl"), [40000, 1, 1], workgroup_size1d)),
+            // let mut shaders = HashMap::from([
+            shaders.extend([
+                // ("sum_image", (include_str!("shaders/sum_image.wgsl"), Some(Rc::clone(&direct_dispatcher)), workgroup_size2d)),
+                // ("std_image", (include_str!("shaders/std_image.wgsl"), Some(Rc::clone(&direct_dispatcher)), workgroup_size2d)),
+                ("max_rows", (include_str!("shaders/max_rows.wgsl"), Some(Rc::clone(&direct_dispatcher2d)), workgroup_size2d)),
+                ("extract_max", (include_str!("shaders/extract_max.wgsl"), Some(Rc::clone(&direct_dispatcher2d)), workgroup_size2d)),
+                // ("preprocess_rows", (include_str!("shaders/preprocess_rows.wgsl"), Some(Rc::clone(&direct_dispatcher1d)), workgroup_size2d)),
+                // ("preprocess_cols", (include_str!("shaders/preprocess_cols.wgsl"), Some(Rc::clone(&direct_dispatcher1d)), workgroup_size2d)),
+                // ("walk", (include_str!("shaders/walk.wgsl"), Some(Rc::clone(&indirect_dispatcher1d)), workgroup_size1d)),
             ]);
 
             let mut pipelines = 
             make_pipelines_from_source(shaders, preprocess_source, common_header, &device);
             
-                
+            let common_buffers = CommonBuffers::create(
+                &tracking_params, &device, size, dims, &mut pipelines,
+            );
+            
             let order = vec![
+                // Some("sum_image".to_string()),
+                // Some("std_image".to_string()),
                 Some("preprocess_rows".to_string()),
                 Some("preprocess_cols".to_string()),
                 if (!characterize_new_points) { Some("max_rows".to_string()) } else {None},
                 if (!characterize_new_points) { Some("extract_max".to_string()) } else {None},
                 if (!characterize_new_points) { Some("walk".to_string()) } else {None},
-                if (tracking_params.characterize | characterize_new_points) { Some("characterize".to_string()) } else {None},
+                // if (tracking_params.characterize | characterize_new_points) { Some("characterize".to_string()) } else {None},
             ];
 
             let order = order.into_iter().flatten().collect();
@@ -533,36 +688,42 @@ pub fn setup_state(
             };
 
 
-            (flavor, pipelines, common_header)
+            (flavor, pipelines, common_header, common_buffers)
         },
         ParamStyle::Log{ max_radius, min_radius, log_spacing, n_radii, .. } => {
-            // let common_header = "";
+            // let direct_dispatcher = Rc::new(Dispatcher::new_direct(&wg_dims, &workgroup_size2d));
+            // let indirect_default = wgpu::util::DispatchIndirect{ x: 0, y: 1, z: 1 };
+            // let indirect_dispatcher = Rc::new(Dispatcher::new_indirect(&device, indirect_default));
 
-            let fftshaders = wgpu_fft::fft::compile_shaders(&device, 
-                Some(&workgroup_size2d),
-                Some(&workgroup_size1d));
-            let max_sigma = max_radius / (2 as my_dtype).sqrt();
-            let gauss_size = (max_sigma * 4. + 0.5) as u32 * 2 + 1;
+            // let fftshaders = wgpu_fft::fft::compile_shaders(&device, 
+            //     Some(&workgroup_size2d),
+            //     Some(&workgroup_size1d));
+            // let max_sigma = max_radius / (2 as my_dtype).sqrt();
+            // let gauss_size = (max_sigma * 4. + 0.5) as u32 * 2 + 1;
             // let fft_shape = wgpu_fft::fft::get_shape(dims, &[gauss_size, gauss_size]);
             // let fftplan = wgpu_fft::fft::FftPlan::create(&fft_shape, fftshaders, &device, &queue);
-            let init_wg_dims = [gauss_size, gauss_size, 1];
+            // let init_wg_dims = [gauss_size, gauss_size, 1];
             
-            let shaders = HashMap::from([
+            // let shaders = HashMap::from([
+            shaders.extend([
                 // ("init_log", (include_str!("shaders/log_style/init_log.wgsl"), init_wg_dims, workgroup_size1d)),
                 
                 
-                // ("logspace_max", (include_str!("shaders/log_style/logspace_max.wgsl"), Dispatcher::new_direct(wg_dims,), workgroup_size1d)),
-                // ("walk", (include_str!("shaders/walk.wgsl"), [10000, 1, 1], workgroup_size1d)),
-                ("separable_log", (include_str!("shaders/log_style/separable_log.wgsl"), Dispatcher::new_direct(&wg_dims, &workgroup_size2d), workgroup_size2d)),
-                // ("preprocess_rows", (include_str!("shaders/preprocess_rows.wgsl"), wg_dims, workgroup_size2d)),
-                // ("preprocess_cols", (include_str!("shaders/preprocess_cols.wgsl"), wg_dims, workgroup_size2d)),
-
+                ("logspace_max", (include_str!("shaders/log_style/logspace_max.wgsl"), Some(Rc::clone(&direct_dispatcher2d)), workgroup_size2d)),
+                // ("walk", (include_str!("shaders/walk.wgsl"), Some(Rc::clone(&indirect_dispatcher)), workgroup_size1d)),
+                ("separable_log", (include_str!("shaders/log_style/separable_log.wgsl"), Some(Rc::clone(&direct_dispatcher2d)), workgroup_size2d)),
+                // ("preprocess_rows", (include_str!("shaders/preprocess_rows.wgsl"), Some(Rc::clone(&direct_dispatcher)), workgroup_size2d)),
+                // ("preprocess_cols", (include_str!("shaders/preprocess_cols.wgsl"), Some(Rc::clone(&direct_dispatcher)), workgroup_size2d)),
 
                 // ("characterize", (include_str!("shaders/characterize.wgsl"), [10000, 1, 1], workgroup_size1d)),
             ]);
             
             let mut pipelines = 
             make_pipelines_from_source(shaders, preprocess_source, common_header, &device);
+            
+            let common_buffers = CommonBuffers::create(
+                &tracking_params, &device, size, dims, &mut pipelines,
+            );
             
             // let GpuBuffers::Log(buffers) = create_buffers(&tracking_params, &device, size, dims, fftplan.as_ref(), &mut pipelines) else {unreachable!()};
             let buffers = LogGpuBuffers::create(
@@ -572,10 +733,11 @@ pub fn setup_state(
 
             let radii = if *log_spacing{
                 let mut start = min_radius.log(10.);
+                dbg!(start);
                 let end = max_radius.log(10.);
                 let diff = (end - start) / (*n_radii - 1) as my_dtype;
-                let mut out = (0..(n_radii - 1)).map(|_| {let temp = start; start += diff; temp.powf(10.)}).collect::<Vec<_>>();
-                out.push(start);
+                let mut out = (0..(n_radii - 1)).map(|_| {let temp = start; start += diff; (10f32).powf(temp)}).collect::<Vec<_>>();
+                out.push((10f32).powf(start));
                 out
             } else {
                 let mut start = *min_radius;
@@ -586,15 +748,31 @@ pub fn setup_state(
                 out
             };
             let flavor = GpuStateFlavor::Log{
-                // fftplan,
                 buffers,
                 radii,
             };
-            (flavor, pipelines, common_header)
+            (flavor, pipelines, common_header, common_buffers,)
         },
     };
     
     
+    let std_pass = if tracking_params.snr.is_some() || tracking_params.minmass_snr.is_some(){
+        Some(
+            StdArray::new(
+                &device,
+                &pipelines.remove("sum_image_inplace").unwrap(),
+                &pipelines.remove("sum_image_outplace").unwrap(),
+                &pipelines.remove("last_reduction").unwrap(),
+                &pipelines.remove("std_image").unwrap(),
+                &common_buffers.frame_buffer,
+                &common_buffers.temp_buffer,
+                &common_buffers.std_buffer,
+                &common_buffers.counter_buffer,
+                pic_size as u32,
+                &workgroup_size1d,
+            )
+        )
+    } else { None };
 
     /* Dynamically load shaders to avoid recompilation when debugging. This requires the shaders to be
     in the directory layout as in the repo.
@@ -625,20 +803,101 @@ pub fn setup_state(
     //     (name, (shader, n_workgroups(&dims, &group_size), bindgrouplayout))
     // }).collect::<HashMap<_, _>>();
     
-    
-    let bind_group_entries = match flavor{
-    GpuStateFlavor::Trackpy{ref buffers, ..} => {
-            HashMap::from([
-            ("preprocess_rows", vec![vec![
-                Some((0, &common_buffers.param_buffer)),
+    let mut bind_group_entries = HashMap::new();
+
+    bind_group_entries.extend([
+        ("preprocess_rows", vec![vec![
+            Some((0, &common_buffers.param_buffer)),
+            Some((1, &common_buffers.frame_buffer)),
+            Some((3, &common_buffers.temp_buffer)),
+        ]]),
+        ("preprocess_cols", vec![vec![
+            Some((0, &common_buffers.param_buffer)),
+            Some((2, &common_buffers.temp_buffer)),
+            Some((3, &common_buffers.processed_buffer)), 
+        ]]),
+    ]);
+
+    if tracking_params.illumination_sigma.is_some(){
+        bind_group_entries.extend([
+            ("sum_frames", vec![vec![
+                Some((0, &common_buffers.frame_buffer)),
+                Some((1, &common_buffers.illumination_correcter.as_ref().unwrap().buffer)), 
+            ]]),
+            ("divide_frames", vec![vec![
+                Some((0, &common_buffers.illumination_correcter.as_ref().unwrap().buffer)), 
+            ]]),
+            ("correct_illumination", vec![vec![
+                Some((0, &common_buffers.illumination_correcter.as_ref().unwrap().buffer)), 
                 Some((1, &common_buffers.frame_buffer)),
-                Some((3, &buffers.centers_buffer)),
             ]]),
-            ("preprocess_cols", vec![vec![
+        ]);
+    }
+    
+    let (walk_result, walk_atomic, walk_dispatch) = if tracking_params.adaptive_background.is_some(){
+        bind_group_entries.extend([
+            ("adaptive_filter", vec![vec![
                 Some((0, &common_buffers.param_buffer)),
-                Some((2, &buffers.centers_buffer)),
-                Some((3, &common_buffers.processed_buffer)), 
+                Some((1, &common_buffers.particles_buffer2)), 
+                Some((2, &common_buffers.particles_buffer)), 
+                Some((3, &common_buffers.result_buffer)), 
+                Some((4, &common_buffers.std_buffer)), 
+                Some((5, &common_buffers.atomic_buffer2)), 
+                Some((6, &common_buffers.atomic_buffer)), 
+                Some((7, &common_buffers.atomic_filtered_buffer)), 
+                Some((8, indirect_dispatcher.as_ref().get_buffer())),
+                Some((9, indirect_dispatcher_result.as_ref().get_buffer())),
+                Some((10, &common_buffers.frame_buffer)),
+                Some((11, &common_buffers.counter_buffer)),
+            ], vec![
+                Some((0, &common_buffers.param_buffer)),
+                Some((1, &common_buffers.particles_buffer)), 
+                Some((2, &common_buffers.particles_buffer2)), 
+                Some((3, &common_buffers.result_buffer)), 
+                Some((4, &common_buffers.std_buffer)), 
+                Some((5, &common_buffers.atomic_buffer)), 
+                Some((6, &common_buffers.atomic_buffer2)), 
+                Some((7, &common_buffers.atomic_filtered_buffer)), 
+                Some((8, indirect_dispatcher2.as_ref().get_buffer())),
+                Some((9, indirect_dispatcher_result.as_ref().get_buffer())),
+                Some((10, &common_buffers.frame_buffer)),
+                Some((11, &common_buffers.counter_buffer)),
             ]]),
+        ]);
+        (&common_buffers.particles_buffer2, &common_buffers.atomic_buffer2, &indirect_dispatcher2)
+    } else {
+        (&common_buffers.result_buffer, &common_buffers.atomic_filtered_buffer, &indirect_dispatcher_result)
+    };
+
+    bind_group_entries.extend([
+        ("walk", vec![vec![
+            Some((0, &common_buffers.param_buffer)),
+            Some((1, &common_buffers.processed_buffer)), 
+            Some((2, &common_buffers.particles_buffer)),
+            Some((3, &common_buffers.atomic_buffer)),
+            Some((4, walk_atomic)),
+            Some((5, walk_result)),
+            Some((6, &common_buffers.frame_buffer)),
+            Some((7, &common_buffers.std_buffer)),
+            Some((8, walk_dispatch.as_ref().get_buffer())),
+        ]]),
+    ]);
+
+    if tracking_params.characterize{
+        bind_group_entries.extend([
+            ("characterize", vec![vec![
+                Some((0, &common_buffers.param_buffer)),
+                Some((1, &common_buffers.processed_buffer)), 
+                Some((2, common_buffers.raw_frame.as_ref().unwrap_or(&common_buffers.frame_buffer))),
+                Some((3, &common_buffers.atomic_filtered_buffer)),
+                Some((4, &common_buffers.result_buffer)),
+            ]]),
+        ]);
+    }
+    
+    match flavor{
+    GpuStateFlavor::Trackpy{ref buffers, ..} => {
+            bind_group_entries.extend([
             ("max_rows", vec![vec![
                 Some((0, &common_buffers.param_buffer)),
                 Some((1, &common_buffers.processed_buffer)), 
@@ -649,77 +908,27 @@ pub fn setup_state(
                 Some((1, &common_buffers.processed_buffer)), 
                 Some((2, &buffers.max_rows)),
                 Some((3, &common_buffers.atomic_buffer)),
-                Some((4, &common_buffers.particles_buffer))
+                Some((4, &common_buffers.particles_buffer)),
+                Some((5, indirect_dispatcher.as_ref().get_buffer())),
+                Some((6, &common_buffers.std_buffer)),
             ]]),
-            ("walk", vec![vec![
-                Some((0, &common_buffers.param_buffer)),
-                Some((1, &common_buffers.processed_buffer)), 
-                Some((2, &common_buffers.particles_buffer)),
-                Some((3, &common_buffers.atomic_buffer)),
-                Some((4, &common_buffers.atomic_filtered_buffer)),
-                Some((5, &common_buffers.result_buffer)),
-                Some((6, &common_buffers.frame_buffer)),
-            ]]),
-
-            ("characterize", vec![vec![
-                Some((0, &common_buffers.param_buffer)),
-                Some((1, &common_buffers.processed_buffer)), 
-                Some((2, &common_buffers.frame_buffer)),
-                Some((3, &common_buffers.atomic_filtered_buffer)),
-                Some((4, &common_buffers.result_buffer)),
-            ]]),
-                
         ])
     },
 
     GpuStateFlavor::Log{ref buffers, ..} => {
-    // GpuStateFlavor::Log{ref buffers, ref fftplan, ..} => {
-        // let buffers = &flavor.buffers;
-        HashMap::from([
-            // ("init_log", 
-            //     buffers.filter_buffers.iter().map(|(buffer)|{
-            //         vec![
-            //             Some((0, &fftplan.gpu_side_params)),
-            //             Some((1, &buffer.0)),
-            //         ]
-            //     }).collect()),
-            
+        bind_group_entries.extend([
             ("logspace_max", (0..3isize).map(|i| {
                 vec![
-                    // Some((0, &fftplan.gpu_side_params)),
                     Some((0, &common_buffers.param_buffer)),
                     Some((1, &buffers.logspace_buffers[((i-1).rem_euclid(3)) as usize].0)),
                     Some((2, &buffers.logspace_buffers[i as usize].0)),
                     Some((3, &buffers.logspace_buffers[((i+1).rem_euclid(3)) as usize].0)),
                     Some((4, &common_buffers.atomic_buffer)),
                     Some((5, &common_buffers.particles_buffer)),
-                    Some((6, &buffers.global_max)),
+                    Some((7, indirect_dispatcher.as_ref().get_buffer())),
+                    Some((8, &common_buffers.std_buffer)),
+                    Some((9, &common_buffers.processed_buffer)),
                 ]}).collect::<Vec<_>>()),
-            
-            ("walk", buffers.logspace_buffers.iter().map(|(tup)| {
-                let logspace_buffer = &tup.0;
-                vec![
-                    Some((0, &common_buffers.param_buffer)),
-                    Some((1, &common_buffers.processed_buffer)), 
-                    Some((2, &common_buffers.particles_buffer)),
-                    Some((3, &common_buffers.atomic_buffer)),
-                    Some((4, &common_buffers.atomic_filtered_buffer)),
-                    Some((5, &common_buffers.result_buffer)),
-                    Some((6, &common_buffers.frame_buffer)),
-                    // Some((7, &fftplan.gpu_side_params)),
-                ]}).collect::<Vec<_>>()),
-            
-            ("preprocess_rows", vec![vec![
-                Some((0, &common_buffers.param_buffer)),
-                Some((1, &common_buffers.frame_buffer)),
-                Some((3, &buffers.temp_buffer)),
-            ]]),
-            
-            ("preprocess_cols", vec![vec![
-                Some((0, &common_buffers.param_buffer)),
-                Some((2, &buffers.temp_buffer)),
-                Some((3, &common_buffers.processed_buffer)), 
-            ]]),
         ])
     }
     };
@@ -737,8 +946,8 @@ pub fn setup_state(
         .collect::<HashMap<_, _>>();
 
 
-    let passes = pipelines.into_iter()
-        .map(|(name, (pipeline, layout, wg_n))|{
+    let mut passes = pipelines.into_iter()
+        .map(|(name, (pipeline, layout, dispatcher))|{
         let entries = &bind_group_entries[name.as_str()];
         let passes_for_name = entries.iter().map(|entry|{
             let bindgroup = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -749,7 +958,7 @@ pub fn setup_state(
             let pass = FullComputePass{
                 pipeline: Rc::clone(&pipeline),
                 bindgroup,
-                dispatcher: wg_n,
+                dispatcher: dispatcher.as_ref().map(|d| Rc::clone(d)),
             };
             pass
         }).collect::<Vec<_>>();
@@ -757,6 +966,10 @@ pub fn setup_state(
         (name, passes_for_name)
     }).collect::<HashMap<_, _>>();
 
+    passes.get_mut("adaptive_filter").as_mut().map(|v| v[1].dispatcher = Some(indirect_dispatcher));
+    
+    
+    let characterize = passes.remove("characterize").map(|mut v| v.remove(0));
 
     let state = GpuState{
         device,
@@ -765,11 +978,11 @@ pub fn setup_state(
         common_buffers,
         pic_byte_size: size,
         pic_size,
-        result_read_depth,
         flavor,
         dims: dims.clone(),
+        std_pass,
+        characterize
     };
-    // state.setup_buffers();
     state
 
 }
@@ -777,24 +990,15 @@ pub fn setup_state(
 
 
 fn make_pipelines_from_source<F: Fn(&str, &[u32; 3], &str) -> String>(
-    shaders: HashMap<&str, (&str, Dispatcher, [u32; 3])>,
+    shaders: HashMap<&str, (&str, Option<Rc<Dispatcher>>, [u32; 3])>,
     preprocessor: F,
     common_header: &str,
     device: &wgpu::Device)
-    -> HashMap<String, (Rc<wgpu::ComputePipeline>, wgpu::BindGroupLayout, Dispatcher)>
+    -> HashMap<String, (Rc<wgpu::ComputePipeline>, wgpu::BindGroupLayout, Option<Rc<Dispatcher>>)>
     {
-    
-    // let n_workgroups = |dims: &[u32; 3], wgsize: &[u32; 3]| { 
-    //     let mut n_workgroups = [0, 0, 0];
-    //     for i in 0..3 {
-    //         n_workgroups[i] = (dims[i] + wgsize[i] - 1) / wgsize[i];
-    //     }
-    //     n_workgroups
-    // };
     
     let output = shaders.into_iter().map(|(name, (source, dispatcher, group_size))|{
         let shader_source = preprocessor(source, &group_size, common_header);
-        // let wg_n = n_workgroups(&dims, &group_size);
         let bindgrouplayout = infer_compute_bindgroup_layout(&device, &shader_source);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor{
             label: None,

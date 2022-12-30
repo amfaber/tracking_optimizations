@@ -5,9 +5,36 @@ struct ParticleLocation{
     log_space: f32,
 }
 
-struct Shape{
-    nrows: u32,
-    ncols: u32,
+// struct Shape{
+//     nrows: u32,
+//     ncols: u32,
+// }
+
+struct ResultRow{
+  x: f32,
+  y: f32,
+  mass: f32,
+  r: f32,
+  max_intensity: f32,
+  Rg: f32,
+  raw_mass: f32,
+  signal: f32,
+  ecc: f32,
+  count: f32,
+}
+
+struct WalkResult{
+  x: f32,
+  y: f32,
+  mass: f32,
+  max: f32,
+  count: f32,
+}
+
+struct WorkgroupSize {
+    x: atomic<u32>,
+    y: atomic<u32>,
+    z: atomic<u32>,
 }
 
 @group(0) @binding(0)
@@ -26,21 +53,23 @@ var<storage, read> n_particles: u32;
 var<storage, read_write> n_particles_filtered: atomic<u32>;
 
 @group(0) @binding(5)
-var<storage, read_write> results: array<f32>;
+var<storage, read_write> results: array<ResultRow>;
 
 @group(0) @binding(6)
 var<storage, read> raw_frame: array<f32>;
 
-// //_feat_LoG @group(0) @binding(7)
-// //_feat_LoG var<uniform> shape: Shape;
+@group(0) @binding(7)
+var<storage, read> image_std: f32;
 
+@group(0) @binding(8)
+var<storage, read_write> next_dispatch: WorkgroupSize;
 
-fn get_center(u: i32, v: i32, kernel_rows: i32, kernel_cols: i32, transform: vec2<i32>) -> vec3<f32>{
+fn get_center(u: i32, v: i32, kernel_rows: i32, kernel_cols: i32, transform: vec2<i32>) -> WalkResult{
   let rint = (kernel_rows - 1) / 2;
   let r = f32(rint);
   let r2 = r * r;
-  var centers_and_mass = vec3<f32>(0.0, 0.0, 0.0);
-  let middle_idx = u * params.pic_ncols + v;
+  var result: WalkResult;
+  // let middle_idx = u * params.pic_ncols + v;
   for (var i: i32 = -rint; i <= rint; i = i + 1) {
     let x = f32(i);
     let x2 = x*x;
@@ -61,71 +90,73 @@ fn get_center(u: i32, v: i32, kernel_rows: i32, kernel_cols: i32, transform: vec
       let pic_idx = pic_u * params.pic_ncols + pic_v;
       let data = processed_buffer[pic_idx];
 
-      centers_and_mass[0] += data * x;
-      centers_and_mass[1] += data * y;
-      centers_and_mass[2] += data;
+      result.x += data * x;
+      result.y += data * y;
+      result.mass += data;
+      result.count += 1.0;
+      result.max = max(result.max, data);
     }
   }
-  centers_and_mass[0] /= centers_and_mass[2];
-  centers_and_mass[1] /= centers_and_mass[2];
-  return centers_and_mass;
+  result.x /= result.mass;
+  result.y /= result.mass;
+  return result;
 }
 
-fn variance_check(u: f32, v: f32, kernel_rows: i32, kernel_cols: i32) -> bool{
-  let u = i32(round(u));
-  let v = i32(round(v));
+// fn variance_check(u: f32, v: f32, kernel_rows: i32, kernel_cols: i32) -> bool{
+//   let u = i32(round(u));
+//   let v = i32(round(v));
 
-  let radiusu = kernel_rows / 2;
-  let radiusv = kernel_cols / 2;
+//   let radiusu = kernel_rows / 2;
+//   let radiusv = kernel_cols / 2;
   
-  var mean = 0.0;
-  var counter = 0.0;
-  for (var i: i32 = -radiusu; i <= radiusu; i = i + 1) {
-    let pic_u = u + i;
-    if (pic_u < 0 || pic_u >= params.pic_nrows) {
-      continue;
-    }
-    for (var j: i32 = -radiusv; j <= radiusv; j = j + 1) {
-      let pic_v = v + j;
-      if (pic_v < 0 || pic_v >= params.pic_ncols) {
-        continue;
-      }
-      let pic_idx = pic_u * params.pic_ncols + pic_v;
-      mean += raw_frame[pic_idx];
-      counter += 1.0;
-    }
-  }
-  mean /= counter;
+//   var mean = 0.0;
+//   var counter = 0.0;
+//   for (var i: i32 = -radiusu; i <= radiusu; i = i + 1) {
+//     let pic_u = u + i;
+//     if (pic_u < 0 || pic_u >= params.pic_nrows) {
+//       continue;
+//     }
+//     for (var j: i32 = -radiusv; j <= radiusv; j = j + 1) {
+//       let pic_v = v + j;
+//       if (pic_v < 0 || pic_v >= params.pic_ncols) {
+//         continue;
+//       }
+//       let pic_idx = pic_u * params.pic_ncols + pic_v;
+//       mean += raw_frame[pic_idx];
+//       counter += 1.0;
+//     }
+//   }
+//   mean /= counter;
 
-  var variance = 0.0;
-  for (var i: i32 = -radiusu; i <= radiusu; i = i + 1) {
-    let pic_u = u + i;
-    if (pic_u < 0 || pic_u >= params.pic_nrows) {
-      continue;
-    }
-    for (var j: i32 = -radiusv; j <= radiusv; j = j + 1) {
-      let pic_v = v + j;
-      if (pic_v < 0 || pic_v >= params.pic_ncols) {
-        continue;
-      }
-      let pic_idx = pic_u * params.pic_ncols + pic_v;
-      variance += (raw_frame[pic_idx] - mean) * (raw_frame[pic_idx] - mean);
-    }
-  }
-  variance /= counter - 1.0;
-  // variance = sqrt(variance);
-  let stdev = sqrt(variance);
-  if (processed_buffer[u * params.pic_ncols + v] > stdev * params.var_factor) {
-    return true;
-  } else {
-    return false;
-  }
-}
+//   var variance = 0.0;
+//   for (var i: i32 = -radiusu; i <= radiusu; i = i + 1) {
+//     let pic_u = u + i;
+//     if (pic_u < 0 || pic_u >= params.pic_nrows) {
+//       continue;
+//     }
+//     for (var j: i32 = -radiusv; j <= radiusv; j = j + 1) {
+//       let pic_v = v + j;
+//       if (pic_v < 0 || pic_v >= params.pic_ncols) {
+//         continue;
+//       }
+//       let pic_idx = pic_u * params.pic_ncols + pic_v;
+//       variance += (raw_frame[pic_idx] - mean) * (raw_frame[pic_idx] - mean);
+//     }
+//   }
+//   variance /= counter - 1.0;
+//   // variance = sqrt(variance);
+//   let stdev = sqrt(variance);
+//   if (processed_buffer[u * params.pic_ncols + v] > stdev * params.var_factor) {
+//     return true;
+//   } else {
+//     return false;
+//   }
+// }
 
-fn walk(argpicuv: vec2<i32>, r: f32, transform: vec2<i32>) -> vec3<f32> {
+fn walk(argpicuv: vec2<i32>, r: f32, transform: vec2<i32>) -> WalkResult {
   var picuv = argpicuv;
   var changed = false;
-  var center_and_mass: vec3<f32>;
+  var result: WalkResult;
 
   var radiusu: i32;
   var radiusv: i32;
@@ -146,19 +177,19 @@ fn walk(argpicuv: vec2<i32>, r: f32, transform: vec2<i32>) -> vec3<f32> {
 
   for (var i: u32 = 0u; i < params.max_iterations; i = i + 1u) {
     // idx = u * params.pic_ncols + v;
-    center_and_mass = get_center(picuv[0], picuv[1], kernel_rows, kernel_cols, transform);
+    result = get_center(picuv[0], picuv[1], kernel_rows, kernel_cols, transform);
     changed = false;
-    if ((center_and_mass[0] > params.threshold) && (picuv[0] < params.pic_nrows - 1 - radiusu)) {
+    if ((result.x > params.threshold) && (picuv[0] < params.pic_nrows - 1 - radiusu)) {
       picuv[0] += 1;
       changed = true;
-    } else if (center_and_mass[0] < -params.threshold && picuv[0] > radiusu) {
+    } else if (result.x < -params.threshold && picuv[0] > radiusu) {
       picuv[0] -= 1;
       changed = true;
     }
-    if ((center_and_mass[1] > params.threshold) && (picuv[1] < params.pic_ncols - 1 - radiusv)) {
+    if ((result.y > params.threshold) && (picuv[1] < params.pic_ncols - 1 - radiusv)) {
       picuv[1] += 1;
       changed = true;
-    } else if ((center_and_mass[1] < -params.threshold) && (picuv[1] > radiusv)) {
+    } else if ((result.y < -params.threshold) && (picuv[1] > radiusv)) {
       picuv[1] -= 1;
       changed = true;
     }
@@ -166,13 +197,15 @@ fn walk(argpicuv: vec2<i32>, r: f32, transform: vec2<i32>) -> vec3<f32> {
       break;
     }
   }
-  let final_coords = vec3<f32>(
-    f32(picuv[0]) + center_and_mass[0], // + 1000. * f32(changed),
-    f32(picuv[1]) + center_and_mass[1], // + 1000. * f32(changed),
-    center_and_mass[2],
-    // f32(changed)
-    );
-  return final_coords;
+  // let final_coords = WalkResult(
+  //   f32(picuv[0]) + result.x, // + 1000. * f32(changed),
+  //   f32(picuv[1]) + result.y, // + 1000. * f32(changed),
+  //   result.mass,
+  //   result.count,
+  //   );
+  result.x += f32(picuv[0]);
+  result.y += f32(picuv[1]);
+  return result;
 }
 
 @compute @workgroup_size(_)
@@ -189,11 +222,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   // //_feat_LoG let pad_offset = vec2<i32>((i32(shape.nrows) - params.pic_nrows) / 2, (i32(shape.ncols) - params.pic_ncols));
 
   let r = particle_location.r;
-  let log_space = particle_location.log_space;
+  // let log_space = particle_location.log_space;
 
-  let final_coords = walk(picuv, r, pad_offset);
-
-  let varcheck = true;
+  let result = walk(picuv, r, pad_offset);
 
   //_feat_varcheck var kernel_cols: i32;
   //_feat_varcheck var kernel_rows: i32;
@@ -206,20 +237,56 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   //_feat_varcheck }
   //_feat_varcheck let varcheck = variance_check(final_coords[0], final_coords[1], kernel_rows, kernel_cols);
 
-  let minmass = params.minmass;
-  // let minmass = -10000000.;
-  if (final_coords[2] > minmass && varcheck) {
-    let part_id = atomicAdd(&n_particles_filtered, 1u);
-    let n_res = 9u;
-    results[part_id * n_res + 0u] = final_coords[0];
-    results[part_id * n_res + 1u] = final_coords[1];
-    results[part_id * n_res + 2u] = final_coords[2];
-    if r>0.0 {
-      results[part_id * n_res + 3u] = r;
-      results[part_id * n_res + 4u] = log_space;
-    }
-
+  var minmass: f32;
+  if params.minmass > 0.0{
+    minmass = params.minmass;
+  } else {
+    minmass = params.minmass_snr * result.count * image_std * params.rough_snr_factor;
   }
+
+  // if (final_coords[2] > minmass && varcheck) {
+
+
+
+
+
+  if result.mass >= minmass{
+    var row: ResultRow; // auto initializes to 0.0 for all fields.
+    row.x = result.x;
+    row.y = result.y;
+    row.mass = result.mass;
+    row.y = result.y;
+    row.count = result.count;
+    row.max_intensity = result.max;
+    if (r > 0.0){
+      row.r = r;
+    }
+    let part_id = atomicAdd(&n_particles_filtered, 1u);
+	if ((part_id % _workgroup1d_) == 0u){
+		atomicAdd(&next_dispatch.x, 1u);
+	}
+    results[part_id] = row;
+  }
+
+
+
+  // if (final_coords[2] > minmass) {
+  //   let part_id = atomicAdd(&n_particles_filtered, 1u);
+  //   let n_res = 9u;
+  //   results[part_id * n_res + 0u] = final_coords[0];
+  //   results[part_id * n_res + 1u] = final_coords[1];
+  //   results[part_id * n_res + 2u] = final_coords[2];
+  //   if r>0.0 {
+  //     results[part_id * n_res + 3u] = r;
+  //     results[part_id * n_res + 4u] = log_space;
+  //   }
+
+  // }
+
+
+
+
+
   // let pic_size = u32(params.pic_nrows * params.pic_ncols);
   // if (is_max(i32(global_id.x), i32(global_id.y), params.dilation_nrows, params.dilation_ncols)) {
   //   // results[idx] = 1.;

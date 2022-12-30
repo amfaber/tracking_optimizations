@@ -22,10 +22,12 @@ use crate::{kernels, into_slice::IntoSlice,
 }};
 use kd_tree::{self, KdPoint};
 use ndarray_stats::{QuantileExt, MaybeNanExt};
+use rayon::prelude::*;
 
 type inner_output = my_dtype;
 type output_type = Vec<inner_output>;
-type channel_type = Option<(Vec<ResultRow>, usize, Option<Vec<my_dtype>>, Option<f32>)>;
+// type channel_type = Option<(Vec<ResultRow>, usize, Option<Vec<my_dtype>>, Option<f32>)>;
+type channel_type = Option<(Vec<ResultRow>, usize, Option<Vec<my_dtype>>)>;
 
 
 
@@ -36,27 +38,29 @@ struct ResultRow{
     pub y: my_dtype,
     pub mass: my_dtype,
     pub r: my_dtype,
-    pub log_space_intensity: my_dtype,
+    pub max_intensity: my_dtype,
     pub Rg: my_dtype,
     pub raw_mass: my_dtype,
     pub signal: my_dtype,
     pub ecc: my_dtype,
+    pub count: my_dtype,
 }
 
-const N_RESULT_COLUMNS: usize = 9;
 const MY_DTYPE_SIZE: usize = std::mem::size_of::<my_dtype>();
+const N_RESULT_COLUMNS: usize = std::mem::size_of::<ResultRow>() / MY_DTYPE_SIZE;
+
 
 
 impl ResultRow{
 
-    pub fn insert_in_output(&self, output: &mut Vec<my_dtype>, r: bool, characterize: bool){
+    pub fn insert_in_output(&self, output: &mut Vec<my_dtype>, params: &TrackingParams){
         output.push(self.x);
         output.push(self.y);
         output.push(self.mass);
-        if r{
+        if matches!(params.style, ParamStyle::Log{ .. }){
             output.push(self.r);
         }
-        if characterize{
+        if params.characterize{
             output.push(self.Rg);
             output.push(self.raw_mass);
             output.push(self.signal);
@@ -65,8 +69,7 @@ impl ResultRow{
     }
 }
 
-impl KdPoint for ResultRow
-{    
+impl KdPoint for ResultRow{    
     type Scalar = f32;
     type Dim = typenum::U2;
     fn at(&self, k: usize) -> Self::Scalar{
@@ -86,23 +89,53 @@ fn submit_work(
     tracking_params: &TrackingParams,
     debug: bool,
     positions: Option<Vec<[my_dtype; 2]>>,
+    frame_idx: usize,
     ) -> SubmissionIndex {
-    // let atomic_filtered_buffer = state.common;
-    // let frame_buffer = &state.common_buffers.frame_buffer;
-    // let result_buffer = &state.common_buffers.result_buffer;
-    // let particles_buffer = &state.common_buffers.particles_buffer;
-    // let atomic_buffer = &state.common_buffers.atomic_buffer;
-    // let atomic_filtered_buffer = &state.common_buffers.atomic_filtered_buffer;
+    
+    // let mean = frame.iter().sum::<f32>() / frame.len() as f32;
+    // let var: f32 = frame.iter().map(|datum| {(datum - mean).powi(2)}).sum::<f32>() / frame.len() as f32;
+    // let mean = frame.par_iter().sum::<f32>() / frame.len() as f32;
+    // let var: f32 = frame.par_iter().map(|datum| {(datum - mean).powi(2)}).sum::<f32>() / frame.len() as f32;
+    // let s = var.sqrt();
     
     let common_buffers = &state.common_buffers;
 
     let mut encoder =
     state.device.create_command_encoder(&Default::default());
     state.queue.write_buffer(staging_buffer, 0, bytemuck::cast_slice(frame));
+    state.queue.write_buffer(staging_buffer, state.pic_byte_size, bytemuck::cast_slice(&[state.pic_size as u32]));
 
     
     encoder.copy_buffer_to_buffer(staging_buffer, 0,
         &common_buffers.frame_buffer, 0, state.pic_byte_size);
+    encoder.copy_buffer_to_buffer(staging_buffer, state.pic_byte_size,
+        &common_buffers.counter_buffer, 0, common_buffers.counter_buffer.size());
+
+    if tracking_params.illumination_sigma.is_some(){
+        if !state.common_buffers.illumination_correcter.as_ref().unwrap().initialized{
+            panic!("Tried to correct illumination profile without initializing the gpu-side buffer")
+        }
+        state.passes["correct_illumination"][0].execute(&mut encoder, bytemuck::cast_slice(&[state.pic_size as u32]));
+    }
+
+    // let to_print = vec![
+    //     &state.common_buffers.illumination_correcter.as_ref().unwrap().buffer,
+    //     &state.common_buffers.frame_buffer,
+    // ];
+    // fs::write("testing/mean_pic/shape0.dump", bytemuck::cast_slice(&[state.dims[0], state.dims[1], 0]));
+    // fs::write("testing/mean_pic/shape1.dump", bytemuck::cast_slice(&[state.dims[0], state.dims[1], 0]));
+    // inspect_buffers(
+    //     &to_print[..],
+    //     staging_buffer,
+    //     &state.queue,
+    //     &mut encoder,
+    //     &state.device,
+    //     "testing/mean_pic",
+    // );
+    
+    // state.std_pass.execute(&mut encoder);
+    state.std_pass.as_ref().map(|pass| pass.execute(&mut encoder, state, staging_buffer));
+    
 
     match state.flavor{
         GpuStateFlavor::Trackpy{ ref order, .. } => {
@@ -112,12 +145,13 @@ fn submit_work(
                     x: pos[0],
                     y: pos[1],
                     mass: 0.,
-                    log_space_intensity: 0.0,
+                    max_intensity: 0.0,
                     r: 0.,
                     Rg: 0.,
                     raw_mass: 0.,
                     signal: 0.,
                     ecc: 0.,
+                    count: 0.,
                 }).collect::<Vec<_>>();
                 state.queue.write_buffer(staging_buffer, state.pic_byte_size, bytemuck::cast_slice(&positions));
                 state.queue.write_buffer(&common_buffers.atomic_filtered_buffer, 0, bytemuck::cast_slice(&[positions.len() as u32]));
@@ -138,19 +172,7 @@ fn submit_work(
             for cpassname in order.iter(){
                 let fullpass = &state.passes[cpassname][0];
                 fullpass.execute(&mut encoder, &[]);
-            }
-            if debug{
-                let to_print = vec![
-                    &state.common_buffers.processed_buffer,
-                    &state.common_buffers.atomic_buffer,
-                    &state.common_buffers.atomic_filtered_buffer,
-                    &state.common_buffers.particles_buffer,
-                    ];
-                fs::write("processed_buffer/shape0.dump", bytemuck::cast_slice(&[state.dims[0], state.dims[1], 0]));
-                fs::write("processed_buffer/shape1.dump", bytemuck::cast_slice(&[1u32, 1]));
-                fs::write("processed_buffer/shape2.dump", bytemuck::cast_slice(&[1u32, 1]));
-                fs::write("processed_buffer/shape3.dump", bytemuck::cast_slice(&[((state.pic_size * 8) / 4) as u32, 4, 2]));
-                inspect_buffers(&to_print[..], staging_buffer, &state.queue, encoder, &state.device, "processed_buffer");
+                fullpass.reset_indirect(&mut encoder)
             }
             
         },
@@ -159,66 +181,6 @@ fn submit_work(
             state.passes["preprocess_rows"][0].execute(&mut encoder, &[]);
             state.passes["preprocess_cols"][0].execute(&mut encoder, &[]);
             
-            // let fft = false;
-            // if fft{
-            //     let modder = buffers.logspace_buffers.len();
-
-            //     let (pad_raw, push_constants) = &buffers.raw_padded.1;
-            //     pad_raw.execute(&mut encoder, bytemuck::cast_slice(push_constants));
-    
-            //     let fft_raw = &buffers.raw_padded.2;
-            //     fft_raw.execute(&mut encoder, false, false);
-    
-            //     encoder.clear_buffer(&buffers.logspace_buffers[2].0, 0, None);
-                
-            //     let n_sigma = buffers.filter_buffers.len();
-            //     let mut iterator = 0..n_sigma;
-                
-            //     let i = iterator.next().unwrap();
-            //     let convolution = &buffers.logspace_buffers[i % modder].1[i];
-            //     convolution.execute(&mut encoder, &[]);
-                
-            //     let ifft = &buffers.logspace_buffers[i % modder].2;
-            //     ifft.execute(&mut encoder, true, true);
-            //     let mut edge: i32 = -1;
-                
-            //     for i in iterator{
-            //         let convolution = &buffers.logspace_buffers[i % modder].1[i];
-            //         convolution.execute(&mut encoder, &[]);
-                    
-            //         let ifft = &buffers.logspace_buffers[i % modder].2;
-            //         ifft.execute(&mut encoder, true, true);
-                    
-            //         let find_max = &state.passes["logspace_max"][(i-1) % 3];
-            //         let sigma = sigmas[i-1];
-            //         let push_constants_tuple = (edge, sigma);
-            //         let push_constants = unsafe{ any_as_u8_slice(&push_constants_tuple) };
-            //         find_max.execute(&mut encoder, push_constants);
-                    
-            //         // let walk = &state.passes["walk"][(i-1) % 3];
-            //         // walk.execute(&mut encoder, &[]);
-            //         // encoder.clear_buffer(&buffers.particles_buffer, 0, None);
-            //         // encoder.clear_buffer(&buffers.atomic_buffer, 0, None);
-                    
-            //         edge = 0;
-            //     }
-    
-                
-            //     // encoder.clear_buffer(&buffers.logspace_buffers[n_sigma % modder].0, 0, None);
-                
-            //     edge = 1;
-                
-            //     let find_max = &state.passes["logspace_max"][(n_sigma - 1) % modder];
-            //     let sigma = sigmas[n_sigma - 1];
-            //     let push_constants_tuple = (edge, sigma);
-            //     let push_constants = unsafe{ any_as_u8_slice(&push_constants_tuple) };
-            //     find_max.execute(&mut encoder, push_constants);
-                
-            //     encoder.copy_buffer_to_buffer(&buffers.global_max, 0, staging_buffer, 4+state.pic_byte_size, 4);
-            //     encoder.clear_buffer(&buffers.global_max, 0, None);
-            // } else {
-                // encoder.clear_buffer(&buffers.logspace_buffers[2].0, 0, None);
-                
             let n_radii = radii.len();
             let mut iterator = radii.iter().enumerate();
             
@@ -241,7 +203,7 @@ fn submit_work(
                 let push_constants = unsafe{ any_as_u8_slice(&push_constants_tuple) };
                 find_max.execute(&mut encoder, push_constants);
                 
-                let walk = &state.passes["walk"][(i-1) % 3];
+                let walk = &state.passes["walk"][0];
                 walk.execute(&mut encoder, &[]);
                 encoder.clear_buffer(&common_buffers.particles_buffer, 0, None);
                 encoder.clear_buffer(&common_buffers.atomic_buffer, 0, None);
@@ -256,25 +218,87 @@ fn submit_work(
             let push_constants = unsafe{ any_as_u8_slice(&push_constants_tuple) };
             find_max.execute(&mut encoder, push_constants);
             
-            let walk = &state.passes["walk"][(n_radii - 1) % modder];
+            let walk = &state.passes["walk"][0];
             walk.execute(&mut encoder, &[]);
             encoder.clear_buffer(&common_buffers.particles_buffer, 0, None);
             encoder.clear_buffer(&common_buffers.atomic_buffer, 0, None);
-            // }
-            
-            // let to_print = buffers.logspace_buffers.iter().map(|tup| &tup.0).collect::<Vec<_>>();
-            // let to_print = vec![&common_buffers.particles_buffer, &common_buffers.atomic_buffer];
-            // let to_print = vec![&common_buffers.result_buffer, &common_buffers.atomic_filtered_buffer];
-            // let to_print = vec![&common_buffers.processed_buffer];
-            // inspect_buffers(to_print.as_slice(),
-            //     &common_buffers.staging_buffers[0],
-            //     &state.queue,
-            //     encoder,
-            //     &state.device,
-            //     // copy_size,
-            //     "testing");
-
         }
+    }
+
+    if let Some(n_iter) = tracking_params.adaptive_background{
+        // encoder.clear_buffer(&state.common_buffers.atomic_buffer, 0, None);
+        let the_atomics = [&state.common_buffers.atomic_buffer, &state.common_buffers.atomic_buffer2];
+        let mut iter = the_atomics.iter().zip(state.passes["adaptive_filter"].iter()).cycle().take(n_iter).enumerate();
+        state.common_buffers.raw_frame.as_ref().map(|buf| encoder.copy_buffer_to_buffer(&state.common_buffers.frame_buffer, 0, buf, 0, buf.size()));
+
+        {
+            let (i, (to_reset, pass)) = iter.next().unwrap();
+            encoder.clear_buffer(to_reset, 0, None);
+            pass.execute(&mut encoder, &[]);
+            pass.reset_indirect(&mut encoder);
+        }
+        for (i, (to_reset, pass)) in iter{
+            state.std_pass.as_ref().unwrap().execute(&mut encoder, state, staging_buffer);
+            encoder.clear_buffer(to_reset, 0, None);
+            pass.execute(&mut encoder, &[]);
+            pass.reset_indirect(&mut encoder);
+            // state.std_pass.execute(&mut encoder, state, staging_buffer);
+            // if i == 3{
+            //     let to_print = vec![
+            //         &state.common_buffers.frame_buffer,
+            //         &state.common_buffers.result_buffer,
+            //         &state.common_buffers.particles_buffer,
+            //         &state.common_buffers.particles_buffer2,
+            //         &state.common_buffers.std_buffer,
+            //         &state.common_buffers.atomic_buffer,
+            //         &state.common_buffers.atomic_buffer2,
+            //         &state.common_buffers.atomic_filtered_buffer,
+            //         state.passes["adaptive_filter"][0].dispatcher.as_ref().unwrap().as_ref().get_buffer(),
+            //         state.passes["adaptive_filter"][1].dispatcher.as_ref().unwrap().as_ref().get_buffer(),
+            //         &state.common_buffers.counter_buffer,
+            //         // state.passes["characterize"][0].dispatcher.as_ref().unwrap().as_ref().get_buffer(),
+            //     ];
+            //     let width = 10;
+            //     fs::write("testing/mean_pic/shape0.dump",
+            //         bytemuck::cast_slice(&[state.dims[0], state.dims[1], 0]));
+            //     fs::write("testing/mean_pic/shape1.dump",
+            //         bytemuck::cast_slice(&[(state.pic_size * 4) as u32 / width, width, 0]));
+            //     fs::write("testing/mean_pic/shape2.dump",
+            //         bytemuck::cast_slice(&[(state.pic_size) as u32 / width, width, 0]));
+            //     fs::write("testing/mean_pic/shape3.dump",
+            //         bytemuck::cast_slice(&[(state.pic_size) as u32 / width, width, 0]));
+            //     fs::write("testing/mean_pic/shape4.dump",
+            //         bytemuck::cast_slice(&[1u32, 0]));
+            //     fs::write("testing/mean_pic/shape5.dump",
+            //         bytemuck::cast_slice(&[1u32, 1]));
+            //     fs::write("testing/mean_pic/shape6.dump",
+            //         bytemuck::cast_slice(&[1u32, 1]));
+            //     fs::write("testing/mean_pic/shape7.dump",
+            //         bytemuck::cast_slice(&[1u32, 1]));
+            //     fs::write("testing/mean_pic/shape8.dump",
+            //         bytemuck::cast_slice(&[1u32, 1]));
+            //     fs::write("testing/mean_pic/shape9.dump",
+            //         bytemuck::cast_slice(&[1u32, 1]));
+            //     fs::write("testing/mean_pic/shape10.dump",
+            //         bytemuck::cast_slice(&[1u32, 1]));
+            //     inspect_buffers(
+            //         &to_print[..],
+            //         staging_buffer,
+            //         &state.queue,
+            //         &mut encoder,
+            //         &state.device,
+            //         "testing/mean_pic",
+            //     );
+            // }
+        // state.std_pass.execute(&mut encoder, state, staging_buffer);
+            // state.std_pass.execute(&mut encoder);
+        }
+        
+    }
+
+    if tracking_params.characterize || positions.is_some(){
+        state.characterize.as_ref().unwrap().execute(&mut encoder, &[]);
+        state.characterize.as_ref().unwrap().reset_indirect(&mut encoder);
     }
 
     let output_buffer = &common_buffers.result_buffer;
@@ -289,8 +313,10 @@ fn submit_work(
         state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     encoder.clear_buffer(&common_buffers.result_buffer, 0, None);
     encoder.clear_buffer(&common_buffers.atomic_buffer, 0, None);
+    encoder.clear_buffer(&common_buffers.atomic_buffer2, 0, None);
     encoder.clear_buffer(&common_buffers.atomic_filtered_buffer, 0, None);
     encoder.clear_buffer(&common_buffers.particles_buffer, 0, None);
+    encoder.clear_buffer(&common_buffers.particles_buffer2, 0, None);
     state.queue.submit(Some(encoder.finish()));
     index
 }
@@ -321,23 +347,23 @@ fn get_work(
     wait_gpu_time.as_mut().map(|t| *t += now.unwrap().elapsed().as_secs_f64());
     receiver.receive().block_on().unwrap().unwrap();
     let data = buffer_slice.get_mapped_range();
-    let mut idx = 0usize;
-    
     let neighborhoods = None;
     let n_parts = *bytemuck::from_bytes::<u32>(&data[..MY_DTYPE_SIZE]);
+    // dbg!(&n_parts);
+    
     let particle_data_endpoint = (n_parts as usize)*MY_DTYPE_SIZE*N_RESULT_COLUMNS + MY_DTYPE_SIZE;
     let results = bytemuck::cast_slice::<u8, ResultRow>(&data[MY_DTYPE_SIZE..particle_data_endpoint]).to_vec();
-    let global_max = match tracking_params.style{
-        ParamStyle::Trackpy{ .. } => None,
-        ParamStyle::Log{ .. } => Some(*bytemuck::from_bytes::<f32>(&data[particle_data_endpoint..(particle_data_endpoint+MY_DTYPE_SIZE)]))
-    };
+    // let global_max = match tracking_params.style{
+    //     ParamStyle::Trackpy{ .. } => None,
+    //     ParamStyle::Log{ .. } => Some(*bytemuck::from_bytes::<f32>(&data[particle_data_endpoint..(particle_data_endpoint+MY_DTYPE_SIZE)]))
+    // };
 
     drop(data);
     finished_staging_buffer.unmap();
 
     let out = match job_sender{
         Some(job_sender) => {
-            job_sender.send(Some((results, frame_index, neighborhoods, global_max))).unwrap();
+            job_sender.send(Some((results, frame_index, neighborhoods)));
             None
         },
         None => Some((results, frame_index)),
@@ -346,7 +372,7 @@ fn get_work(
     out
 }
 
-pub fn column_names(params: TrackingParams) -> Vec<(String, String)>{
+pub fn column_names(params: &TrackingParams) -> Vec<(String, String)>{
     let mut names = vec![("frame", "int"), ("y", "float"), ("x", "float"), ("mass", "float")];
 
     if let ParamStyle::Log{ .. } = params.style{
@@ -364,7 +390,8 @@ pub fn column_names(params: TrackingParams) -> Vec<(String, String)>{
         names.push(("particle", "int"));
     }
     
-    if params.sig_radius.is_some() | matches!(params.style, ParamStyle::Log{ .. }){
+    // if params.doughnut_correction || matches!(params.style, ParamStyle::Log{ .. }){
+    if params.doughnut_correction{
         names.push(("raw_mass", "float"));
         names.push(("raw_bg_median", "float"));
         names.push(("raw_mass_corrected", "float"));
@@ -577,8 +604,9 @@ fn post_process<A: IntoSlice>(
         // let raw_sig_inds = kernels.raw_sig_inds.as_ref().unwrap();
         // let raw_bg_inds = kernels.raw_bg_inds.as_ref();
         let (mut raw_sig_inds, mut raw_bg_inds) = match tracking_params.style{
-            ParamStyle::Trackpy{ .. } => {
-                let radius = tracking_params.sig_radius.unwrap();
+            ParamStyle::Trackpy{ diameter, .. } => {
+                // let radius = tracking_params.doughnut_correction.unwrap();
+                let radius = (diameter as my_dtype) / 2.0;
                 let (raw_sig_inds, _) = kernels.raw_sig_inds.call(radius);
                 let raw_bg_inds = kernels.raw_bg_inds.call(radius);
                 (Some(raw_sig_inds), Some(raw_bg_inds))
@@ -638,7 +666,7 @@ fn post_process<A: IntoSlice>(
             } else {
                 bg[bg.len()/2]
             };
-            let corrected = sig_sum - bg_median * raw_sig_inds.len() as f32;
+            let corrected = sig_sum - bg_median * sig.len() as f32;
 
             sig_sums.push(sig_sum);
             bg_medians.push(bg_median);
@@ -657,7 +685,7 @@ fn post_process<A: IntoSlice>(
     };
     for (idx, row) in relevant_points.iter().enumerate(){
         output.push(frame_index as my_dtype);
-        row.insert_in_output(output, include_r, tracking_params.characterize);
+        row.insert_in_output(output, tracking_params);
         // output.extend_from_slice(row.to_slice(tracking_params.characterize, tracking_params.style));
         part_ids.as_ref().map(|part_ids| output.push(part_ids[idx] as my_dtype));
         raw_properties.as_ref().map(|raw_properties|{
@@ -671,17 +699,65 @@ fn post_process<A: IntoSlice>(
 }
 
 
+pub fn setup_illumination_profile<A: IntoSlice + Send, T: Iterator<Item = A>>(
+    mut frames: T,
+    dims: &[u32; 2],
+    tracking_params: &TrackingParams,
+    state: &mut GpuState,
+    ){
+    
+    let mut encoder = state.device.create_command_encoder(&Default::default());
+
+    let mut zipiter = frames.zip(state.common_buffers.staging_buffers.iter().cycle());
+    let (frame, staging_buffer) = zipiter.next().unwrap();
+    
+    state.queue.write_buffer(staging_buffer, 0, bytemuck::cast_slice(frame.into_slice()));
+    encoder.copy_buffer_to_buffer(staging_buffer, 0, &state.common_buffers.frame_buffer, 0, state.pic_byte_size);
+    state.passes["sum_frames"][0].execute(&mut encoder, bytemuck::cast_slice(&[state.pic_size as u32]));
+    state.queue.submit(Some(encoder.finish()));
+    
+    let mut total_n_frames = 1f32;
+    for (frame, staging_buffer) in zipiter{
+        let mut encoder = state.device.create_command_encoder(&Default::default());
+        state.queue.write_buffer(staging_buffer, 0, bytemuck::cast_slice(frame.into_slice()));
+        encoder.copy_buffer_to_buffer(staging_buffer, 0, &state.common_buffers.frame_buffer, 0, state.pic_byte_size);
+        state.passes["sum_frames"][0].execute(&mut encoder, bytemuck::cast_slice(&[state.pic_size]));
+        state.queue.submit(Some(encoder.finish()));
+        state.device.poll(wgpu::Maintain::Wait);
+        total_n_frames += 1.0;
+    }
+    let mut encoder = state.device.create_command_encoder(&Default::default());
+    let sigma = tracking_params.illumination_sigma.unwrap();
+    state.common_buffers.illumination_correcter.as_ref().unwrap().pass.execute(&mut encoder, bytemuck::cast_slice(&[sigma, total_n_frames]));
+    // let to_print = vec![
+    //      &state.common_buffers.illumination_correcter.as_ref().unwrap().buffer,
+    // ];
+    // dbg!("in here 0");
+    // fs::write("testing/mean_pic/shape0.dump", bytemuck::cast_slice(&[state.dims[0], state.dims[1], 0]));
+    // inspect_buffers(
+    //     &to_print[..],
+    //     staging_buffer,
+    //     &state.queue,
+    //     &mut encoder,
+    //     &state.device,
+    //     "testing/mean_pic",
+    // );
+    state.queue.submit(Some(encoder.finish()));
+    state.common_buffers.illumination_correcter.as_mut().unwrap().initialized = true;
+}
+
 pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
     mut frames: T,
     dims: &[u32; 2],
-    tracking_params: TrackingParams,
+    tracking_params: &TrackingParams,
     debug: bool,
     verbosity: u32,
     mut pos_iter: Option<impl Iterator<Item = (usize, Vec<[my_dtype; 2]>)>>,
     // all_frames: Option<&Array3<my_dtype>>,
+    state: &GpuState,
     ) -> (output_type, Vec<(String, String)>){
     
-    let state = gpu_setup::setup_state(&tracking_params, dims, debug, pos_iter.is_some());
+    // let state = gpu_setup::setup_state(&tracking_params, dims, debug, pos_iter.is_some());
 
     let (circle_inds, middle_most) = kernels::circle_inds((0 as i32 / 2) as f32);
     // let (circle_inds, middle_most) = kernels::circle_inds((tracking_params.diameter as i32 / 2) as f32);
@@ -694,8 +770,10 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
     let (frame_sender,
         frame_receiver) = std::sync::mpsc::channel::<Option<A>>();
 
-    let send_frame = tracking_params.sig_radius.is_some() |
-         matches!(tracking_params.style, ParamStyle::Log{ .. });
+    let send_frame = tracking_params.doughnut_correction;
+    
+    // let send_frame = tracking_params.doughnut_correction ||
+    //      matches!(tracking_params.style, ParamStyle::Log{ .. });
     
     
     let output = std::thread::scope(|scope|{
@@ -729,7 +807,7 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
                         Some(inp) => {
                             thread_sleep.as_mut().map(|thread_sleep| *thread_sleep += now.unwrap().elapsed().as_nanos() as f64 / 1e9);
                             let (results, frame_index,
-                                neighborhoods, global_max) = inp;
+                                neighborhoods) = inp;
                             let frame = frame_receiver.recv().unwrap();
                             post_process(results, &mut output, frame_index, debug, linker.as_mut(),
                                 neighborhoods, neighborhood_size, kernels.as_mut(), middle_most, frame, dims, &thread_tracking_params);
@@ -742,7 +820,6 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
         };
         
         let mut free_staging_buffers = state.common_buffers.staging_buffers.iter().collect::<Vec<&wgpu::Buffer>>();
-        
         let mut in_use_staging_buffers = VecDeque::new();
         let (frame, positions, mut frame_index) = match pos_iter{
             Some(ref mut iter) => {
@@ -757,7 +834,7 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
         let staging_buffer = free_staging_buffers.pop().unwrap();
         in_use_staging_buffers.push_back(staging_buffer);
         let mut old_submission =
-            submit_work(frame.into_slice(), staging_buffer, &state, &tracking_params, debug, positions);
+            submit_work(frame.into_slice(), staging_buffer, &state, &tracking_params, debug, positions, frame_index);
         
         
         frame_sender.send(if send_frame{Some(frame)} else {None}).unwrap();
@@ -788,7 +865,7 @@ pub fn execute_gpu<A: IntoSlice + Send, T: Iterator<Item = A>>(
             };
             let staging_buffer = free_staging_buffers.pop().unwrap();
             in_use_staging_buffers.push_back(staging_buffer);
-            let new_submission = submit_work(frame.into_slice(), staging_buffer, &state, &tracking_params, debug, positions);
+            let new_submission = submit_work(frame.into_slice(), staging_buffer, &state, &tracking_params, debug, positions, frame_index);
             frame_sender.send(if send_frame {Some(frame)} else {None}).unwrap();
             
             let finished_staging_buffer = in_use_staging_buffers.pop_front().unwrap();
@@ -882,14 +959,21 @@ pub fn execute_ndarray<'a>(
         panic!("Array is not standard layout");
     }
     let axisiter = array.axis_iter(ndarray::Axis(0));
-    let dims = array.shape();
+    let dims_usize = array.shape();
+    let dims = [dims_usize[1] as u32, dims_usize[2] as u32];
     let mut pos_iter = pos_array.map(|pos_array| FrameSubsetter::new(pos_array, 0, (1, 2)));
+
+    let mut state = gpu_setup::setup_state(&params, &dims, debug, pos_iter.is_some());
     
+    if params.illumination_sigma.is_some(){
+        let axisiter = array.axis_iter(ndarray::Axis(0));
+        setup_illumination_profile(axisiter, &dims, &params, &mut state);
+    }
     let (res, column_names) = 
         // if debug {
         //     sequential_execute(axisiter, &[dims[1] as u32, dims[2] as u32], params, debug, verbosity)
         // } else {
-            execute_gpu(axisiter, &[dims[1] as u32, dims[2] as u32], params, debug, verbosity, pos_iter);
+            execute_gpu(axisiter, &dims, &params, debug, verbosity, pos_iter, &state);
         // };
     let res_len = res.len();
     let shape = (res_len / column_names.len(), column_names.len());
@@ -909,9 +993,10 @@ pub fn execute_file(
     let path = Path::new(path);
     let ext = path.extension().unwrap().to_ascii_lowercase();
     let mut file = File::open(path).expect("Could not open file");
+    // dbg!(path);
     let (res, column_names) = match ext.to_str().unwrap() {
         "tif" | "tiff" => {
-            let file = File::open(path).expect("Could not open file");
+            // let file = File::open(path).expect("Could not open file");
             // panic!("custom panic");
             let mut decoder = Decoder::new(file).unwrap();
             let (width, height) = decoder.dimensions().unwrap();
@@ -919,11 +1004,20 @@ pub fn execute_file(
             let iterator = IterDecoder::from(decoder);
             // let n_frames = if debug {1} else {usize::MAX};
             // let iterator = iterator.take(n_frames);
+            let mut state = gpu_setup::setup_state(&params, &dims, debug, pos_iter.is_some());
+
+            if params.illumination_sigma.is_some(){
+                let mut file = File::open(path).expect("Could not open file");
+                let mut decoder = Decoder::new(file).unwrap();
+                let iterator = IterDecoder::from(decoder);
+                setup_illumination_profile(iterator, &dims, &params, &mut state);
+            }
+            
             let (res, column_names) = 
                 // if debug {
                 //     sequential_execute(iterator, &dims, params, debug, verbosity)
                 // } else {
-                    execute_gpu(iterator, &dims, params, debug, verbosity, pos_iter);
+                    execute_gpu(iterator, &dims, &params, debug, verbosity, pos_iter, &state);
                 // };
             (res, column_names)
         },
@@ -935,11 +1029,20 @@ pub fn execute_file(
                 .flatten().map(|vec| vec.into_iter().map(|x| x as f32).collect::<Vec<_>>());
             // let n_frames = if debug {1} else {usize::MAX};
             // let iterator = iterator.take(n_frames);
+            let mut state = gpu_setup::setup_state(&params, &dims, debug, pos_iter.is_some());
+            if params.illumination_sigma.is_some(){
+                let mut file = File::open(path).expect("Could not open file");
+                let parser = decoderiter::MinimalETSParser::new(&mut file).unwrap();
+                let iterator = parser.iterate_channel(
+                    file, channel.unwrap_or(0))
+                    .flatten().map(|vec| vec.into_iter().map(|x| x as f32).collect::<Vec<_>>());
+                setup_illumination_profile(iterator, &dims, &params, &mut state);
+            }
             let (res, column_names) = 
                 // if debug{
                 //     sequential_execute(iterator, &dims, params, debug, verbosity)
                 // } else{
-                    execute_gpu(iterator, &dims, params, debug, verbosity, pos_iter);
+                    execute_gpu(iterator, &dims, &params, debug, verbosity, pos_iter, &state);
                 // };
             (res, column_names)
         },

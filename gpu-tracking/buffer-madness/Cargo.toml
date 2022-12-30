@@ -1,9 +1,0 @@
-[package]
-edition = "2021"
-name = "buffer-madness"
-version = "0.1.0"
-[dependencies]
-bytemuck = "*"
-futures-intrusive = "*"
-pollster = "*"
-wgpu = "*"

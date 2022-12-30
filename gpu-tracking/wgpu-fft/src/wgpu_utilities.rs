@@ -21,7 +21,7 @@ impl FullComputePass{
 
 
 pub fn infer_compute_bindgroup_layout(device: &wgpu::Device, source: &str) -> wgpu::BindGroupLayout{
-    let re = regex::Regex::new(r"@binding\((?P<idx>\d)\)\s*var<(?P<type>.*?)>").unwrap();
+    let re = regex::Regex::new(r"@binding\((?P<idx>\d+)\)\s*var<(?P<type>.*?)>").unwrap();
 
     let mut entries = Vec::new();
     for capture in re.captures_iter(source){

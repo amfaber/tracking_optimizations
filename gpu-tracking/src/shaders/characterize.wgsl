@@ -1,20 +1,15 @@
-// struct params{
-//   pic_nrows: i32,
-//   pic_ncols: i32,
-//   preprocess_nrows: i32,
-//   preprocess_ncols: i32,
-//   sigma2: f32,
-//   // constant_nrows: i32,
-//   // constant_ncols: i32,
-//   circle_nrows: i32,
-//   circle_ncols: i32,
-//   dilation_nrows: i32,
-//   dilation_ncols: i32,
-//   max_iterations: u32,
-//   threshold: f32,
-//   minmass: f32,
-// }
-
+struct ResultRow{
+  x: f32,
+  y: f32,
+  mass: f32,
+  r: f32,
+  max_intensity: f32,
+  Rg: f32,
+  raw_mass: f32,
+  signal: f32,
+  ecc: f32,
+  count: f32,
+}
 
 @group(0) @binding(0)
 var<uniform> params: Params;
@@ -29,7 +24,7 @@ var<storage, read> raw_frame: array<f32>;
 var<storage, read> n_particles: u32;
 
 @group(0) @binding(4)
-var<storage, read_write> results: array<f32>;
+var<storage, read_write> results: array<ResultRow>;
 
 
 fn get_mass(u: i32, v: i32, kernel_rows: i32, kernel_cols: i32) -> f32{
@@ -64,19 +59,27 @@ fn get_mass(u: i32, v: i32, kernel_rows: i32, kernel_cols: i32) -> f32{
 
 
 fn characterize(part_idx: u32, kernel_rows: i32, kernel_cols: i32){
-  let n_res = 9u;
-  let rint = (kernel_rows - 1) / 2;
-  let r = f32(rint);
+  var r = results[part_idx].r;
+  var rint: i32;
+  if r <= 0.0{
+    rint = (kernel_rows - 1) / 2;
+    r = f32(rint);
+  } else {
+    rint = i32(ceil(r));
+  }
+  // let rint = (kernel_rows - 1) / 2;
+  // let r = f32(rint);
   let r2 = r * r;
-  let u = i32(round(results[part_idx * n_res + 0u]));
-  let v = i32(round(results[part_idx * n_res + 1u]));
-  //_feat_characterize_points results[part_idx * n_res + 2u] = get_mass(u, v, kernel_rows, kernel_cols);
-  let mass = results[part_idx * n_res + 2u];
+  let u = i32(round(results[part_idx].x));
+  let v = i32(round(results[part_idx].y));
+  //_feat_characterize_points results[part_idx].mass = get_mass(u, v, kernel_rows, kernel_cols);
+  let mass = results[part_idx].mass;
 
   let middle_idx = u * params.pic_ncols + v;
   let pic_size = params.pic_nrows * params.pic_ncols;
 //   let start_u = u - kernel_rows / 2;
 //   let start_v = v - kernel_cols / 2;
+  // var Rg = 100.0;
   var Rg = 0.0;
   var raw_mass = 0.0;
   var signal = 0.0;
@@ -108,6 +111,9 @@ fn characterize(part_idx: u32, kernel_rows: i32, kernel_cols: i32){
     //   mass += data;
 
       Rg += data*mask;
+      // Rg += mask;
+      // Rg = f32(results[part_idx].r);
+      // Rg += 1.0;
       raw_mass += raw_frame[pic_idx];
       signal = max(signal, data);
       let theta = atan2(y, x);
@@ -120,10 +126,10 @@ fn characterize(part_idx: u32, kernel_rows: i32, kernel_cols: i32){
   let ecc = sqrt(ecc_sin + ecc_cos) / (mass - processed_buffer[middle_idx]);
   let Rg = sqrt(Rg / mass);
 
-  results[part_idx * n_res + 5u] = Rg;
-  results[part_idx * n_res + 6u] = raw_mass;
-  results[part_idx * n_res + 7u] = signal;
-  results[part_idx * n_res + 8u] = ecc;
+  results[part_idx].Rg = Rg;
+  results[part_idx].raw_mass = raw_mass;
+  results[part_idx].signal = signal;
+  results[part_idx].ecc = ecc;
 
 //   centers[0] /= mass;
 //   centers[1] /= mass;
