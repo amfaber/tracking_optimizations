@@ -521,12 +521,20 @@ fn gpuparams_from_tracking_params(params: &TrackingParams, pic_dims: [u32; 2]) -
     }
 }
 
+// struct AdapterError{
+//     msg: &'static str,
+// }
+
+// // impl 
+
+// impl std::error::Error for AdapterError{}
+
 pub fn setup_state(
     tracking_params: &TrackingParams,
     dims: &[u32; 2],
     debug: bool,
     characterize_new_points: bool,
-    ) -> GpuState {
+    ) -> crate::error::Result<GpuState> {
     
     let instance = wgpu::Instance::new(wgpu::Backends::all());
 
@@ -536,7 +544,7 @@ pub fn setup_state(
         force_fallback_adapter: false,
         compatible_surface: None,
     })
-    .block_on().expect("Couldn't create adapter");
+    .block_on().ok_or(crate::error::Error::GpuAdapterError)?;
 
     let mut desc = wgpu::DeviceDescriptor::default();
     desc.features = wgpu::Features::MAPPABLE_PRIMARY_BUFFERS | wgpu::Features::PUSH_CONSTANTS;
@@ -545,7 +553,7 @@ pub fn setup_state(
     // desc.limits.max_compute_invocations_per_workgroup = 1024;
     let (device, queue) = adapter
     .request_device(&desc, None)
-    .block_on().expect("Couldn't create device and queue");
+    .block_on()?;
     
     
     let workgroup_size2d = [16u32, 16, 1];
@@ -631,7 +639,7 @@ pub fn setup_state(
     if tracking_params.illumination_sigma.is_some(){
         shaders.extend([
             ("sum_frames", (include_str!("shaders/correct_illumination/sum_frames.wgsl"), Some(Rc::clone(&direct_dispatcher1d)), workgroup_size1d)),
-            ("divide_frames", (include_str!("shaders/correct_illumination/divide_frames.wgsl"), Some(Rc::clone(&direct_dispatcher1d)), workgroup_size1d)),
+            // ("divide_frames", (include_str!("shaders/correct_illumination/divide_frames.wgsl"), Some(Rc::clone(&direct_dispatcher1d)), workgroup_size1d)),
             ("smooth_mean_frame", (include_str!("shaders/correct_illumination/smooth_mean_frame.wgsl"), Some(Rc::clone(&direct_dispatcher2d)), workgroup_size2d)),
             ("correct_illumination", (include_str!("shaders/correct_illumination/correct_illumination.wgsl"), Some(Rc::clone(&direct_dispatcher1d)), workgroup_size1d)),
         ]);
@@ -824,9 +832,6 @@ pub fn setup_state(
                 Some((0, &common_buffers.frame_buffer)),
                 Some((1, &common_buffers.illumination_correcter.as_ref().unwrap().buffer)), 
             ]]),
-            ("divide_frames", vec![vec![
-                Some((0, &common_buffers.illumination_correcter.as_ref().unwrap().buffer)), 
-            ]]),
             ("correct_illumination", vec![vec![
                 Some((0, &common_buffers.illumination_correcter.as_ref().unwrap().buffer)), 
                 Some((1, &common_buffers.frame_buffer)),
@@ -983,7 +988,7 @@ pub fn setup_state(
         std_pass,
         characterize
     };
-    state
+    Ok(state)
 
 }
 

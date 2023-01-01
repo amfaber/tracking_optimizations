@@ -1,10 +1,68 @@
-use tiff::decoder::{Decoder, DecodingResult};
-use ndarray::{Array2};
-use crate::my_dtype;
+use tiff::decoder::{Decoder, DecodingResult::{self, *}};
+use ndarray::{Array2, Array3, ArrayView3, ArrayView2, Axis};
+use crate::{my_dtype, into_slice::IntoSlice};
 use byteorder::{ReadBytesExt, LittleEndian};
+use std::{io::{self, Read, Seek, SeekFrom}, cell::{Cell, RefCell}};
+use std::collections::HashMap;
+use num_traits;
 
-// type item_type = Vec<my_dtype>;
-type item_type = Array2<my_dtype>;
+type item_type = Vec<my_dtype>;
+// type item_type = Array2<my_dtype>;
+
+fn cast_vec_to_f32<T: num_traits::NumCast>(to_cast: Vec<T>) -> Result<Vec<my_dtype>, GetFrameError>{
+    let converted = to_cast.into_iter().map(|datum| num_traits::cast(datum).ok_or(GetFrameError::CastError)).collect();
+    converted
+}
+
+
+
+pub trait FrameProvider<'a>{
+    type frame: IntoSlice + 'a;
+    fn get_frame(&'a self, frame_idx: usize) -> Result<Self::frame, GetFrameError>;
+}
+
+#[derive(Debug)]
+pub enum GetFrameError{
+    OutOfBounds,
+    ReadError,
+    CastError
+}
+
+impl<'a, R: Read + Seek> FrameProvider<'a> for RefCell<Decoder<R>>{
+    type frame = Vec<my_dtype>;
+    fn get_frame(&'a self, frame_idx: usize) -> Result<Self::frame, GetFrameError>{
+        self.borrow_mut().seek_to_image(frame_idx).map_err(|_| GetFrameError::OutOfBounds)?;
+        let result = self.borrow_mut().read_image().map_err(|_| GetFrameError::ReadError)?;
+        let out = match result{
+            U8(vec) => cast_vec_to_f32(vec),
+            U8(vec) => cast_vec_to_f32(vec),
+            U16(vec) => cast_vec_to_f32(vec),
+            U32(vec) => cast_vec_to_f32(vec),
+            U64(vec) => cast_vec_to_f32(vec),
+            F32(vec) => cast_vec_to_f32(vec),
+            F64(vec) => cast_vec_to_f32(vec),
+            I8(vec) => cast_vec_to_f32(vec),
+            I16(vec) => cast_vec_to_f32(vec),
+            I32(vec) => cast_vec_to_f32(vec),
+            I64(vec) => cast_vec_to_f32(vec),
+        };
+        out
+    }
+}
+
+
+
+impl<'a> FrameProvider<'a> for ArrayView3<'a, my_dtype>{
+    type frame = ArrayView2<'a, my_dtype>;
+    fn get_frame(&'a self, frame_index: usize) -> Result<Self::frame, GetFrameError>{
+        // let self = &*self;
+        if frame_index >= self.shape()[0]{
+            return Err(GetFrameError::OutOfBounds)
+        }
+        Ok(self.index_axis(Axis(0), frame_index))
+    }
+}
+
 
 pub struct IterDecoder<R: std::io::Read + std::io::Seek>{
     decoder: Decoder<R>,
@@ -30,7 +88,7 @@ impl <R: std::io::Read + std::io::Seek> From::<Decoder<R>> for IterDecoder<R>{
 impl<R: std::io::Read + std::io::Seek> IterDecoder<R>{
     fn _treat_data<T: Into<my_dtype> + Copy>(&self, res: Vec<T>) -> item_type{
         let data = res.iter().map(|&x| x.into()).collect::<Vec<my_dtype>>();
-        let data = ndarray::Array::from_shape_vec(self.dims, data).unwrap();
+        // let data = ndarray::Array::from_shape_vec(self.dims, data).unwrap();
         data
     }
 }
@@ -71,8 +129,6 @@ impl <R: std::io::Read + std::io::Seek> Iterator for IterDecoder<R>{
 }
 
 
-use std::io::{self, Read, Seek, SeekFrom};
-use std::collections::HashMap;
 // use bencher::black_box;
 
 #[derive(Debug, Clone)]

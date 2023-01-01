@@ -454,7 +454,7 @@ def runner_tracker(video_location, experiment_type, replicate, params):
     full_tracked['replicate'] = str(replicate)
     
     
-    a  =full_tracked['particle'].tolist()
+    a = full_tracked['particle'].tolist()
     z = uuid.uuid4().hex
     a = [str(str(x)+'_'+str(z)) for x in a]
     full_tracked['particle'] = a

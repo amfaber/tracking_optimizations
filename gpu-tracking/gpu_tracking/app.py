@@ -3,7 +3,7 @@ import pandas as pd
 import random
 import uuid
 import os
-import lib
+from .lib import load, annotate_image_plotly, batch, LoG
 import plotly.express as px
 import plotly.graph_objs as go
 import numpy as np
@@ -53,7 +53,13 @@ def plotter(
 
     **kwargs
 ):
-    vid = lib.load(path, keys = range(frames)).astype("float32")
+    try:
+        vid = load(path, keys = range(frames)).astype("float32")
+    except FileNotFoundError:
+        raise FileNotFoundError("The file was not found or the file format is not supported")
+    except IndexError:
+        raise FileNotFoundError("The file was not found or the file format is not supported")
+    
     vid = vid.reshape(-1, *vid.shape[-2:])
 
     shared_args = dict(
@@ -82,7 +88,7 @@ def plotter(
             smoothing_size = smoothing_size,
             filter_close = filter_close,
         )
-        df = lib.batch(
+        df = batch(
             vid,
             diameter,
             **args,
@@ -100,7 +106,7 @@ def plotter(
             log_spacing = log_spacing,
             overlap_threshold = overlap_threshold,
         )
-        df = lib.LoG(
+        df = LoG(
             vid,
             min_r,
             max_r,
@@ -116,7 +122,7 @@ def plotter(
             command += f"    {key} = {val},\n"
     command += ")"
     
-    fig = lib.annotate_image_plotly(vid[-1], df, frame = frames-1, r = r, **kwargs)
+    fig = annotate_image_plotly(vid[-1], df, frame = frames-1, r = r, **kwargs)
     return fig, command, df, vid.shape[1:]
 
 def create_input(name, idx, *args, which = dcc.Input, **kwargs):
@@ -136,8 +142,8 @@ def create_element(idx):
         ], style = {"margin-top": "15px"}),
         
         html.Div([
-            dcc.Input(id = {"type": "input-path", "index": idx}, value = r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\testing\easy_test_data.tif"),
-            # dcc.Input(id = {"type": "input-path", "index": idx}, value = os.getcwd()),
+            # dcc.Input(id = {"type": "input-path", "index": idx}, value = r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\testing\easy_test_data.tif"),
+            dcc.Input(id = {"type": "input-path", "index": idx}, value = os.getcwd()),
             *create_input("Up to frame", idx, value = 1, type = "number"),
             # dcc.Upload(),
             # dcc.Graph(figure = px.imshow(np.zeros((100, 100)), color_continuous_scale = "viridis"), id = {"type": "graph", "index": idx}),

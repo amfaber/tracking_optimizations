@@ -4,12 +4,13 @@ use futures_intrusive;
 use gpu_tracking::gpu_setup::{ParamStyle, setup_state};
 use gpu_tracking::linking::FrameSubsetter;
 use gpu_tracking::{
-    decoderiter::IterDecoder,
+    decoderiter::{IterDecoder, FrameProvider, GetFrameError},
     execute_gpu::{self, execute_gpu, execute_ndarray},
     gpu_setup::TrackingParams,
 };
 use ndarray::{s, Array2, Axis};
 use pollster::FutureExt;
+use std::cell::RefCell;
 use std::io::Write;
 use std::{fs, time::Instant};
 use tiff::decoder::{Decoder, DecodingResult};
@@ -32,7 +33,7 @@ struct Args {
 }
 
 
-fn test_trackpy_easy(){
+fn test_trackpy_easy() -> gpu_tracking::error::Result<()>{
     let args: Args = Args::parse();
     let now_top = Instant::now();
     dbg!(std::env::current_dir());
@@ -41,60 +42,70 @@ fn test_trackpy_easy(){
     let debug = args.debug.unwrap_or(false);
     let filter = args.filter.unwrap_or(true);
     let characterize = args.characterize.unwrap_or(false);
-    let file = fs::File::open(&path).expect("didn't find the file");
-    let mut decoder = Decoder::new(file).expect("Can't create decoder");
-    let (width, height) = decoder.dimensions().unwrap();
-    let dims = [height, width];
+    // let file = fs::File::open(&path).expect("didn't find the file");
+    // let mut decoder = Decoder::new(file).expect("Can't create decoder");
+    // let (width, height) = decoder.dimensions().unwrap();
+    // let dims = [height, width];
     // let mut decoderiter = IterDecoder::from(decoder).take(10);
     let params = TrackingParams {
-        // style: ParamStyle::Trackpy {
-        //     separation: 8,
-        //     diameter: 7,
-        //     maxsize: 0.0,
-        //     noise_size: 1.,
-        //     smoothing_size: 7,
-        //     threshold: 0.0,
-        //     invert: false,
-        //     percentile: 0.,
-        //     topn: 0,
-        //     preprocess: true,
-        //     filter_close: true,
-        // },
-        style: ParamStyle::Log{
-            min_radius: 2.2,
-            max_radius: 3.5,
-            log_spacing: true,
-            overlap_threshold: 0.0,
-            n_radii: 10,
+        style: ParamStyle::Trackpy {
+            separation: 8,
+            diameter: 7,
+            maxsize: 0.0,
+            noise_size: 1.,
+            smoothing_size: 7,
+            threshold: 0.0,
+            invert: false,
+            percentile: 0.,
+            topn: 0,
+            preprocess: true,
+            filter_close: true,
         },
+        // style: ParamStyle::Log{
+        //     min_radius: 2.2,
+        //     max_radius: 3.5,
+        //     log_spacing: true,
+        //     overlap_threshold: 0.0,
+        //     n_radii: 10,
+        // },
         snr: Some(1.3),
         minmass_snr: Some(0.3),
         adaptive_background: Some(4),
         characterize: true,
-        // illumination_sigma: Some(30.),
+        illumination_sigma: Some(30.),
         
         // minmass: 800.,
         truncate_preprocessed: true,
         ..Default::default()
     };
     let now = Instant::now();
+    let points = vec![
+        0f32, 300f32, 300f32,
+        0f32, 200f32, 200f32,
+        // 200f32, 300f32, 300f32,
+        // 1999f32, 200f32, 200f32,
+    ];
+    let points = Array2::from_shape_vec((2, 3), points).unwrap();
+    // let point_view = points.view();
+    // let point_iter = FrameSubsetter::new(&point_view, Some(0), (1, 2));
     let (results, column_names) = execute_gpu::execute_file(
         &path,
         Some(1),
         params,
         debug,
         1,
-        None::<std::vec::IntoIter<(usize, Vec<[my_dtype; 2]>)>>,
-    );
+        Some(&points.view()),
+    )?;
     let function_time = now.elapsed().as_millis() as f64 / 1000.;
     dbg!(function_time);
     dbg!(&results.shape());
     dbg!(&results.lanes(Axis(1)).into_iter().next().unwrap());
 
+    Ok(())
 }
 
 
-fn test_unedited(){
+fn test_unedited() -> gpu_tracking::error::Result<()>{
     let args: Args = Args::parse();
     let now_top = Instant::now();
     let path = args.input.unwrap_or("testing/easy_test_data.tif".to_string());
@@ -158,25 +169,25 @@ fn test_unedited(){
     ];
     let points = Array2::from_shape_vec((4, 3), points).unwrap();
     let point_view = points.view();
-    let state = setup_state(&params, &dims, debug, false);
-    let point_iter = FrameSubsetter::new(&point_view, 0, (1, 2));
-    let (results, column_names) = execute_gpu::execute_gpu(
-        decoderiter,
-        &dims,
-        &params,
-        debug,
-        1,
-        None::<std::vec::IntoIter<(usize, Vec<[my_dtype; 2]>)>>,
-        &state,
-        // Some(point_iter),
-    );
+    let state = setup_state(&params, &dims, debug, false)?;
+    let point_iter = FrameSubsetter::new(&point_view, Some(0), (1, 2));
+    // let (results, column_names) = execute_gpu::execute_gpu(
+    //     decoderiter,
+    //     &dims,
+    //     &params,
+    //     debug,
+    //     1,
+    //     None::<_>,
+    //     &state,
+    //     // Some(point_iter),
+    // )?;
     // let (results, column_names) = execute_gpu::execute_ndarray(&arr.view(), params, debug, 1, None);
     // let (results, shape) = execute_gpu(&mut decoderiter, &dims, params, debug, 1);
     // dbg!(&results.slice(s![..600, ..]));
     let function_time = now.elapsed().as_millis() as f64 / 1000.;
     dbg!(function_time);
     // dbg!(&results);
-    dbg!(&results.len());
+    // dbg!(&results.len());
 
     // std::fs::write("testing/dump.bin", bytemuck::cast_slice(&results));
     // if debug{
@@ -187,8 +198,18 @@ fn test_unedited(){
 
     // let total = now_top.elapsed().as_millis() as f64 / 1000.;
     // dbg!(total);
+    Ok(())
 }
 
 fn main(){
-    test_trackpy_easy()
+// fn main() -> gpu_tracking::error::Result<()>{
+    let idk = std::fs::File::open(r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\testing\hard_test_data.tif").unwrap();
+    let decoder = RefCell::new(Decoder::new(idk).unwrap());
+    let first = decoder.get_frame(0).unwrap();
+    let second = decoder.get_frame(1).unwrap();
+    let total_n_frames: Result<Vec<_>, _> = (0..).map(|i| decoder.get_frame(i).map(|inner| (i, inner))).take_while(|res| !matches!(res, Err(GetFrameError::OutOfBounds))).collect();
+    dbg!(total_n_frames);
+    // dbg!(first.len());
+    // dbg!(second.len());
+    // test_trackpy_easy()
 }

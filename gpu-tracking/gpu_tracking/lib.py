@@ -6,6 +6,7 @@
 # from .gpu_tracking import *
 from gpu_tracking import *
 import pandas as pd
+import uuid
 
 def batch(
     video,
@@ -15,7 +16,10 @@ def batch(
     try:
         points_to_characterize = kwargs["points_to_characterize"]
         if isinstance(points_to_characterize, pd.DataFrame):
-            points_to_characterize = points_to_characterize[["frame", "y", "x"]].to_numpy()
+            if "frame" in points_to_characterize.columns:
+                points_to_characterize = points_to_characterize[["frame", "y", "x"]].to_numpy()
+            else:
+                points_to_characterize = points_to_characterize[["y", "x"]].to_numpy()
         kwargs["points_to_characterize"] = points_to_characterize.astype("float32")
 
     except KeyError:
@@ -37,7 +41,10 @@ def batch_file(
     try:
         points_to_characterize = kwargs["points_to_characterize"]
         if isinstance(points_to_characterize, pd.DataFrame):
-            points_to_characterize = points_to_characterize[["frame", "y", "x"]].to_numpy()
+            if "frame" in points_to_characterize.columns:
+                points_to_characterize = points_to_characterize[["frame", "y", "x"]].to_numpy()
+            else:
+                points_to_characterize = points_to_characterize[["y", "x"]].to_numpy()
         kwargs["points_to_characterize"] = points_to_characterize.astype("float32")
     except KeyError:
         pass
@@ -153,4 +160,8 @@ def annotate_video(video, tracked_df, frame = 0, **kwargs):
 def annotate_file(path, tracked_df, ets_channel = 0, frame = 0, **kwargs):
     image = load(path, ets_channel = ets_channel, keys = [frame])[0]
     return annotate_image(image, tracked_df, frame = frame, **kwargs)
+
+def unique_particle_ids(df, column = "particle"):
+    id = uuid.uuid4()
+    df[column] = df[column].as_type("str") + id
     

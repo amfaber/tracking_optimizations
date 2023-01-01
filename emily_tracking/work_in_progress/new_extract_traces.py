@@ -209,7 +209,7 @@ def plot_dynamic_signal_for_static_particle(dynamic_signal_in_static_positions, 
 
     for par, dat in dynamic_signal_in_static_positions.groupby('particle'):
 
-        fig,ax =plt.subplots(4,1,figsize = (9,9))
+        fig, ax = plt.subplots(4,1,figsize = (9,9))
 
         ax[0].plot(dat.frame.values, dat.red_int_corrected.values, color = "firebrick", alpha =0.8, label ='Corrected')
 

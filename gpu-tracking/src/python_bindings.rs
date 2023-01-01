@@ -5,8 +5,38 @@ use ndarray::Array;
 use pyo3::{prelude::*, types::{PyDict, PyList}};
 // #[cfg(feature = "python")]
 use numpy::{IntoPyArray, PyReadonlyArray3, PyReadonlyArray2, PyArray2, PyArray1, PyArrayDyn, PyArray3};
-use crate::{execute_gpu::{execute_ndarray, execute_file}, decoderiter::MinimalETSParser, gpu_setup::{TrackingParams, ParamStyle}, linking};
+use crate::{execute_gpu::{execute_ndarray, execute_file, path_to_iter, mean_from_iter}, decoderiter::MinimalETSParser, gpu_setup::{TrackingParams, ParamStyle}, linking, error::Error};
 
+impl std::convert::From::<Error> for PyErr{
+	fn from(err: Error) -> PyErr{
+		match err{
+			Error::GpuAdapterError | Error::GpuDeviceError(_)  => {
+				pyo3::exceptions::PyConnectionError::new_err(err.to_string())
+			},
+
+            Error::ThreadError => {
+				pyo3::exceptions::PyBaseException::new_err(err.to_string())
+            },
+			
+			Error::FileNotFound{ .. } => {
+				pyo3::exceptions::PyFileNotFoundError::new_err(err.to_string())
+            },
+
+            Error::DimensionMismatch{ .. } |
+            Error::EmptyIterator |
+            Error::NonSortedCharacterization |
+            Error::FrameOutOfBounds{ .. } |
+            Error::NonStandardArrayLayout |
+            Error::UnsupportedFileformat { .. } |
+            Error::ArrayDimensionsError{ .. } |
+            Error::NoExtensionError{ .. }
+             => {
+				pyo3::exceptions::PyValueError::new_err(err.to_string())
+			},
+			
+		}
+	}
+}
 
 macro_rules! not_implemented {
     ($name:ident) => {
@@ -242,13 +272,13 @@ make_args!(
         points_to_characterize: Option<PyReadonlyArray2<my_dtype>>,
         debug: Option<bool>,
     }
-    ) -> (&'py PyArray2<my_dtype>, Py<PyAny>) => params{
+    ) -> PyResult<(&'py PyArray2<my_dtype>, Py<PyAny>)> => params{
         let debug = debug.unwrap_or(false);
         let array = pyarr.as_array();
         let points_rust_array = points_to_characterize.as_ref().map(|arr| arr.as_array());
         if points_to_characterize.is_some(){ params.characterize = true };
-        let (res, columns) = execute_ndarray(&array, params, debug, 0, points_rust_array.as_ref());
-        (res.into_pyarray(py), columns.into_py(py))
+        let (res, columns) = execute_ndarray(&array, params, debug, 0, points_rust_array.as_ref())?;
+        Ok((res.into_pyarray(py), columns.into_py(py)))
     }
 );
 
@@ -264,16 +294,15 @@ make_args!(
             points_to_characterize: Option<PyReadonlyArray2<my_dtype>>,
             debug: Option<bool>,
         }
-        ) -> (&'py PyArray2<my_dtype>, Py<PyAny>) => params {
+        ) -> PyResult<(&'py PyArray2<my_dtype>, Py<PyAny>)> => params {
         let debug = debug.unwrap_or(false);
 
         let points_rust_array = points_to_characterize.as_ref().map(|arr| arr.as_array());
-        let mut pos_iter = points_rust_array.as_ref().map(|points| 
-            FrameSubsetter::new(points, 0, (1, 2)));
+        
         if points_to_characterize.is_some(){ params.characterize = true };
         let (res, columns) = execute_file(
-            &filename, channel, params, debug, 0, pos_iter);
-        (res.into_pyarray(py), columns.into_py(py))
+            &filename, channel, params, debug, 0, points_rust_array.as_ref())?;
+        Ok((res.into_pyarray(py), columns.into_py(py)))
     }
 );
 
@@ -288,12 +317,12 @@ make_log_args!(
         points_to_characterize: Option<PyReadonlyArray2<my_dtype>>,
         debug: Option<bool>,
     }
-    ) -> (&'py PyArray2<my_dtype>, Py<PyAny>) => params{
+    ) -> PyResult<(&'py PyArray2<my_dtype>, Py<PyAny>)> => params{
     let debug = debug.unwrap_or(false);
     let array = pyarr.as_array();
     let points_rust_array = points_to_characterize.as_ref().map(|arr| arr.as_array());
-    let (res, columns) = execute_ndarray(&array, params, debug, 0, points_rust_array.as_ref());
-    (res.into_pyarray(py), columns.into_py(py))
+    let (res, columns) = execute_ndarray(&array, params, debug, 0, points_rust_array.as_ref())?;
+    Ok((res.into_pyarray(py), columns.into_py(py)))
 }
 );
 
@@ -308,15 +337,13 @@ make_log_args!(
             points_to_characterize: Option<PyReadonlyArray2<my_dtype>>,
             debug: Option<bool>,
         }
-        ) -> (&'py PyArray2<my_dtype>, Py<PyAny>) => params {
+        ) -> PyResult<(&'py PyArray2<my_dtype>, Py<PyAny>)> => params {
         let debug = debug.unwrap_or(false);
         let points_rust_array = points_to_characterize.as_ref().map(|arr| arr.as_array());
-        let mut pos_iter = points_rust_array.as_ref().map(|points| 
-            FrameSubsetter::new(points, 0, (1, 2)));
 
         let (res, columns) = execute_file(
-            &filename, channel, params, debug, 0, pos_iter);
-        (res.into_pyarray(py), columns.into_py(py))
+            &filename, channel, params, debug, 0, points_rust_array.as_ref())?;
+        Ok((res.into_pyarray(py), columns.into_py(py)))
     }
 );
 
@@ -336,12 +363,13 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
     #[pyo3(name = "link_rust")]
     fn link_py<'py>(py: Python<'py>, pyarr: PyReadonlyArray2<my_dtype>,
         search_range: my_dtype,
-        memory: Option<usize>) -> &'py PyArray1<usize> {
+        memory: Option<usize>) -> PyResult<&'py PyArray1<usize>> {
         let memory = memory.unwrap_or(0);
         let array = pyarr.as_array();
-        let frame_iter = linking::FrameSubsetter::new(&array, 0, (1, 2));
-        let res = linking::linker_all(frame_iter, search_range, memory);
-        res.into_pyarray(py)
+        let frame_iter = linking::FrameSubsetter::new(&array, Some(0), (1, 2));
+        // let frame_iter = frame_iter.map(|res| res.unwrap());
+        let res = linking::linker_all(frame_iter, search_range, memory)?;
+        Ok(res.into_pyarray(py))
     }
 
     #[pyfn(m)]
@@ -365,7 +393,7 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
     }
 
     #[pyfn(m)]
-    #[pyo3(name = "parse_ets")]
+    #[pyo3(name = "parse_ets_with_keys")]
     fn parse_ets_with_keys<'py>(py: Python<'py>, path: &str, keys: Vec<usize>, channel: Option<usize>) -> &'py PyArray3<u16>{
         let mut file = File::open(path).unwrap();
         let parser = MinimalETSParser::new(&mut file).unwrap();
@@ -381,5 +409,30 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         let array = array.into_pyarray(py);
         array
     }
+
+    #[pyfn(m)]
+    #[pyo3(name = "mean_from_disk")]
+    fn mean_from_disk<'py>(py: Python<'py>, path: &str, channel: Option<usize>) -> PyResult<&'py PyArray2<f32>>{
+        
+        let (iter, dims) = path_to_iter(path, channel)?;
+        let mean_arr = mean_from_iter(iter, &dims, channel)?;
+        // let mut n_frames = 0;
+        // let mut mean_vec = iter.fold(vec![0f32; (dims[0] * dims[1]) as usize], |mut acc, ele|{
+        //     for (a, e) in acc.iter_mut().zip(ele.iter()){
+        //         *a += e
+        //     }
+        //     n_frames += 1;
+        //     acc
+        // });
+        // let n_frames = n_frames as f32;
+        // for e in mean_vec.iter_mut(){
+        //     *e /= n_frames;
+        // }
+        // let mean_arr = Array::from_shape_vec((dims[0] as usize, dims[1] as usize), mean_vec).unwrap();
+        
+        Ok(mean_arr.into_pyarray(py))
+    }
+    
+    
     Ok(())
 }

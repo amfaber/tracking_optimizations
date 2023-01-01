@@ -10,7 +10,7 @@ use typenum::{self, U2};
 use num_traits;
 
 pub struct FrameSubsetter<'a>{
-    pub frame_col: usize,
+    pub frame_col: Option<usize>,
     pub array: &'a ArrayView2<'a, float>,
     pub positions: (usize, usize),
     idx: usize,
@@ -19,7 +19,7 @@ pub struct FrameSubsetter<'a>{
 }
 
 impl FrameSubsetter<'_>{
-    pub fn new<'a>(array: &'a ArrayView2<'a, float>, frame_col: usize, positions: (usize, usize)) -> FrameSubsetter<'a>{
+    pub fn new<'a>(array: &'a ArrayView2<'a, float>, frame_col: Option<usize>, positions: (usize, usize)) -> FrameSubsetter<'a>{
         FrameSubsetter{
             frame_col,
             array,
@@ -32,31 +32,40 @@ impl FrameSubsetter<'_>{
 
 impl<'a> Iterator for FrameSubsetter<'a>{
     // type Item = ArrayView2<'a, float>;
-    type Item = (usize, Vec<[float; 2]>); 
+    type Item = crate::error::Result<(Option<usize>, Vec<[float; 2]>)>; 
     fn next(&mut self) -> Option<Self::Item> {
         // let prev_idx = self.idx;
         let mut output = Vec::new();
-        loop{
-            let frame = self.array.get(ndarray::Ix2(self.idx, self.frame_col));
-            match frame{
-                Some(frame) => {
-                    let frame = *frame;
-                    if frame != self.cur_frame{
-                        let out = (self.cur_frame as usize, output);
-                        self.cur_frame = frame;
-                        // let result = Some(self.array.slice(s![prev_idx..self.idx, ..]));
-                        return Some(out);
+        match self.frame_col{
+            Some(frame_col) => {
+                loop{
+                    let frame = self.array.get(ndarray::Ix2(self.idx, frame_col));
+                    match frame{
+                        Some(frame) => {
+                            let frame = *frame;
+                            if frame != self.cur_frame{
+                                let out = (Some(self.cur_frame as usize), output);
+                                self.cur_frame = frame;
+                                // let result = Some(self.array.slice(s![prev_idx..self.idx, ..]));
+                                return Some(Ok(out));
+                            }
+                        },
+                        None => {
+                            if output.len() > 0{
+                                return Some(Ok((Some(self.cur_frame as usize), output)));
+                            }
+                            return None;
+                        }
                     }
-                },
-                None => {
-                    if output.len() > 0{
-                        return Some((self.cur_frame as usize, output));
-                    }
-                    return None;
+                    output.push([self.array[[self.idx, self.positions.0]], self.array[[self.idx, self.positions.1]]]);
+                    self.idx += 1;
                 }
+            },
+            None => {
+                let out_vec = self.array.rows().into_iter().map(|row| [row[self.positions.0], row[self.positions.1]]).collect();
+                let out = Some(Ok((None, out_vec)));
+                return out
             }
-            output.push([self.array[[self.idx, self.positions.0]], self.array[[self.idx, self.positions.1]]]);
-            self.idx += 1;
         }
     }
 }
@@ -568,14 +577,15 @@ pub fn link_all<T>(frame_iter: T, radius: float, memory: usize) -> Vec<usize>
 
 }
 
-pub fn linker_all(frame_iter: impl Iterator<Item = (usize, Vec<[float; 2]>)>, radius: float, memory: usize) -> Vec<usize>{
+pub fn linker_all(frame_iter: impl Iterator<Item = crate::error::Result<(Option<usize>, Vec<[float; 2]>)>>, radius: float, memory: usize) -> crate::error::Result<Vec<usize>>{
 
     let mut linker = Linker::new(radius, memory);
     let mut results = Vec::new();
     for frame in frame_iter{
+        let frame = frame?;
         let result = linker.advance(&frame.1);
         results.extend(result.into_iter());
     }
-    results
+    Ok(results)
     // link_all(frame_iter, radius, memory)
 }
