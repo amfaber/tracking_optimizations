@@ -19,27 +19,36 @@ fn cast_vec_to_f32<T: Into<my_dtype> + Copy>(res: Vec<T>) -> item_type{
     data
 }
 
-pub trait FrameProvider<F: IntoSlice, I: Iterator<Item = F>>{
-    fn get_frame(&self, frame_idx: usize) -> Result<F, std::io::Error>;
-    fn len(&self) -> usize;
-    fn iter(&self) -> I;
+pub trait FrameProvider{
+    type Frame: IntoSlice;
+    type FrameIter: Iterator<Item = Result<Self::Frame, Error>>;
+    // type IntoIter: Iterator<Item = Self::Frame>;
+    fn get_frame(&self, frame_idx: usize) -> Result<Self::Frame, Error>;
+    fn len(&self, too_high: Option<usize>) -> usize;
+    fn into_iter(self: Box<Self>) -> Self::FrameIter;
+    // fn into_iter(self) -> Box<dyn Iterator<Item = Result<Self::Frame, Error>>>;
 }
 
-// pub trait FrameProvider{
-//     type frame: IntoSlice;
-//     fn get_frame(&self, frame_idx: usize) -> Result<Self::frame, Error>;
-//     fn len(&self) -> usize;
-// }
+pub trait FrameIterBoxed{
+    
+}
 
-impl<T: FrameProvider + ?Sized> FrameProvider for Box<T>{
-    type frame = T::frame;
-    fn get_frame(&self, frame_idx: usize) -> Result<Self::frame, Error> {
+impl<F: IntoSlice, I: Iterator<Item = Result<F, Error>>> FrameProvider for Box<dyn FrameProvider<Frame = F, FrameIter = I>>{
+    type Frame = F;
+    type FrameIter = I;
+    fn get_frame(&self, frame_idx: usize) -> Result<Self::Frame, Error> {
         // T::get_frame(self, frame_idx)
         (**self).get_frame(frame_idx)
     }
-    fn len(&self) -> usize{
-        (**self).len()
+    fn len(&self, too_high: Option<usize>) -> usize{
+        (**self).len(too_high)
     }
+    fn into_iter(self: Box<Self>) -> I{
+    // fn into_iter(self) -> Box<dyn Iterator<Item = Result<Self::Frame, Error>>>{
+        (*self).into_iter()
+        // Box::new(T::into_iter(*self))
+    }
+    
 }
 
 // #[derive(Debug)]
@@ -52,9 +61,12 @@ impl<T: FrameProvider + ?Sized> FrameProvider for Box<T>{
 //     CastError
 // }
 
-impl<R: Read + Seek> FrameProvider for RefCell<Decoder<R>>{
-    type frame = Vec<my_dtype>;
-    fn get_frame(&self, frame_idx: usize) -> Result<Self::frame, Error>{
+impl<R: Read + Seek + 'static> FrameProvider for RefCell<Decoder<R>>{
+    type Frame = Vec<my_dtype>;
+    type FrameIter = Box<dyn Iterator<Item = Result<Self::Frame, Error>>>;
+    // type FrameIter = IterDecoder<R>;
+    // type frame = Vec<my_dtype>;
+    fn get_frame(&self, frame_idx: usize) -> Result<Vec<my_dtype>, Error>{
         // dbg!("can i get a frame?");
         let seek_result = self.borrow_mut().seek_to_image(frame_idx);
         seek_result.map_err(|_| Error::FrameOOB)?;
@@ -76,24 +88,53 @@ impl<R: Read + Seek> FrameProvider for RefCell<Decoder<R>>{
         out
     }
 
-    fn len(&self) -> usize{
-        self.borrow_mut().seek_to_image(0);
-        let n_frames = 1 + (0..).map(|_| self.borrow_mut().next_image()).take_while(|res| res.is_ok()).count();
-        n_frames
+    fn len(&self, too_high: Option<usize>) -> usize{
+        let mut lo = 0;
+        let mut hi = too_high.unwrap();
+        let mut mid = (hi - lo) / 2;
+        while mid != lo{
+            match self.borrow_mut().seek_to_image(mid){
+                Ok(_) => lo = mid,
+                Err(_) => hi = mid,
+            }
+            mid = lo + (hi - lo) / 2;
+        }
+        hi
+    }
+
+    fn into_iter(self: Box<Self>) -> Self::FrameIter{
+        let iter = IterDecoder::from(self.into_inner());
+        Box::new(iter)
     }
 }
 
-impl<R: Read + Seek> FrameProvider for RefCell<ETSIterator<R>>{
-    type frame = Vec<my_dtype>;
-    fn get_frame(&self, frame_idx: usize) -> Result<Self::frame, Error>{
+impl<R: Read + Seek + 'static> FrameProvider for RefCell<ETSIterator<R>>{
+    type Frame = Vec<my_dtype>;
+    type FrameIter = Box<dyn Iterator<Item = Result<Self::Frame, Error>>>;
+    // type FrameIter = ETSIterator<R>;
+    // type frame = Vec<my_dtype>;
+    fn get_frame(&self, frame_idx: usize) -> Result<Self::Frame, Error>{
         self.borrow_mut().seek(frame_idx)?;
         let result = self.borrow_mut().next().unwrap()?;
         let out = cast_vec_to_f32(result);
         Ok(out)
     }
 
-    fn len(&self) -> usize{
+    fn len(&self, too_high: Option<usize>) -> usize{
         self.borrow().offsets.len()
+    }
+
+    fn into_iter(self: Box<Self>) -> Box<dyn Iterator<Item = Result<Self::Frame, Error>>>{
+        let mut inner = self.into_inner();
+        inner.seek(0);
+        let out = inner.map(|res_image| {
+            res_image.map(|image| {
+                let idk1 = image.iter().map(|&pixel| pixel as f32);
+                let idk: Vec<_> = idk1.collect();
+                idk
+                })
+            });
+        Box::new(out)
     }
 }
 
@@ -113,9 +154,12 @@ impl<R: Read + Seek> FrameProvider for RefCell<ETSIterator<R>>{
 // }
 
 impl<'a, 'b: 'a> FrameProvider for &'b ArrayView3<'a, my_dtype>{
-    type frame = ArrayView2<'a, my_dtype>;
+    type Frame = ArrayView2<'a, my_dtype>;
+    type FrameIter = Box<dyn Iterator<Item = Result<Self::Frame, Error>> + 'a>;
+    // type IntoIter = ndarray::iter::AxisIter<'b, f32, ndarray::Dim<[usize; 2]>>;
+    // type frame = ArrayView2<'a, my_dtype>;
     // type frame = &'a[my_dtype];
-    fn get_frame(&self, frame_index: usize) -> Result<Self::frame, Error>{
+    fn get_frame(&self, frame_index: usize) -> Result<ArrayView2<'a, my_dtype>, Error>{
         // let self = &*self;
         let n_frames = self.shape()[0];
         if frame_index >= n_frames{
@@ -124,8 +168,12 @@ impl<'a, 'b: 'a> FrameProvider for &'b ArrayView3<'a, my_dtype>{
         Ok(self.index_axis(Axis(0), frame_index))
     }
 
-    fn len(&self) -> usize{
+    fn len(&self, too_high: Option<usize>) -> usize{
         self.shape()[0]
+    }
+    fn into_iter(self: Box<Self>) -> Box<dyn Iterator<Item = Result<Self::Frame, Error>> + 'a>{
+        let iter = self.axis_iter(Axis(0)).map(|frame| Ok(frame));
+        Box::new(iter)
     }
 }
 
@@ -163,37 +211,35 @@ impl<R: std::io::Read + std::io::Seek> IterDecoder<R>{
 }
 
 impl <R: std::io::Read + std::io::Seek> Iterator for IterDecoder<R>{
-    type Item = item_type;
+    type Item = Result<Vec<my_dtype>, Error>;
     fn next(&mut self) -> Option<Self::Item>{
+        self.next_image()?;
+        let res = self.decoder.read_image();
+        match res{
+            Ok(U8(vec)) => Some(Ok(cast_vec_to_f32(vec))),
+            Ok(U8(vec)) => Some(Ok(cast_vec_to_f32(vec))),
+            Ok(U16(vec)) => Some(Ok(cast_vec_to_f32(vec))),
+            Ok(I8(vec)) => Some(Ok(cast_vec_to_f32(vec))),
+            Ok(I16(vec)) => Some(Ok(cast_vec_to_f32(vec))),
+            Ok(F32(vec)) => Some(Ok(cast_vec_to_f32(vec))),
+            
+            Ok(U32(vec)) => Some(Err(Error::CastError)),
+            Ok(U64(vec)) => Some(Err(Error::CastError)),
+            Ok(F64(vec)) => Some(Err(Error::CastError)),
+            Ok(I32(vec)) => Some(Err(Error::CastError)),
+            Ok(I64(vec)) => Some(Err(Error::CastError)),
+            Err(_) => return Some(Err(Error::ReadError))
+        }
+    }
+}
+impl<R: Read + Seek> IterDecoder<R>{
+    fn next_image(&mut self) -> Option<()>{
         if self.first{
             self.first = false;
-            match self.decoder.read_image().unwrap(){
-                DecodingResult::U16(res) => {
-                    return Some(self._treat_data(res));
-                },
-                DecodingResult::U8(res) => {
-                    return Some(self._treat_data(res))
-                },
-                _ => panic!("Wrong bit depth")
-            }
-        };
-        match self.decoder.more_images(){
-            true => {
-                self.decoder.next_image().unwrap();
-                match self.decoder.read_image().unwrap(){
-                    DecodingResult::U16(res) => {
-                        return Some(self._treat_data(res))
-                    },
-                    DecodingResult::U8(res) => {
-                        return Some(self._treat_data(res))
-                    },
-                    _ => panic!("Wrong bit depth")
-                }
-            },
-            false => {
-                return None
-            }
-        };
+        } else {
+            self.decoder.next_image().ok()?;
+        }
+        Some(())
     }
 }
 

@@ -1,4 +1,4 @@
-use std::fs::File;
+use std::{fs::File, path::PathBuf};
 
 use crate::{my_dtype, linking::FrameSubsetter};
 use ndarray::Array;
@@ -416,11 +416,12 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
     #[pyfn(m)]
     #[pyo3(name = "mean_from_disk")]
     fn mean_from_disk<'py>(py: Python<'py>, path: &str, channel: Option<usize>) -> PyResult<&'py PyArray2<f32>>{
-        
-        let (provider, dims) = path_to_iter(path, channel)?;
-        let iter = (0..)
-            .map(|i| provider.get_frame(i))
-            .take_while(|res| !matches!(res, Err(crate::error::Error::FrameOOB)));
+        let path = PathBuf::from(path);
+        let (provider, dims) = path_to_iter(&path, channel)?;
+        // let iter = (0..)
+        //     .map(|i| provider.get_frame(i))
+        //     .take_while(|res| !matches!(res, Err(crate::error::Error::FrameOOB)));
+        let iter = provider.into_iter();
         let mean_arr = mean_from_iter(iter, &dims, channel)?;
         // let idk = provider.get_frame(0);
         // let mut n_frames = 0;

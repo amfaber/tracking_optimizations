@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs::File, io::Read, rc::Rc};
+use std::{collections::HashMap, fs::File, io::Read, rc::Rc, cell::Cell};
 
 use crate::{my_dtype, utils::*};
 
@@ -472,7 +472,7 @@ pub struct GpuState{
     pub flavor: GpuStateFlavor,
     pub dims: [u32; 2],
     pub std_pass: Option<StdArray>,
-    pub characterize: Option<FullComputePass>,
+    pub characterize: Cell<Option<(FullComputePass, [u32; 3])>>,
 }
 
 pub enum GpuStateFlavor{
@@ -974,7 +974,7 @@ pub fn setup_state(
     passes.get_mut("adaptive_filter").as_mut().map(|v| v[1].dispatcher = Some(indirect_dispatcher));
     
     
-    let characterize = passes.remove("characterize").map(|mut v| v.remove(0));
+    let characterize = Cell::new(passes.remove("characterize").map(|mut v| (v.remove(0), workgroup_size1d)));
 
     let state = GpuState{
         device,
