@@ -18,6 +18,6 @@ use crate::{execute_gpu::{execute_ndarray}, decoderiter::{MinimalETSParser}, gpu
 use ndarray::Array;
 use std::{fs::File, collections::HashMap};
 
-// pub mod python_bindings;
-// use crate::python_bindings::*;
+pub mod python_bindings;
+use crate::python_bindings::*;
 

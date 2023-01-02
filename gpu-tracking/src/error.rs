@@ -35,6 +35,10 @@ pub enum Error{
 		vid_len: usize,
 		problem_idx: usize,
 	},
+
+	#[error("Internal frame out of bounds error")]
+	FrameOOB,
+
 	
 	#[error("unexpected threading error. this will require some more debugging.")]
 	ThreadError,
@@ -60,7 +64,13 @@ pub enum Error{
 accepted dimensions: (Nx2) or (Nx3). received: {:?}", dims)]
 	ArrayDimensionsError{
 		dims: Vec<usize>,
-	}
+	},
+
+	#[error("error in casting image datatype")]
+	CastError,
+
+	#[error("error in seeking to the requested image in file")]
+	ReadError,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

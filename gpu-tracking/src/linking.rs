@@ -9,6 +9,7 @@ type float = f32;
 use typenum::{self, U2};
 use num_traits;
 
+#[derive(Clone)]
 pub struct FrameSubsetter<'a>{
     pub frame_col: Option<usize>,
     pub array: &'a ArrayView2<'a, float>,

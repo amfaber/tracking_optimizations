@@ -1,6 +1,6 @@
 use tiff::decoder::{Decoder, DecodingResult::{self, *}};
 use ndarray::{Array2, Array3, ArrayView3, ArrayView2, Axis};
-use crate::{my_dtype, into_slice::IntoSlice};
+use crate::{my_dtype, into_slice::IntoSlice, error::Error};
 use byteorder::{ReadBytesExt, LittleEndian};
 use std::{io::{self, Read, Seek, SeekFrom}, cell::{Cell, RefCell}};
 use std::collections::HashMap;
@@ -9,57 +9,123 @@ use num_traits;
 type item_type = Vec<my_dtype>;
 // type item_type = Array2<my_dtype>;
 
-fn cast_vec_to_f32<T: num_traits::NumCast>(to_cast: Vec<T>) -> Result<Vec<my_dtype>, GetFrameError>{
-    let converted = to_cast.into_iter().map(|datum| num_traits::cast(datum).ok_or(GetFrameError::CastError)).collect();
-    converted
+// fn cast_vec_to_f32<T: num_traits::NumCast>(to_cast: Vec<T>) -> Result<Vec<my_dtype>, Error>{
+//     let converted = to_cast.into_iter().map(|datum| {num_traits::cast(datum).ok_or(Error::CastError)}).collect();
+//     converted
+// }
+
+fn cast_vec_to_f32<T: Into<my_dtype> + Copy>(res: Vec<T>) -> item_type{
+    let data = res.iter().map(|&x| x.into()).collect::<Vec<my_dtype>>();
+    data
 }
 
-
-
-pub trait FrameProvider<'a>{
-    type frame: IntoSlice + 'a;
-    fn get_frame(&'a self, frame_idx: usize) -> Result<Self::frame, GetFrameError>;
+pub trait FrameProvider<F: IntoSlice, I: Iterator<Item = F>>{
+    fn get_frame(&self, frame_idx: usize) -> Result<F, std::io::Error>;
+    fn len(&self) -> usize;
+    fn iter(&self) -> I;
 }
 
-#[derive(Debug)]
-pub enum GetFrameError{
-    OutOfBounds,
-    ReadError,
-    CastError
+// pub trait FrameProvider{
+//     type frame: IntoSlice;
+//     fn get_frame(&self, frame_idx: usize) -> Result<Self::frame, Error>;
+//     fn len(&self) -> usize;
+// }
+
+impl<T: FrameProvider + ?Sized> FrameProvider for Box<T>{
+    type frame = T::frame;
+    fn get_frame(&self, frame_idx: usize) -> Result<Self::frame, Error> {
+        // T::get_frame(self, frame_idx)
+        (**self).get_frame(frame_idx)
+    }
+    fn len(&self) -> usize{
+        (**self).len()
+    }
 }
 
-impl<'a, R: Read + Seek> FrameProvider<'a> for RefCell<Decoder<R>>{
+// #[derive(Debug)]
+// pub enum GetFrameError{
+    // OutOfBounds{
+    //     vidlen,
+        
+    // },
+//     ReadError,
+//     CastError
+// }
+
+impl<R: Read + Seek> FrameProvider for RefCell<Decoder<R>>{
     type frame = Vec<my_dtype>;
-    fn get_frame(&'a self, frame_idx: usize) -> Result<Self::frame, GetFrameError>{
-        self.borrow_mut().seek_to_image(frame_idx).map_err(|_| GetFrameError::OutOfBounds)?;
-        let result = self.borrow_mut().read_image().map_err(|_| GetFrameError::ReadError)?;
+    fn get_frame(&self, frame_idx: usize) -> Result<Self::frame, Error>{
+        // dbg!("can i get a frame?");
+        let seek_result = self.borrow_mut().seek_to_image(frame_idx);
+        seek_result.map_err(|_| Error::FrameOOB)?;
+        let result = self.borrow_mut().read_image().map_err(|_| Error::ReadError)?;
         let out = match result{
-            U8(vec) => cast_vec_to_f32(vec),
-            U8(vec) => cast_vec_to_f32(vec),
-            U16(vec) => cast_vec_to_f32(vec),
-            U32(vec) => cast_vec_to_f32(vec),
-            U64(vec) => cast_vec_to_f32(vec),
-            F32(vec) => cast_vec_to_f32(vec),
-            F64(vec) => cast_vec_to_f32(vec),
-            I8(vec) => cast_vec_to_f32(vec),
-            I16(vec) => cast_vec_to_f32(vec),
-            I32(vec) => cast_vec_to_f32(vec),
-            I64(vec) => cast_vec_to_f32(vec),
+            U8(vec) => Ok(cast_vec_to_f32(vec)),
+            U8(vec) => Ok(cast_vec_to_f32(vec)),
+            U16(vec) => Ok(cast_vec_to_f32(vec)),
+            I8(vec) => Ok(cast_vec_to_f32(vec)),
+            I16(vec) => Ok(cast_vec_to_f32(vec)),
+            F32(vec) => Ok(cast_vec_to_f32(vec)),
+            
+            U32(vec) => Err(Error::CastError)?,
+            U64(vec) => Err(Error::CastError)?,
+            F64(vec) => Err(Error::CastError)?,
+            I32(vec) => Err(Error::CastError)?,
+            I64(vec) => Err(Error::CastError)?,
         };
         out
+    }
+
+    fn len(&self) -> usize{
+        self.borrow_mut().seek_to_image(0);
+        let n_frames = 1 + (0..).map(|_| self.borrow_mut().next_image()).take_while(|res| res.is_ok()).count();
+        n_frames
+    }
+}
+
+impl<R: Read + Seek> FrameProvider for RefCell<ETSIterator<R>>{
+    type frame = Vec<my_dtype>;
+    fn get_frame(&self, frame_idx: usize) -> Result<Self::frame, Error>{
+        self.borrow_mut().seek(frame_idx)?;
+        let result = self.borrow_mut().next().unwrap()?;
+        let out = cast_vec_to_f32(result);
+        Ok(out)
+    }
+
+    fn len(&self) -> usize{
+        self.borrow().offsets.len()
     }
 }
 
 
+// struct LifeTimeWrap<'a, 'b>(&'b ArrayView3<'a, my_dtype>);
 
-impl<'a> FrameProvider<'a> for ArrayView3<'a, my_dtype>{
+// impl <'a, 'b> FrameProvider<'a> for LifeTimeWrap<'a, 'b>{
+//     type frame = ArrayView2<'a, my_dtype>;
+//     fn get_frame(&self, frame_index: usize) -> Result<Self::frame, Error>{
+//         // let self = &*self;
+//         let n_frames = self.0.shape()[0];
+//         if frame_index >= n_frames{
+//             return Err(Error::FrameOutOfBounds { vid_len: n_frames, problem_idx: frame_index })
+//         }
+//         Ok(self.0.index_axis(Axis(0), frame_index))
+//     }
+// }
+
+impl<'a, 'b: 'a> FrameProvider for &'b ArrayView3<'a, my_dtype>{
     type frame = ArrayView2<'a, my_dtype>;
-    fn get_frame(&'a self, frame_index: usize) -> Result<Self::frame, GetFrameError>{
+    // type frame = &'a[my_dtype];
+    fn get_frame(&self, frame_index: usize) -> Result<Self::frame, Error>{
         // let self = &*self;
-        if frame_index >= self.shape()[0]{
-            return Err(GetFrameError::OutOfBounds)
+        let n_frames = self.shape()[0];
+        if frame_index >= n_frames{
+            return Err(Error::FrameOOB)
         }
         Ok(self.index_axis(Axis(0), frame_index))
+    }
+
+    fn len(&self) -> usize{
+        self.shape()[0]
     }
 }
 
@@ -88,9 +154,12 @@ impl <R: std::io::Read + std::io::Seek> From::<Decoder<R>> for IterDecoder<R>{
 impl<R: std::io::Read + std::io::Seek> IterDecoder<R>{
     fn _treat_data<T: Into<my_dtype> + Copy>(&self, res: Vec<T>) -> item_type{
         let data = res.iter().map(|&x| x.into()).collect::<Vec<my_dtype>>();
-        // let data = ndarray::Array::from_shape_vec(self.dims, data).unwrap();
         data
     }
+    // fn _treat_data<T: num_traits::NumCast + Copy>(&self, to_cast: Vec<T>) -> Vec<my_dtype>{
+    //     let converted = to_cast.iter().map(|&datum| {num_traits::cast(datum).ok_or(Error::CastError)}).collect::<Result<Vec<_>, _>>().unwrap();
+    //     converted
+    // }
 }
 
 impl <R: std::io::Read + std::io::Seek> Iterator for IterDecoder<R>{
@@ -262,8 +331,8 @@ impl MinimalETSParser{
 
 pub struct ETSIterator<R: Read + Seek>{
     reader: R,
-    current: usize,
-    offsets: Vec<Option<u64>>,
+    pub current: usize,
+    pub offsets: Vec<Option<u64>>,
     read_size: usize,
 }
 
@@ -281,16 +350,17 @@ impl<R: Read + Seek> ETSIterator<R>{
         self.offsets.iter().flatten().count()
     }
 
-    pub fn seek(&mut self, to: usize){
+    pub fn seek(&mut self, to: usize) -> crate::error::Result<()>{
         match self.offsets.get(to){
-            Some(Some(_val)) => { self.current = to; },
-            _ => { panic!("Index not found in file.") },
+            Some(Some(_val)) => { self.current = to; Ok(()) },
+            Some(None) => Err(Error::ReadError),
+            None => Err(Error::FrameOutOfBounds { vid_len: self.offsets.len(), problem_idx: to }),
         }
     }
 }
 
 impl<R: Read + Seek> Iterator for ETSIterator<R>{
-    type Item = Option<Vec<u16>>;
+    type Item = crate::error::Result<Vec<u16>>;
     fn next(&mut self) -> Option<Self::Item> {
         let offset = self.offsets.get(self.current)?;
         match offset{
@@ -313,11 +383,11 @@ impl<R: Read + Seek> Iterator for ETSIterator<R>{
                     u16::from_le_bytes(chunk.try_into().unwrap())
                 }).collect::<Vec<_>>();
                 self.current += 1;
-                Some(Some(buf))
+                Some(Ok(buf))
             },
             None => {
                 self.current += 1;
-                Some(None)
+                Some(Err(Error::ReadError))
             }
         }
     }

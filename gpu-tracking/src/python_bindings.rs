@@ -29,7 +29,10 @@ impl std::convert::From::<Error> for PyErr{
             Error::NonStandardArrayLayout |
             Error::UnsupportedFileformat { .. } |
             Error::ArrayDimensionsError{ .. } |
-            Error::NoExtensionError{ .. }
+            Error::NoExtensionError{ .. } |
+            Error::ReadError |
+            Error::FrameOOB |
+            Error::CastError
              => {
 				pyo3::exceptions::PyValueError::new_err(err.to_string())
 			},
@@ -394,7 +397,7 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
 
     #[pyfn(m)]
     #[pyo3(name = "parse_ets_with_keys")]
-    fn parse_ets_with_keys<'py>(py: Python<'py>, path: &str, keys: Vec<usize>, channel: Option<usize>) -> &'py PyArray3<u16>{
+    fn parse_ets_with_keys<'py>(py: Python<'py>, path: &str, keys: Vec<usize>, channel: Option<usize>) -> PyResult<&'py PyArray3<u16>>{
         let mut file = File::open(path).unwrap();
         let parser = MinimalETSParser::new(&mut file).unwrap();
         let channel = channel.unwrap_or(0);
@@ -403,19 +406,23 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         let mut vec = Vec::with_capacity(n_frames * parser.dims.iter().product::<usize>());
         for key in keys{
             iter.seek(key);
-            vec.extend(iter.next().flatten().into_iter().flatten());
+            vec.extend(iter.next().unwrap().into_iter().flatten());
         }
         let array = Array::from_shape_vec((n_frames, parser.dims[1], parser.dims[0]), vec).unwrap();
         let array = array.into_pyarray(py);
-        array
+        Ok(array)
     }
 
     #[pyfn(m)]
     #[pyo3(name = "mean_from_disk")]
     fn mean_from_disk<'py>(py: Python<'py>, path: &str, channel: Option<usize>) -> PyResult<&'py PyArray2<f32>>{
         
-        let (iter, dims) = path_to_iter(path, channel)?;
+        let (provider, dims) = path_to_iter(path, channel)?;
+        let iter = (0..)
+            .map(|i| provider.get_frame(i))
+            .take_while(|res| !matches!(res, Err(crate::error::Error::FrameOOB)));
         let mean_arr = mean_from_iter(iter, &dims, channel)?;
+        // let idk = provider.get_frame(0);
         // let mut n_frames = 0;
         // let mut mean_vec = iter.fold(vec![0f32; (dims[0] * dims[1]) as usize], |mut acc, ele|{
         //     for (a, e) in acc.iter_mut().zip(ele.iter()){
