@@ -14,7 +14,7 @@ use crate::{kernels, into_slice::IntoSlice,
     gpu_setup::{
     self, GpuState, ParamStyle, TrackingParams, GpuStateFlavor
 }, linking::{
-    Linker, FrameSubsetter, ReturnDistance
+    Linker, FrameSubsetter, ReturnDistance2
 }, decoderiter::{
     IterDecoder, self, FrameProvider,
 }, utils::{
@@ -447,7 +447,7 @@ fn filter_close_trackpy(results: &Vec<ResultRow>, separation: my_dtype) -> Vec<R
     let output = results.iter().enumerate()
     .map(|(idx, query)| {
         let mass = query.mass;
-        let neighbors = tree.within_radius_rd(query, separation);
+        let neighbors = tree.within_radius_rd2(query, separation);
         // let neighbors = tree.within_radius(query, tracking_params.separation as my_dtype);
         let mut keep_point = true;
         for (&neighbor_idx, distance) in neighbors{
@@ -492,7 +492,7 @@ fn prune_blobs_log(results: &Vec<ResultRow>, overlap_threshold: my_dtype) -> Vec
         let b =  d - r2 + r1;
         let c =  d + r2 - r1;
         let d =  d + r2 + r1;
-        let area = r1s + acos1 + r2s * acos2 - 0.5 * (a * b * c * d).abs().sqrt();
+        let area = r1s * acos1 + r2s * acos2 - 0.5 * (a * b * c * d).abs().sqrt();
 
         let overlap = area / (PI * r1s.min(r2s));
         return overlap
@@ -522,10 +522,9 @@ fn prune_blobs_log(results: &Vec<ResultRow>, overlap_threshold: my_dtype) -> Vec
             None => continue,
             Some(query) => query,
         };
-
         let query_radius = query.r * 2.;
-        let neighbors = tree.within_radius_rd(query, query_radius);
-        for (&neighbor_idx, distance) in neighbors{
+        let neighbors = tree.within_radius_rd2(query, query_radius);
+        for (&neighbor_idx, distance2) in neighbors{
             if neighbor_idx == idx{
                 continue
             }
@@ -533,7 +532,11 @@ fn prune_blobs_log(results: &Vec<ResultRow>, overlap_threshold: my_dtype) -> Vec
                 Some(neighbor) => neighbor,
                 None => continue,
             };
-            if blob_overlap(query, neighbor, distance) > overlap_threshold{
+            // if (query.x == 125.241486) & (neighbor.x == 132.784637){
+            //     let idk = 1+1;
+            // }
+            let overlap = blob_overlap(query, neighbor, distance2.sqrt());
+            if overlap > overlap_threshold{
                 if query.r > neighbor.r{
                     to_keep[neighbor_idx] = None
                 } else {

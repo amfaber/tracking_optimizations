@@ -75,8 +75,8 @@ impl<'a> Iterator for FrameSubsetter<'a>{
 }
 
 
-pub trait ReturnDistance<T, N, R>{
-    fn within_radius_rd(&self, query: &impl KdPoint<Scalar = T::Scalar, Dim = N>,
+pub trait ReturnDistance2<T, N, R>{
+    fn within_radius_rd2(&self, query: &impl KdPoint<Scalar = T::Scalar, Dim = N>,
         radius: T::Scalar,
     ) -> Vec<(&R, T::Scalar)>
     where
@@ -84,8 +84,8 @@ pub trait ReturnDistance<T, N, R>{
     
 }
 
-impl<'a, T: KdPoint, N: typenum::marker_traits::Unsigned> ReturnDistance<T, N, usize> for KdIndexTree<'a, T>{
-    fn within_radius_rd(&self, query: &impl KdPoint<Scalar = T::Scalar, Dim = N>,
+impl<'a, T: KdPoint, N: typenum::marker_traits::Unsigned> ReturnDistance2<T, N, usize> for KdIndexTree<'a, T>{
+    fn within_radius_rd2(&self, query: &impl KdPoint<Scalar = T::Scalar, Dim = N>,
         radius: T::Scalar,
     ) -> Vec<(&usize, <T as KdPoint>::Scalar)>
     where
@@ -118,8 +118,8 @@ impl<'a, T: KdPoint, N: typenum::marker_traits::Unsigned> ReturnDistance<T, N, u
         }
 }
 
-impl<T: KdPoint, N: typenum::marker_traits::Unsigned> ReturnDistance<T, N, T> for KdTree<T>{
-    fn within_radius_rd(&self, query: &impl KdPoint<Scalar = T::Scalar, Dim = N>,
+impl<T: KdPoint, N: typenum::marker_traits::Unsigned> ReturnDistance2<T, N, T> for KdTree<T>{
+    fn within_radius_rd2(&self, query: &impl KdPoint<Scalar = T::Scalar, Dim = N>,
         radius: T::Scalar,
     ) -> Vec<(&T, T::Scalar)>
     where
@@ -311,7 +311,7 @@ pub fn link<T: KdPoint<Scalar = float, Dim = U2>>(
     // let dest_0_idx = dest.enumerate().map(|(i, ele)| (ele, i)).collect::<Vec<_>>();
 
     let tree = kd_tree::KdIndexTree::build_by_ordered_float(dest);
-    let dest_points_near_source = src.iter().map(|point| tree.within_radius_rd(point, radius));
+    let dest_points_near_source = src.iter().map(|point| tree.within_radius_rd2(point, radius));
     // let mut source: Vec<Vec<(usize, float)>> = vec![Vec::new(); src.len()];
     // let mut dest: Vec<Vec<(usize, float)>> = vec![Vec::new(); tree.len()];
     src_to_dest.set_size(src.len());

@@ -741,7 +741,6 @@ pub fn setup_state(
 
             let radii = if *log_spacing{
                 let mut start = min_radius.log(10.);
-                dbg!(start);
                 let end = max_radius.log(10.);
                 let diff = (end - start) / (*n_radii - 1) as my_dtype;
                 let mut out = (0..(n_radii - 1)).map(|_| {let temp = start; start += diff; (10f32).powf(temp)}).collect::<Vec<_>>();

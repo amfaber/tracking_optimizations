@@ -1,13 +1,10 @@
 from dash import Dash, dcc, html, Input, Output, State, MATCH, ALL, ctx
-import pandas as pd
-import random
 import uuid
 import os
 from .lib import load, annotate_image_plotly, batch, LoG
 import plotly.express as px
 import plotly.graph_objs as go
 import numpy as np
-from scipy.stats import linregress
 
 app = Dash(__name__, suppress_callback_exceptions=True)
 
@@ -16,8 +13,6 @@ app.layout = html.Div([
     html.Div(id='dropdown-container', children=[]),
     html.Div(id='dropdown-container-output')
 ])
-
-# distinguishers = ["You","I","They","He","She","Robert","Steve"]
 
 def plotter(
     path,
@@ -466,9 +461,7 @@ def update_prop_graph(
     # print(df)
     if var1:
         if var2 is not None and var2 != "None":
-            prop_graph = px.scatter(x = df[var1], y = df[var2], trendline = "ols")
-            results = px.get_trendline_results(prop_graph)
-            # print(results)
+            prop_graph = px.scatter(x = df[var1], y = df[var2])
         else:
             prop_graph = px.histogram(x = df[var1])
             mean = df[var1].mean()
@@ -487,7 +480,6 @@ def update_prop_graph(
     Input({"type": "add", "index": ALL}, 'n_clicks'),
     Input({"type": "remove", "index": ALL}, 'n_clicks'),
     State('dropdown-container', 'children'),
-    # State({"type": "add", "index": MATCH}, "id"),
 )
 def add_remove(_add_n_clicks, _remove_n_clicks, children):
     who_triggered = list(ctx.triggered_prop_ids.values())
@@ -499,17 +491,6 @@ def add_remove(_add_n_clicks, _remove_n_clicks, children):
     triggering_idx = triggering["index"]
     cases[triggering_type](children, triggering_idx)
     return children
-
-
-# @app.callback(
-#     Output('dropdown-container-output', 'children'),
-#     Input({'type': 'filter-dropdown', 'index': ALL}, 'value')
-# )
-# def display_output(values):
-#     return html.Div([
-#         html.Div('Dropdown {} = {}'.format(i + 1, value))
-#         for (i, value) in enumerate(values)
-#     ])
 
 
 if __name__ == '__main__':
