@@ -53,6 +53,7 @@ pub struct TrackingParams{
     pub illumination_sigma: Option<my_dtype>,
     pub adaptive_background: Option<usize>,
     pub include_r_in_output: bool,
+    pub shift_threshold: f32,
 }
 
 impl Default for TrackingParams{
@@ -72,6 +73,7 @@ impl Default for TrackingParams{
             illumination_sigma: None,
             adaptive_background: None,
             include_r_in_output: false,
+            shift_threshold: 0.6,
             style: ParamStyle::Trackpy{
                 diameter: 9,
                 noise_size: 1.,
@@ -516,7 +518,7 @@ fn gpuparams_from_tracking_params(params: &TrackingParams, pic_dims: [u32; 2]) -
         circle_dims: [circle_size, circle_size],
         dilation_dims: [dilation_size, dilation_size],
         max_iterations: params.max_iterations,
-        shift_threshold: 0.5,
+        shift_threshold: params.shift_threshold,
         minmass: params.minmass,
         margin,
         snr: params.snr.unwrap_or(0.0),

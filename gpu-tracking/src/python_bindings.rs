@@ -88,6 +88,7 @@ macro_rules! make_args {
             correct_illumination: Option<bool>,
             illumination_sigma: Option<my_dtype>,
             adaptive_background: Option<usize>,
+            shift_threshold: Option<my_dtype>,
             $($postargs)*
         ) -> $outtype {
             not_implemented!(maxsize, threshold, invert, percentile,
@@ -110,6 +111,7 @@ macro_rules! make_args {
             let gap_radius = bg_radius.map(|_| gap_radius.unwrap_or(0.));
             let truncate_preprocessed = truncate_preprocessed.unwrap_or(true);
             // let adaptive_background = adaptive_background.unwrap_or(false);
+            let shift_threshold = shift_threshold.unwrap_or(0.6);
 
             let doughnut_correction = doughnut_correction.unwrap_or(false);
             
@@ -155,6 +157,7 @@ macro_rules! make_args {
                 illumination_sigma,
                 adaptive_background,
                 include_r_in_output: false,
+                shift_threshold,
             };
             $body
         }
@@ -191,6 +194,7 @@ macro_rules! make_log_args {
             correct_illumination: Option<bool>,
             illumination_sigma: Option<my_dtype>,
             adaptive_background: Option<usize>,
+            shift_threshold: Option<my_dtype>,
 
             $($postargs)*
         ) -> $outtype {
@@ -206,6 +210,7 @@ macro_rules! make_log_args {
             let gap_radius = bg_radius.map(|_| gap_radius.unwrap_or(0.));
             let truncate_preprocessed = truncate_preprocessed.unwrap_or(true);
             // let adaptive_background = adaptive_background.unwrap_or(false);
+            let shift_threshold = shift_threshold.unwrap_or(0.6);
             
             let doughnut_correction = doughnut_correction.unwrap_or(false);
 
@@ -243,6 +248,7 @@ macro_rules! make_log_args {
                 illumination_sigma,
                 adaptive_background,
                 include_r_in_output: true,
+                shift_threshold,
             };
             $body
         }
