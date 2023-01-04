@@ -64,12 +64,11 @@ var<storage, read> image_std: f32;
 @group(0) @binding(8)
 var<storage, read_write> next_dispatch: WorkgroupSize;
 
-fn get_center(u: i32, v: i32, kernel_rows: i32, kernel_cols: i32, transform: vec2<i32>) -> WalkResult{
-  let rint = (kernel_rows - 1) / 2;
-  let r = f32(rint);
-  let r2 = r * r;
+fn get_center(u: i32, v: i32, rint: i32, r2: f32, transform: vec2<i32>) -> WalkResult{
+  // let rint = (kernel_rows - 1) / 2;
+  // let r = f32(rint);
+  // let r2 = r * r;
   var result: WalkResult;
-  // let middle_idx = u * params.pic_ncols + v;
   for (var i: i32 = -rint; i <= rint; i = i + 1) {
     let x = f32(i);
     let x2 = x*x;
@@ -102,94 +101,55 @@ fn get_center(u: i32, v: i32, kernel_rows: i32, kernel_cols: i32, transform: vec
   return result;
 }
 
-// fn variance_check(u: f32, v: f32, kernel_rows: i32, kernel_cols: i32) -> bool{
-//   let u = i32(round(u));
-//   let v = i32(round(v));
-
-//   let radiusu = kernel_rows / 2;
-//   let radiusv = kernel_cols / 2;
-  
-//   var mean = 0.0;
-//   var counter = 0.0;
-//   for (var i: i32 = -radiusu; i <= radiusu; i = i + 1) {
-//     let pic_u = u + i;
-//     if (pic_u < 0 || pic_u >= params.pic_nrows) {
-//       continue;
-//     }
-//     for (var j: i32 = -radiusv; j <= radiusv; j = j + 1) {
-//       let pic_v = v + j;
-//       if (pic_v < 0 || pic_v >= params.pic_ncols) {
-//         continue;
-//       }
-//       let pic_idx = pic_u * params.pic_ncols + pic_v;
-//       mean += raw_frame[pic_idx];
-//       counter += 1.0;
-//     }
-//   }
-//   mean /= counter;
-
-//   var variance = 0.0;
-//   for (var i: i32 = -radiusu; i <= radiusu; i = i + 1) {
-//     let pic_u = u + i;
-//     if (pic_u < 0 || pic_u >= params.pic_nrows) {
-//       continue;
-//     }
-//     for (var j: i32 = -radiusv; j <= radiusv; j = j + 1) {
-//       let pic_v = v + j;
-//       if (pic_v < 0 || pic_v >= params.pic_ncols) {
-//         continue;
-//       }
-//       let pic_idx = pic_u * params.pic_ncols + pic_v;
-//       variance += (raw_frame[pic_idx] - mean) * (raw_frame[pic_idx] - mean);
-//     }
-//   }
-//   variance /= counter - 1.0;
-//   // variance = sqrt(variance);
-//   let stdev = sqrt(variance);
-//   if (processed_buffer[u * params.pic_ncols + v] > stdev * params.var_factor) {
-//     return true;
-//   } else {
-//     return false;
-//   }
-// }
-
 fn walk(argpicuv: vec2<i32>, r: f32, transform: vec2<i32>) -> WalkResult {
   var picuv = argpicuv;
   var changed = false;
   var result: WalkResult;
 
-  var radiusu: i32;
-  var radiusv: i32;
-  var kernel_rows: i32;
-  var kernel_cols: i32;
-  if r > 0.0 {
-    radiusu = i32(ceil(r));
-    radiusv = i32(ceil(r));
-    kernel_rows = radiusu * 2 + 1;
-    kernel_cols = radiusv * 2 + 1;
+  // var radiusu: i32;
+  // var radiusv: i32;
+  // var kernel_rows: i32;
+  // var kernel_cols: i32;
+  // if r > 0.0 {
+  //   radiusu = i32(ceil(r));
+  //   radiusv = i32(ceil(r));
+  //   kernel_rows = radiusu * 2 + 1;
+  //   kernel_cols = radiusv * 2 + 1;
 
+  // } else {
+  //   radiusu = params.circle_nrows / 2;
+  //   radiusv = params.circle_ncols / 2;
+  //   kernel_rows = params.circle_nrows;
+  //   kernel_cols = params.circle_ncols;
+  // }
+  
+  var rint: i32;
+  var r2: f32;
+  if r <= 0.0{
+    rint = (params.circle_nrows - 1) / 2;
+    let r = f32(rint);
+    r2 = r*r;
   } else {
-    radiusu = params.circle_nrows / 2;
-    radiusv = params.circle_ncols / 2;
-    kernel_rows = params.circle_nrows;
-    kernel_cols = params.circle_ncols;
+    rint = i32(ceil(r));
+    r2 = r*r;
   }
+  let margin = rint;
 
   for (var i: u32 = 0u; i < params.max_iterations; i = i + 1u) {
     // idx = u * params.pic_ncols + v;
-    result = get_center(picuv[0], picuv[1], kernel_rows, kernel_cols, transform);
+    result = get_center(picuv[0], picuv[1], rint, r2, transform);
     changed = false;
-    if ((result.x > params.threshold) && (picuv[0] < params.pic_nrows - 1 - radiusu)) {
+    if ((result.x > params.threshold) && (picuv[0] < params.pic_nrows - 1 - margin)) {
       picuv[0] += 1;
       changed = true;
-    } else if (result.x < -params.threshold && picuv[0] > radiusu) {
+    } else if (result.x < -params.threshold && picuv[0] > margin) {
       picuv[0] -= 1;
       changed = true;
     }
-    if ((result.y > params.threshold) && (picuv[1] < params.pic_ncols - 1 - radiusv)) {
+    if ((result.y > params.threshold) && (picuv[1] < params.pic_ncols - 1 - margin)) {
       picuv[1] += 1;
       changed = true;
-    } else if ((result.y < -params.threshold) && (picuv[1] > radiusv)) {
+    } else if ((result.y < -params.threshold) && (picuv[1] > margin)) {
       picuv[1] -= 1;
       changed = true;
     }

@@ -74,7 +74,7 @@ def plotter(
     )
     command = "gpu_tracking."
     if flavor == "Trackpy":
-        command += "batch_file(\n"
+        command += "batch(\n"
         command += f"    r'{path}',\n"
         command += f"    {diameter},\n"
         args = dict(
@@ -92,7 +92,7 @@ def plotter(
         
         r = diameter / 2
     elif flavor == "LoG":
-        command += "LoG_file(\n"
+        command += "LoG(\n"
         command += f"    r'{path}',\n"
         command += f"    {min_r},\n"
         command += f"    {max_r},\n"

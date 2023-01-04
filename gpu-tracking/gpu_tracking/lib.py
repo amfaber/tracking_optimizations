@@ -1,56 +1,90 @@
 from gpu_tracking import *
 import pandas as pd
+import numpy as np
 import uuid
 
 def batch(
-    video,
+    video_or_path,
     diameter,
     **kwargs
     ):
-    try:
-        points_to_characterize = kwargs["points_to_characterize"]
-        if isinstance(points_to_characterize, pd.DataFrame):
-            if "frame" in points_to_characterize.columns:
-                points_to_characterize = points_to_characterize[["frame", "y", "x"]].to_numpy()
-            else:
-                points_to_characterize = points_to_characterize[["y", "x"]].to_numpy()
-        kwargs["points_to_characterize"] = points_to_characterize.astype("float32")
+    if isinstance(video_or_path, np.ndarray):
+        video = video_or_path
+        if video.ndim == 2:
+            video = video[None, ...]    
+        arr, columns = batch_rust(
+            video,
+            diameter,
+            **kwargs
+        )
+    else:
+        path = str(video_or_path)
+        arr, columns = batch_file_rust(
+            path,
+            diameter,
+            **kwargs
+        )
 
-    except KeyError:
-        pass
-    arr, columns = batch_rust(
-        video,
-        diameter,
-        **kwargs
-    )
     columns = {name: typ for name, typ in columns}
     return pd.DataFrame(arr, columns = columns).astype(columns)
 
+def characterize_points(
+    video_or_path,
+    points_to_characterize,
+    diameter = None,
+    has_frames = None,
+    has_r = None,
+    **kwargs,
+):
+    if isinstance(points_to_characterize, pd.DataFrame):
+        cols = ["y", "x"]
+        if "frame" in points_to_characterize.columns:
+            cols = ["frame"] + cols
+            if has_frames is None:
+                has_frames = True
+        if "r" in points_to_characterize.columns:
+            cols = cols + ["r"]
+            if has_r is None:
+                has_r = True
 
-def batch_file(
-    path,
-    diameter,
-    **kwargs
-    ):
-    try:
-        points_to_characterize = kwargs["points_to_characterize"]
-        if isinstance(points_to_characterize, pd.DataFrame):
-            if "frame" in points_to_characterize.columns:
-                points_to_characterize = points_to_characterize[["frame", "y", "x"]].to_numpy()
-            else:
-                points_to_characterize = points_to_characterize[["y", "x"]].to_numpy()
-        kwargs["points_to_characterize"] = points_to_characterize.astype("float32")
-    except KeyError:
-        pass
-    
-    arr, columns = batch_file_rust(
-        path,
-        diameter,
-        **kwargs
-    )
+        if has_frames is None:
+            has_frames = False
+        if has_r is None:
+            has_r = False
+        points_arr = points_to_characterize[cols].to_numpy().astype("float32")
 
-    columns = {name: typ for name, typ in columns}    
+    if diameter is None:
+        if has_r:
+            diameter = 2*int(points_arr[:, -1].max() + 0.5) + 1
+        else:
+            raise ValueError("Diameter needs to be specified if the supplied points don't have associated radiuses")
+            
+    if isinstance(video_or_path, np.ndarray):
+        video = video_or_path
+        if video.ndim == 2:
+            video = video[None, ...]
+        arr, columns = characterize_rust(
+            video,
+            points_arr,
+            has_frames,
+            has_r,
+            diameter,
+            **kwargs
+        )
+    else:
+        path = str(video_or_path)
+        arr, columns = characterize_file_rust(
+            path,
+            points_arr,
+            has_frames,
+            has_r,
+            diameter,
+            **kwargs
+        )
+
+    columns = {name: typ for name, typ in columns}
     return pd.DataFrame(arr, columns = columns).astype(columns)
+    
 
 def link(to_link, search_range, memory):
     if isinstance(to_link, pd.DataFrame):
@@ -66,14 +100,25 @@ def link(to_link, search_range, memory):
 
     return output
 
-def LoG(video, min_r, max_r, **kwargs):
-    arr, columns = batch_log(video, min_radius = min_r, max_radius = max_r, **kwargs)
-
-    columns = {name: typ for name, typ in columns}
-    return pd.DataFrame(arr, columns = columns).astype(columns)
-
-def LoG_file(path, min_r, max_r, **kwargs):
-    arr, columns = batch_file_log(path, min_radius = min_r, max_radius = max_r, **kwargs)
+def LoG(video_or_path, min_r, max_r, **kwargs):
+    if isinstance(video_or_path, np.ndarray):
+        video = video_or_path
+        if video.ndim == 2:
+            video = video[None, ...]
+        arr, columns = log_rust(
+            video,
+            min_r,
+            max_r,
+            **kwargs
+        )
+    else:
+        path = str(video_or_path)
+        arr, columns = log_file_rust(
+            path,
+            min_r,
+            max_r,
+            **kwargs
+        )
 
     columns = {name: typ for name, typ in columns}
     return pd.DataFrame(arr, columns = columns).astype(columns)

@@ -52,6 +52,7 @@ pub struct TrackingParams{
     pub truncate_preprocessed: bool,
     pub illumination_sigma: Option<my_dtype>,
     pub adaptive_background: Option<usize>,
+    pub include_r_in_output: bool,
 }
 
 impl Default for TrackingParams{
@@ -70,6 +71,7 @@ impl Default for TrackingParams{
             truncate_preprocessed: true,
             illumination_sigma: None,
             adaptive_background: None,
+            include_r_in_output: false,
             style: ParamStyle::Trackpy{
                 diameter: 9,
                 noise_size: 1.,
@@ -87,6 +89,7 @@ impl Default for TrackingParams{
     }
 }
 
+#[derive(Debug)]
 pub struct GpuParams{
     pub pic_dims: [u32; 2],
     pub composite_dims: [u32; 2],
@@ -230,6 +233,7 @@ impl CommonBuffers{
         });
         
         let params = gpuparams_from_tracking_params(&tracking_params, *dims);
+        dbg!(&params);
         let param_buffer = unsafe{
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Width Buffer"),
@@ -512,7 +516,7 @@ fn gpuparams_from_tracking_params(params: &TrackingParams, pic_dims: [u32; 2]) -
         circle_dims: [circle_size, circle_size],
         dilation_dims: [dilation_size, dilation_size],
         max_iterations: params.max_iterations,
-        shift_threshold: 0.6,
+        shift_threshold: 0.5,
         minmass: params.minmass,
         margin,
         snr: params.snr.unwrap_or(0.0),

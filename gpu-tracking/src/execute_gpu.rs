@@ -14,7 +14,7 @@ use crate::{kernels, into_slice::IntoSlice,
     gpu_setup::{
     self, GpuState, ParamStyle, TrackingParams, GpuStateFlavor
 }, linking::{
-    Linker, FrameSubsetter, ReturnDistance2
+    Linker, FrameSubsetter, ReturnDistance2, SubsetterOutput, SubsetterType,
 }, decoderiter::{
     IterDecoder, self, FrameProvider,
 }, utils::{
@@ -31,9 +31,9 @@ type channel_type = Option<(Vec<ResultRow>, usize, Option<Vec<my_dtype>>)>;
 
 
 
-#[derive(Clone, Copy, Debug, Zeroable, Pod)]
+#[derive(Clone, Copy, Debug, Zeroable, Pod, Default)]
 #[repr(C)]
-struct ResultRow{
+pub struct ResultRow{
     pub x: my_dtype,
     pub y: my_dtype,
     pub mass: my_dtype,
@@ -57,7 +57,7 @@ impl ResultRow{
         output.push(self.x);
         output.push(self.y);
         output.push(self.mass);
-        if matches!(params.style, ParamStyle::Log{ .. }){
+        if params.include_r_in_output{
             output.push(self.r);
         }
         if params.characterize{
@@ -88,7 +88,7 @@ fn submit_work(
     state: &GpuState,
     tracking_params: &TrackingParams,
     debug: bool,
-    positions: Option<Vec<[my_dtype; 2]>>,
+    positions: Option<SubsetterOutput>,
     // frame_idx: usize,
     ) -> SubmissionIndex {
     
@@ -141,19 +141,19 @@ fn submit_work(
     match state.flavor{
         GpuStateFlavor::Trackpy{ ref order, .. } => {
 
-            if let Some(ref positions) = positions {
-                let positions = positions.iter().map(|pos| ResultRow{
-                    x: pos[0],
-                    y: pos[1],
-                    mass: 0.,
-                    max_intensity: 0.0,
-                    r: 0.,
-                    Rg: 0.,
-                    raw_mass: 0.,
-                    signal: 0.,
-                    ecc: 0.,
-                    count: 0.,
-                }).collect::<Vec<_>>();
+            if let Some(SubsetterOutput::Characterization(ref positions)) = positions {
+                // let positions = positions.iter().map(|pos| ResultRow{
+                //     x: pos[0],
+                //     y: pos[1],
+                //     mass: 0.,
+                //     max_intensity: 0.0,
+                //     r: 0.,
+                //     Rg: 0.,
+                //     raw_mass: 0.,
+                //     signal: 0.,
+                //     ecc: 0.,
+                //     count: 0.,
+                // }).collect::<Vec<_>>();
                 state.queue.write_buffer(staging_buffer, state.pic_byte_size, bytemuck::cast_slice(&positions));
                 state.queue.write_buffer(&common_buffers.atomic_filtered_buffer, 0, bytemuck::cast_slice(&[positions.len() as u32]));
                 encoder.copy_buffer_to_buffer(staging_buffer, state.pic_byte_size,
@@ -389,7 +389,7 @@ fn get_work(
 pub fn column_names(params: &TrackingParams) -> Vec<(String, String)>{
     let mut names = vec![("frame", "int"), ("y", "float"), ("x", "float"), ("mass", "float")];
 
-    if let ParamStyle::Log{ .. } = params.style{
+    if params.include_r_in_output{
         names.push(("r", "float"))
     }
     
@@ -475,7 +475,8 @@ fn filter_close_trackpy(results: &Vec<ResultRow>, separation: my_dtype) -> Vec<R
 }
 
 fn prune_blobs_log(results: &Vec<ResultRow>, overlap_threshold: my_dtype) -> Vec<ResultRow> {
-
+    // RESULTS NEED TO BE PRESORTED ACCORDING TO BLOB PRIORITY.
+    // priority is here chosen to be blob radius, with mass as tiebreaker.
     fn disk_overlap(d: my_dtype, r1: my_dtype, r2: my_dtype) -> my_dtype{
         
         fn make_acos(d: my_dtype, r1: my_dtype, r2: my_dtype, r1s: my_dtype, r2s: my_dtype) -> my_dtype{
@@ -532,16 +533,23 @@ fn prune_blobs_log(results: &Vec<ResultRow>, overlap_threshold: my_dtype) -> Vec
                 Some(neighbor) => neighbor,
                 None => continue,
             };
-            // if (query.x == 125.241486) & (neighbor.x == 132.784637){
-            //     let idk = 1+1;
-            // }
             let overlap = blob_overlap(query, neighbor, distance2.sqrt());
+            // if (query.x == 125.241486) & (neighbor.x == 132.784637){
+            //     dbg!(query.r);
+            //     dbg!(neighbor.r);
+            //     dbg!(distance2.sqrt());
+            //     dbg!(overlap);
+            //     dbg!(overlap_threshold);
+            //     dbg!(overlap > overlap_threshold);
+            // }
             if overlap > overlap_threshold{
-                if query.r > neighbor.r{
-                    to_keep[neighbor_idx] = None
-                } else {
-                    to_keep[idx] = None
-                }
+                // if query.r > neighbor.r{
+                //     to_keep[neighbor_idx] = None
+                // } else {
+                //     to_keep[idx] = None
+                // }
+                to_keep[neighbor_idx] = None //Since the array has been sorted before calling the function we can be sure that we are setting the
+                // blob with the smallest r (with mass as tiebreaker) to None
             }
         }
     }
@@ -551,7 +559,7 @@ fn prune_blobs_log(results: &Vec<ResultRow>, overlap_threshold: my_dtype) -> Vec
 }
 
 fn post_process<A: IntoSlice>(
-    results: Vec<ResultRow>,
+    mut results: Vec<ResultRow>,
     output: &mut Vec<my_dtype>,
     frame_index: usize,
     debug: bool,
@@ -576,6 +584,13 @@ fn post_process<A: IntoSlice>(
         },
         ParamStyle::Log{ overlap_threshold, ..} => {
             if overlap_threshold < 1.{
+                results.sort_by(|a, b|{
+                    let r_cmp = b.r.partial_cmp(&a.r).unwrap();
+                    match r_cmp{
+                        std::cmp::Ordering::Equal => b.mass.partial_cmp(&a.mass).unwrap(),
+                        _ => r_cmp,
+                    }
+                });
                 prune_blobs_log(&results, overlap_threshold)
                 
             } else {
@@ -1060,12 +1075,13 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F>>(
 //     (output, names)
 // }
 
+
 pub fn execute_ndarray<'a>(
     array: &'a ArrayView3<'a, my_dtype>,
     params: TrackingParams,
     debug: bool,
     verbosity: u32,
-    pos_array: Option<&'a ArrayView2<'a, my_dtype>>,
+    pos_array: Option<(ArrayView2<'a, my_dtype>, bool, bool)>,
     ) -> crate::error::Result<(Array2<my_dtype>, Vec<(String, String)>)> {
     if !array.is_standard_layout(){
         return Err(crate::error::Error::NonStandardArrayLayout)
@@ -1078,13 +1094,17 @@ pub fn execute_ndarray<'a>(
     let dims_usize = array.shape();
     let dims = [dims_usize[1] as u32, dims_usize[2] as u32];
     let mut pos_iter = match pos_array{
-        Some(pos_array) => {
-            match pos_array.shape()[1]{
-                3 => Some(FrameSubsetter::new(pos_array, Some(0), (1, 2))),
-                2 => Some(FrameSubsetter::new(pos_array, None, (0, 1))),
-                _ => return Err(crate::error::Error::ArrayDimensionsError { dims: pos_array.shape().to_vec() })
-            }
-        },
+        Some((pos_array, true, true)) => 
+            Some(FrameSubsetter::new(pos_array, Some(0), (1, 2), Some(3), SubsetterType::Characterization)),
+        
+        Some((pos_array, true, false)) => 
+            Some(FrameSubsetter::new(pos_array, Some(0), (1, 2), None, SubsetterType::Characterization)),
+        
+        Some((pos_array, false, true)) => 
+            Some(FrameSubsetter::new(pos_array, None, (0, 1), Some(2), SubsetterType::Characterization)),
+        
+        Some((pos_array, false, false)) => 
+            Some(FrameSubsetter::new(pos_array, None, (0, 1), None, SubsetterType::Characterization)),
         None => { None }
     };
 
@@ -1151,7 +1171,7 @@ pub fn execute_file<'a>(
     params: TrackingParams,
     debug: bool,
     verbosity: u32,
-    pos_array: Option<&'a ArrayView2<'a, my_dtype>>,
+    pos_array: Option<(ArrayView2<'a, my_dtype>, bool, bool)>,
     // mut pos_iter: Option<impl Iterator<Item = (usize, Vec<[my_dtype; 2]>)>>,
     ) -> crate::error::Result<(Array2<my_dtype>, Vec<(String, String)>)> {
     // let path = Path::new(&path);
@@ -1163,13 +1183,17 @@ pub fn execute_file<'a>(
     // dbg!(path);
     let (provider, dims) = path_to_iter(&path, None)?;
     let mut pos_iter = match pos_array{
-        Some(pos_array) => {
-            match pos_array.shape()[1]{
-                3 => Some(FrameSubsetter::new(pos_array, Some(0), (1, 2))),
-                2 => Some(FrameSubsetter::new(pos_array, None, (0, 1))),
-                _ => return Err(crate::error::Error::ArrayDimensionsError { dims: pos_array.shape().to_vec() })
-            }
-        },
+        Some((pos_array, true, true)) => 
+            Some(FrameSubsetter::new(pos_array, Some(0), (1, 2), Some(3), SubsetterType::Characterization)),
+        
+        Some((pos_array, true, false)) => 
+            Some(FrameSubsetter::new(pos_array, Some(0), (1, 2), None, SubsetterType::Characterization)),
+        
+        Some((pos_array, false, true)) => 
+            Some(FrameSubsetter::new(pos_array, None, (0, 1), Some(2), SubsetterType::Characterization)),
+        
+        Some((pos_array, false, false)) => 
+            Some(FrameSubsetter::new(pos_array, None, (0, 1), None, SubsetterType::Characterization)),
         None => { None }
     };
     let mut state = gpu_setup::setup_state(&params, &dims, debug, pos_iter.is_some())?;

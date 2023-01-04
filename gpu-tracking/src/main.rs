@@ -68,7 +68,7 @@ fn test_trackpy_easy() -> gpu_tracking::error::Result<()>{
             min_radius: 3.0,
             max_radius: 25.0,
             log_spacing: true,
-            overlap_threshold: 0.8,
+            overlap_threshold: 0.5,
             n_radii: 10,
         },
         snr: Some(1.5),
@@ -78,27 +78,33 @@ fn test_trackpy_easy() -> gpu_tracking::error::Result<()>{
         // illumination_sigma: Some(30.),
         
         // minmass: 800.,
+        include_r_in_output: true,
         truncate_preprocessed: true,
+        characterize: true,
         ..Default::default()
     };
     let now = Instant::now();
     let points = vec![
-        0f32, 300f32, 300f32,
-        0f32, 200f32, 200f32,
-        2000f32, 200f32, 200f32,
-        10000f32, 200f32, 200f32,
+        0f32, 300f32, 300f32, 5f32,
+        0f32, 200f32, 200f32, 5f32,
+        // 2000f32, 200f32, 200f32,
+        // 10000f32, 200f32, 200f32,
         // 200f32, 300f32, 300f32,
         // 1999f32, 200f32, 200f32,
     ];
-    let points = Array2::from_shape_vec((points.len()/3, 3), points).unwrap();
+    let width = 4;
+    let points = Array2::from_shape_vec((points.len()/4, 4), points).unwrap();
     // let point_view = points.view();
     // let point_iter = FrameSubsetter::new(&point_view, Some(0), (1, 2));
+    // let tmp = points.view();
+    // let inp = Some(FrameSubsetter::new(tmp, Some(0), (1, 2), Some(3), gpu_tracking::linking::SubsetterType::Characterization::Characterization));
     let (results, column_names) = execute_gpu::execute_file(
         &path,
         Some(1),
         params,
         debug,
         1,
+        // Some((points.view(), true, true)),
         // Some(&points.view()),
         None::<_>,
     )?;
@@ -106,6 +112,7 @@ fn test_trackpy_easy() -> gpu_tracking::error::Result<()>{
     dbg!(function_time);
     dbg!(&results.shape());
     dbg!(&results.lanes(Axis(1)).into_iter().next().unwrap());
+    // dbg!(&results.slice(s![0..12, ..]));
 
     Ok(())
 }
@@ -190,6 +197,7 @@ fn test_unedited() -> gpu_tracking::error::Result<()>{
         //     log_spacing: false,
         //     overlap_threshold: 1.,
         // },
+        include_r_in_output: true,
         ..Default::default()
     };
     // let mut decoderiter = match debug {
@@ -213,7 +221,7 @@ fn test_unedited() -> gpu_tracking::error::Result<()>{
     let points = Array2::from_shape_vec((4, 3), points).unwrap();
     let point_view = points.view();
     let state = setup_state(&params, &dims, debug, false)?;
-    let point_iter = FrameSubsetter::new(&point_view, Some(0), (1, 2));
+    // let point_iter = FrameSubsetter::new(&point_view, Some(0), (1, 2));
     // let (results, column_names) = execute_gpu::execute_gpu(
     //     decoderiter,
     //     &dims,

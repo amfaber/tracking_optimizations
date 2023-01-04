@@ -1,6 +1,6 @@
 use std::{fs::File, path::PathBuf};
 
-use crate::{my_dtype, linking::FrameSubsetter};
+use crate::{my_dtype, linking::{FrameSubsetter, SubsetterType, SubsetterOutput}};
 use ndarray::Array;
 use pyo3::{prelude::*, types::{PyDict, PyList}};
 // #[cfg(feature = "python")]
@@ -154,6 +154,7 @@ macro_rules! make_args {
                 // correct_illumination,
                 illumination_sigma,
                 adaptive_background,
+                include_r_in_output: false,
             };
             $body
         }
@@ -241,6 +242,7 @@ macro_rules! make_log_args {
                 truncate_preprocessed,
                 illumination_sigma,
                 adaptive_background,
+                include_r_in_output: true,
             };
             $body
         }
@@ -272,15 +274,12 @@ make_args!(
         pyarr: PyReadonlyArray3<my_dtype>,
     },
     {
-        points_to_characterize: Option<PyReadonlyArray2<my_dtype>>,
         debug: Option<bool>,
     }
     ) -> PyResult<(&'py PyArray2<my_dtype>, Py<PyAny>)> => params{
         let debug = debug.unwrap_or(false);
         let array = pyarr.as_array();
-        let points_rust_array = points_to_characterize.as_ref().map(|arr| arr.as_array());
-        if points_to_characterize.is_some(){ params.characterize = true };
-        let (res, columns) = execute_ndarray(&array, params, debug, 0, points_rust_array.as_ref())?;
+        let (res, columns) = execute_ndarray(&array, params, debug, 0, None)?;
         Ok((res.into_pyarray(py), columns.into_py(py)))
     }
 );
@@ -294,58 +293,111 @@ make_args!(
         },
         {
             channel: Option<usize>,
-            points_to_characterize: Option<PyReadonlyArray2<my_dtype>>,
             debug: Option<bool>,
         }
         ) -> PyResult<(&'py PyArray2<my_dtype>, Py<PyAny>)> => params {
         let debug = debug.unwrap_or(false);
 
-        let points_rust_array = points_to_characterize.as_ref().map(|arr| arr.as_array());
-        
-        if points_to_characterize.is_some(){ params.characterize = true };
         let (res, columns) = execute_file(
-            &filename, channel, params, debug, 0, points_rust_array.as_ref())?;
+            &filename, channel, params, debug, 0, None)?;
         Ok((res.into_pyarray(py), columns.into_py(py)))
     }
 );
 
+make_args!(
+    fn characterize_rust<'py>(
+    {
+        py: Python<'py>,
+        pyarr: PyReadonlyArray3<my_dtype>,
+        points_to_characterize: PyReadonlyArray2<my_dtype>,
+        points_has_frames: bool,
+        points_has_r: bool,
+    },
+    {
+        debug: Option<bool>,
+    }
+    ) -> PyResult<(&'py PyArray2<my_dtype>, Py<PyAny>)> => params{
+        let debug = debug.unwrap_or(false);
+        let array = pyarr.as_array();
+        
+        params.characterize = true;
+        if points_has_r{
+            params.include_r_in_output = true;
+        }
+        if let ParamStyle::Trackpy{ ref mut filter_close, .. } = params.style{
+            *filter_close = false;
+        }
+        
+        let inp = Some((points_to_characterize.as_array(), points_has_frames, points_has_r));
+        let (res, columns) = execute_ndarray(&array, params, debug, 0, inp)?;
+        Ok((res.into_pyarray(py), columns.into_py(py)))
+    }
+);
+
+make_args!(
+    fn characterize_file_rust<'py>(
+        {
+            py: Python<'py>,
+            filename: String,
+            points_to_characterize: PyReadonlyArray2<my_dtype>,
+            points_has_frames: bool,
+            points_has_r: bool,
+        },
+        {
+            channel: Option<usize>,
+            debug: Option<bool>,
+        }
+        ) -> PyResult<(&'py PyArray2<my_dtype>, Py<PyAny>)> => params {
+        let debug = debug.unwrap_or(false);
+
+        params.characterize = true;
+        let inp = Some((points_to_characterize.as_array(), points_has_frames, points_has_r));
+        if points_has_r{
+            params.include_r_in_output = true;
+        }
+        if let ParamStyle::Trackpy{ ref mut filter_close, .. } = params.style{
+            *filter_close = false;
+        }
+        
+        let (res, columns) = execute_file(&filename, channel, params, debug, 0, inp)?;
+        Ok((res.into_pyarray(py), columns.into_py(py)))
+    }
+);
 
 make_log_args!(
-    fn batch_log<'py>(
+    fn log_rust<'py>(
     {
         py: Python<'py>,
         pyarr: PyReadonlyArray3<my_dtype>,
     },
     {
-        points_to_characterize: Option<PyReadonlyArray2<my_dtype>>,
         debug: Option<bool>,
     }
     ) -> PyResult<(&'py PyArray2<my_dtype>, Py<PyAny>)> => params{
     let debug = debug.unwrap_or(false);
     let array = pyarr.as_array();
-    let points_rust_array = points_to_characterize.as_ref().map(|arr| arr.as_array());
-    let (res, columns) = execute_ndarray(&array, params, debug, 0, points_rust_array.as_ref())?;
+    let (res, columns) = execute_ndarray(&array, params, debug, 0, None)?;
     Ok((res.into_pyarray(py), columns.into_py(py)))
 }
 );
 
 make_log_args!(
-    fn batch_file_log<'py>(
+    fn log_file_rust<'py>(
         {
             py: Python<'py>,
             filename: String,
         },
         {
             channel: Option<usize>,
-            points_to_characterize: Option<PyReadonlyArray2<my_dtype>>,
+            // points_to_characterize: Option<PyReadonlyArray2<my_dtype>>,
             debug: Option<bool>,
         }
         ) -> PyResult<(&'py PyArray2<my_dtype>, Py<PyAny>)> => params {
         let debug = debug.unwrap_or(false);
-        let points_rust_array = points_to_characterize.as_ref().map(|arr| arr.as_array());
+        // let points_rust_array = points_to_characterize.as_ref().map(|arr| arr.as_array());
 
         let (res, columns) = execute_file(
-            &filename, channel, params, debug, 0, points_rust_array.as_ref())?;
+            &filename, channel, params, debug, 0, None)?;
         Ok((res.into_pyarray(py), columns.into_py(py)))
     }
 );
@@ -358,9 +410,13 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
 
     m.add_function(wrap_pyfunction!(batch_file_rust, m)?)?;
 
-    m.add_function(wrap_pyfunction!(batch_log, m)?)?;
+    m.add_function(wrap_pyfunction!(log_rust, m)?)?;
     
-    m.add_function(wrap_pyfunction!(batch_file_log, m)?)?;
+    m.add_function(wrap_pyfunction!(log_file_rust, m)?)?;
+    
+    m.add_function(wrap_pyfunction!(characterize_rust, m)?)?;
+    
+    m.add_function(wrap_pyfunction!(characterize_file_rust, m)?)?;
 
     #[pyfn(m)]
     #[pyo3(name = "link_rust")]
@@ -369,8 +425,18 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         memory: Option<usize>) -> PyResult<&'py PyArray1<usize>> {
         let memory = memory.unwrap_or(0);
         let array = pyarr.as_array();
-        let frame_iter = linking::FrameSubsetter::new(&array, Some(0), (1, 2));
+        let frame_iter = linking::FrameSubsetter::new(array, Some(0), (1, 2), None, SubsetterType::Linking);
         // let frame_iter = frame_iter.map(|res| res.unwrap());
+        let frame_iter = frame_iter.map(|idk|{
+            let out = idk.map(|(frame, subset_outputter)| {
+                let vec = match subset_outputter{
+                    SubsetterOutput::Linking(vec) => vec,
+                    _ => unreachable!()
+                };
+                (frame, vec)
+            });
+            out
+        });
         let res = linking::linker_all(frame_iter, search_range, memory)?;
         Ok(res.into_pyarray(py))
     }

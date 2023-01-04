@@ -8,35 +8,70 @@ use std::{collections::{HashMap, HashSet, VecDeque}, iter::FromIterator};
 type float = f32;
 use typenum::{self, U2};
 use num_traits;
+use crate::execute_gpu::ResultRow;
+
+pub enum SubsetterOutput{
+    Linking(Vec<[float; 2]>),
+    Characterization(Vec<ResultRow>),
+}
+
+impl SubsetterOutput{
+    fn len(&self) -> usize{
+        match self{
+            Self::Linking(vec) => vec.len(),
+            Self::Characterization(vec) => vec.len(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub enum SubsetterType{
+    Linking,
+    Characterization,
+}
 
 #[derive(Clone)]
 pub struct FrameSubsetter<'a>{
     pub frame_col: Option<usize>,
-    pub array: &'a ArrayView2<'a, float>,
+    pub r_col: Option<usize>,
+    pub array: ArrayView2<'a, float>,
     pub positions: (usize, usize),
     idx: usize,
     cur_frame: float,
+    ty: SubsetterType,
     // iter: ndarray::iter::Iter<'a, float, >,
 }
 
 impl FrameSubsetter<'_>{
-    pub fn new<'a>(array: &'a ArrayView2<'a, float>, frame_col: Option<usize>, positions: (usize, usize)) -> FrameSubsetter<'a>{
+    pub fn new<'a>(
+        array: ArrayView2<'a, float>,
+        frame_col: Option<usize>,
+        positions: (usize, usize),
+        r_col: Option<usize>,
+        ty: SubsetterType,
+    ) -> FrameSubsetter<'a>{
         FrameSubsetter{
             frame_col,
             array,
             positions,
             idx: 0,
             cur_frame: 0.0,
+            r_col,
+            ty,
         }
     }
 }
 
 impl<'a> Iterator for FrameSubsetter<'a>{
     // type Item = ArrayView2<'a, float>;
-    type Item = crate::error::Result<(Option<usize>, Vec<[float; 2]>)>; 
+    type Item = crate::error::Result<(Option<usize>, SubsetterOutput)>; 
     fn next(&mut self) -> Option<Self::Item> {
         // let prev_idx = self.idx;
-        let mut output = Vec::new();
+        let mut output = match self.ty{
+            SubsetterType::Linking => SubsetterOutput::Linking(Vec::new()),
+            SubsetterType::Characterization => SubsetterOutput::Characterization(Vec::new()),
+        };
+        // let mut output = Vec::new();
         match self.frame_col{
             Some(frame_col) => {
                 loop{
@@ -61,14 +96,71 @@ impl<'a> Iterator for FrameSubsetter<'a>{
                             return None;
                         }
                     }
-                    output.push([self.array[[self.idx, self.positions.0]], self.array[[self.idx, self.positions.1]]]);
+                    let x = self.array[[self.idx, self.positions.0]];
+                    let y = self.array[[self.idx, self.positions.1]];
+                    match output{
+                        SubsetterOutput::Linking(ref mut vec) => vec.push([x, y]),
+                        SubsetterOutput::Characterization(ref mut vec) => {
+                            let r_row = match self.r_col{
+                                Some(r_col) => {
+                                    ResultRow{
+                                        x,
+                                        y, 
+                                        r: self.array[[self.idx, r_col]],
+                                        ..Default::default()
+                                    }
+                                },
+                                None => {
+                                    ResultRow{
+                                        x,
+                                        y, 
+                                        ..Default::default()
+                                    }
+                                },
+                            };
+                            vec.push(r_row);
+                        },
+                    }
+                    // output.push([self.array[[self.idx, self.positions.0]], self.array[[self.idx, self.positions.1]]]);
                     self.idx += 1;
                 }
             },
             None => {
-                let out_vec = self.array.rows().into_iter().map(|row| [row[self.positions.0], row[self.positions.1]]).collect();
-                let out = Some(Ok((None, out_vec)));
-                return out
+                match output{
+                    SubsetterOutput::Linking(ref mut vec) => {
+                        for row in self.array.rows(){
+                            vec.push([row[self.positions.0], row[self.positions.1]]);
+                        }
+                    },
+                    SubsetterOutput::Characterization(ref mut vec) => {
+                        match self.r_col{
+                            Some(r_col) => {
+                                for row in self.array.rows(){
+                                    let r_row = ResultRow{
+                                        x: row[self.positions.0],
+                                        y: row[self.positions.1],
+                                        r: row[r_col],
+                                        ..Default::default()
+                                    };
+                                    vec.push(r_row);
+                                }
+                            },
+                            None => {
+                                for row in self.array.rows(){
+                                    let r_row = ResultRow{
+                                        x: row[self.positions.0],
+                                        y: row[self.positions.1],
+                                        ..Default::default()
+                                    };
+                                    vec.push(r_row);
+                                }
+                            }
+                        }
+                    },
+                }
+                // let out_vec = self.array.rows().into_iter().map(|row| [row[self.positions.0], row[self.positions.1]]).collect();
+                // let out = Some(Ok((None, out_vec)));
+                return Some(Ok((None, output)))
             }
         }
     }

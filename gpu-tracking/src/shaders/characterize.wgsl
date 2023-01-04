@@ -27,12 +27,12 @@ var<storage, read> n_particles: u32;
 var<storage, read_write> results: array<ResultRow>;
 
 
-fn get_mass(u: i32, v: i32, kernel_rows: i32, kernel_cols: i32) -> f32{
-  let rint = (kernel_rows - 1) / 2;
-  let r = f32(rint);
-  let r2 = r * r;
+fn get_mass(u: i32, v: i32, rint: i32, r2: f32) -> f32{
+  // let rint = (kernel_rows - 1) / 2;
+  // let r = f32(rint);
+  // let r2 = r * r;
   var mass = 0.0;
-  let middle_idx = u * params.pic_ncols + v;
+  // let middle_idx = u * params.pic_ncols + v;
   for (var i: i32 = -rint; i <= rint; i = i + 1) {
     let x = f32(i);
     let x2 = x*x;
@@ -72,7 +72,8 @@ fn characterize(part_idx: u32, kernel_rows: i32, kernel_cols: i32){
   let r2 = r * r;
   let u = i32(round(results[part_idx].x));
   let v = i32(round(results[part_idx].y));
-  //_feat_characterize_points results[part_idx].mass = get_mass(u, v, kernel_rows, kernel_cols);
+  //_feat_characterize_points results[part_idx].mass = get_mass(u, v, rint, r2);
+  // results[part_idx].mass = get_mass(u, v, rint, r2);
   let mass = results[part_idx].mass;
 
   let middle_idx = u * params.pic_ncols + v;
