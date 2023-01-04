@@ -563,7 +563,7 @@ fn post_process<A: IntoSlice>(
     output: &mut Vec<my_dtype>,
     frame_index: usize,
     debug: bool,
-    linker: Option<&mut Linker>,
+    mut linker: Option<&mut Linker>,
     neighborhoods: Option<Vec<f32>>,
     neighborhood_size: usize,
     kernels: Option<&mut PostProcessKernels<impl Fn(my_dtype) -> (Vec<[i32; 2]>, usize), impl Fn(my_dtype) -> Vec<[i32; 2]>>>,
@@ -692,7 +692,13 @@ fn post_process<A: IntoSlice>(
         (sig_sums, bg_medians, correcteds)
     });
 
+    if let (Some(linker), Some(reset_points)) = (&mut linker, tracking_params.linker_reset_points.as_ref()){
+        if reset_points.contains(&frame_index){
+            linker.reset()
+        }
+    }
     let part_ids = linker.map(|linker| linker.advance(&relevant_points));
+    
     for (idx, row) in relevant_points.iter().enumerate(){
         output.push(frame_index as my_dtype);
         row.insert_in_output(output, tracking_params);
@@ -883,13 +889,41 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F>>(
                 }
             },
             None => {
-                let frames_iter = frames.into_iter().enumerate();
-                Box::new(frames_iter.map(|res|{
-                    let (frame_idx, frame) = res;
-                    let frame = frame?;
-                    
-                    Ok((frame, None, frame_idx))
-                }))
+                let keys = &tracking_params.keys;
+                match keys{
+                    Some(keys) => {
+                        if keys.iter().enumerate().all(|(idx, &key)| idx == key){
+                            let frames_iter = frames.into_iter().enumerate().take(*keys.last().ok_or_else(|| Error::EmptyIterator)?);
+                            Box::new(frames_iter.map(|res|{
+                                let (frame_idx, frame) = res;
+                                let frame = frame?;
+            
+                                Ok((frame, None, frame_idx))
+                            }))
+                        } else {
+                            Box::new(keys.into_iter().map(|&frame_idx|{
+                                let frame = frames.get_frame(frame_idx)
+                                    .map_err(|err|{
+                                        match err{
+                                            Error::FrameOOB => Error::FrameOutOfBounds { vid_len: frames.len(Some(frame_idx)), problem_idx: frame_idx },
+                                            _ => err,
+                                        }
+                                    })?;
+                                Ok((frame, None, frame_idx))
+                            }))
+                        }
+                        
+                    },
+                    None => {
+                        let frames_iter = frames.into_iter().enumerate();
+                        Box::new(frames_iter.map(|res|{
+                            let (frame_idx, frame) = res;
+                            let frame = frame?;
+            
+                            Ok((frame, None, frame_idx))
+                        }))
+                    }
+                }
             }
         };
 
@@ -1137,29 +1171,42 @@ pub fn path_to_iter<P: AsRef<std::path::Path>>(path: P, channel: Option<usize>)
     )> {
     let path: &Path = path.as_ref();
     let ext = path.extension()
-        .ok_or(crate::error::Error::NoExtensionError{ filename: path.to_path_buf() })?
+        .ok_or_else(|| Error::NoExtensionError{ filename: path.to_path_buf() })?
         .to_ascii_lowercase();
-    let mut file = File::open(path).map_err(|ioerr| crate::error::Error::FileNotFound { source: ioerr, filename: path.to_path_buf() })?;
     let (iter, dims): (Box<dyn FrameProvider<Frame = Vec<my_dtype>, FrameIter = Box<dyn Iterator<Item = Result<Vec<f32>>>>>>, _) = match ext.to_str().unwrap() {
         "tif" | "tiff" => {
-            // let file = File::open(path).expect("Could not open file");
-            // panic!("custom panic");
+            let mut file = File::open(path).map_err(|ioerr| crate::error::Error::FileNotFound { source: ioerr, filename: path.to_path_buf() })?;
             let mut decoder = RefCell::new(Decoder::new(file).unwrap());
             let (width, height) = decoder.borrow_mut().dimensions().unwrap();
             let dims = [height, width];
-            // let iterator = IterDecoder::from(decoder);
             (Box::new(decoder), dims)
         },
         "ets" => {
+            let mut file = File::open(path).map_err(|ioerr| crate::error::Error::FileNotFound { source: ioerr, filename: path.to_path_buf() })?;
             let parser = decoderiter::MinimalETSParser::new(&mut file).unwrap();
             let dims = [parser.dims[1] as u32, parser.dims[0] as u32];
             let provider = RefCell::new(parser.iterate_channel(file, channel.unwrap_or(0)));
-            // let iterator = parser.iterate_channel(
-            //     file, channel.unwrap_or(0))
-            //     .flatten().map(|vec| vec.into_iter().map(|x| x as f32).collect::<Vec<_>>());
-            // let iter = (0..).map(|i| provider.get_frame(i)).take_while(|res| !matches!(res, Err(crate::error::Error::FrameOutOfBounds { .. })));
             (Box::new(provider), dims)
         },
+        "vsi" => {
+            let gen_error = || Error::FileNotFound {
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "vsi doesn't have a filename"),
+                filename: path.to_path_buf()
+            };
+            
+            let file_stem = path.file_stem().ok_or_else(gen_error)?.to_str().ok_or_else(|| Error::InvalidFileName { filename: path.to_path_buf() })?;
+            let ets_path = path.parent()
+                .ok_or_else(gen_error)?
+                .join(format!("_{}_", file_stem))
+                .join("stack1")
+                .join("frame_t_0.ets");
+            
+            let mut file = File::open(ets_path).map_err(|ioerr| crate::error::Error::FileNotFound { source: ioerr, filename: path.to_path_buf() })?;
+            let parser = decoderiter::MinimalETSParser::new(&mut file).unwrap();
+            let dims = [parser.dims[1] as u32, parser.dims[0] as u32];
+            let provider = RefCell::new(parser.iterate_channel(file, channel.unwrap_or(0)));
+            (Box::new(provider), dims)
+        }
         _ => Err(crate::error::Error::UnsupportedFileformat { extension: ext.to_str().unwrap().to_string() })?,
     };
     Ok((iter, dims))
@@ -1177,7 +1224,7 @@ pub fn execute_file<'a>(
     // let path = Path::new(&path);
     let path = PathBuf::from(path);
     let ext = path.extension()
-        .ok_or(crate::error::Error::NoExtensionError{ filename: path.to_path_buf() })?
+        .ok_or_else(|| Error::NoExtensionError{ filename: path.to_path_buf() })?
         .to_ascii_lowercase();
     // let mut file = File::open(path).expect("Could not open file");
     // dbg!(path);

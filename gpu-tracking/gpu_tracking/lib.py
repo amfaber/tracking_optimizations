@@ -123,20 +123,20 @@ def LoG(video_or_path, min_r, max_r, **kwargs):
     columns = {name: typ for name, typ in columns}
     return pd.DataFrame(arr, columns = columns).astype(columns)
 
-def load(path, ets_channel = 0, keys = None):
-    extension = path.split(".")[1].lower()
-    if extension == "tif" or extension == "tiff":
-        import tifffile
-        video = tifffile.imread(path, key = keys)
-    elif extension == "ets":
-        if keys is not None:
-            keys = list(keys)
-            video = parse_ets_with_keys(path, keys, ets_channel)
-        else:
-            video = parse_ets(path)[ets_channel]
-    else:
-        raise ValueError("Unrecognized file format. Recognized formats: tiff, ets")
-    return video
+# def load(path, ets_channel = 0, keys = None):
+#     extension = path.split(".")[1].lower()
+#     if extension == "tif" or extension == "tiff":
+#         import tifffile
+#         video = tifffile.imread(path, key = keys)
+#     elif extension == "ets":
+#         if keys is not None:
+#             keys = list(keys)
+#             video = parse_ets_with_keys(path, keys, ets_channel)
+#         else:
+#             video = parse_ets(path)[ets_channel]
+#     else:
+#         raise ValueError("Unrecognized file format. Recognized formats: tiff, ets")
+#     return video
 
 def annotate_image(image, tracked_df, figax = None, r = None, frame = None, imshow_kw = {}, circle_kw = {}, subplot_kw = {}):
     import matplotlib.pyplot as plt

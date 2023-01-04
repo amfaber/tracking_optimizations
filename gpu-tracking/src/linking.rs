@@ -337,6 +337,10 @@ impl Linker{
         }
     }
 
+    pub fn reset(&mut self){
+        *self = Self::new(self.search_range, self.memory)
+    }
+
     pub fn advance<T: KdPoint<Scalar = float, Dim = U2>>(&mut self, frame: &[T]) 
             -> Vec<usize> {
         // if self.prev.is_none(){

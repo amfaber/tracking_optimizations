@@ -1,3 +1,5 @@
+use std::{ffi::OsString, path::PathBuf};
+
 use anyhow;
 use thiserror;
 use wgpu;
@@ -71,6 +73,11 @@ accepted dimensions: (Nx2) or (Nx3). received: {:?}", dims)]
 
 	#[error("error in seeking to the requested image in file")]
 	ReadError,
+
+	#[error("filename is not valid utf-8")]
+	InvalidFileName{
+		filename: PathBuf,
+	}
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

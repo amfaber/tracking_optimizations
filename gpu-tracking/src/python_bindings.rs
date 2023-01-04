@@ -18,6 +18,7 @@ impl std::convert::From::<Error> for PyErr{
 				pyo3::exceptions::PyBaseException::new_err(err.to_string())
             },
 			
+            Error::InvalidFileName { .. } |
 			Error::FileNotFound{ .. } => {
 				pyo3::exceptions::PyFileNotFoundError::new_err(err.to_string())
             },
@@ -89,6 +90,9 @@ macro_rules! make_args {
             illumination_sigma: Option<my_dtype>,
             adaptive_background: Option<usize>,
             shift_threshold: Option<my_dtype>,
+            linker_reset_points: Option<Vec<usize>>,
+            keys: Option<Vec<usize>>,
+            
             $($postargs)*
         ) -> $outtype {
             not_implemented!(maxsize, threshold, invert, percentile,
@@ -158,6 +162,8 @@ macro_rules! make_args {
                 adaptive_background,
                 include_r_in_output: false,
                 shift_threshold,
+                linker_reset_points,
+                keys,
             };
             $body
         }
@@ -195,7 +201,9 @@ macro_rules! make_log_args {
             illumination_sigma: Option<my_dtype>,
             adaptive_background: Option<usize>,
             shift_threshold: Option<my_dtype>,
-
+            linker_reset_points: Option<Vec<usize>>,
+            keys: Option<Vec<usize>>,
+            
             $($postargs)*
         ) -> $outtype {
             
@@ -249,6 +257,8 @@ macro_rules! make_log_args {
                 adaptive_background,
                 include_r_in_output: true,
                 shift_threshold,
+                linker_reset_points,
+                keys,
             };
             $body
         }
@@ -424,6 +434,34 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
     
     m.add_function(wrap_pyfunction!(characterize_file_rust, m)?)?;
 
+    #[pyfn(m)]
+    #[pyo3(name = "load")]
+    fn load<'py>(py: Python<'py>, path: &str, keys: Option<Vec<usize>>, channel: Option<usize>) -> PyResult<&'py PyArray3<my_dtype>>{
+        let path = PathBuf::from(path);
+        let (provider, dims) = path_to_iter(&path, channel)?;
+        let mut output = Vec::new();
+        let mut n_frames = 0;
+        match keys{
+            Some(keys) => {
+                for key in keys{
+                    let image = provider.get_frame(key)?;
+                    output.extend(image.into_iter());
+                    n_frames += 1;
+                }
+            },
+            None => {
+                for image in provider.into_iter(){
+                    let image = image?;
+                    output.extend(image.into_iter());
+                    n_frames += 1;
+                }
+            }
+        }
+        let arr = Array::from_shape_vec([n_frames, dims[0] as usize, dims[1] as usize], output).unwrap();
+        let pyarr = arr.into_pyarray(py);
+        Ok(pyarr)
+    }
+    
     #[pyfn(m)]
     #[pyo3(name = "link_rust")]
     fn link_py<'py>(py: Python<'py>, pyarr: PyReadonlyArray2<my_dtype>,

@@ -54,6 +54,9 @@ pub struct TrackingParams{
     pub adaptive_background: Option<usize>,
     pub include_r_in_output: bool,
     pub shift_threshold: f32,
+    pub linker_reset_points: Option<Vec<usize>>,
+    pub keys: Option<Vec<usize>>,
+    // pub keys: Cell<Option<Vec<usize>>>,
 }
 
 impl Default for TrackingParams{
@@ -74,6 +77,8 @@ impl Default for TrackingParams{
             adaptive_background: None,
             include_r_in_output: false,
             shift_threshold: 0.6,
+            linker_reset_points: None,
+            keys: None,
             style: ParamStyle::Trackpy{
                 diameter: 9,
                 noise_size: 1.,
