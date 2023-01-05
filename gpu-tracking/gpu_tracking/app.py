@@ -1,8 +1,8 @@
 from dash import Dash, dcc, html, Input, Output, State, MATCH, ALL, ctx
 import uuid
 import os
-from lib import load, annotate_image_plotly, batch, LoG
-# from .lib import load, annotate_image_plotly, batch, LoG
+# from lib import load, annotate_image_plotly, batch, LoG
+from .lib import load, annotate_image_plotly, batch, LoG
 import plotly.express as px
 import plotly.graph_objs as go
 import numpy as np
