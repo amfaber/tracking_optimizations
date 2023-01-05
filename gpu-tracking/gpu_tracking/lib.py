@@ -165,7 +165,7 @@ def annotate_image(image, tracked_df, figax = None, r = None, frame = None, imsh
         ax.add_patch(plt.Circle((x, y), inner_r, **circle_kw))
     return (fig, ax)
 
-def annotate_image_plotly(image, tracked_df, figax = None, r = None, frame = None, imshow_kw = {}, circle_kw = {}, subplot_kw = {}):
+def annotate_image_plotly(image, tracked_df, r = None, frame = None, imshow_kw = {}, circle_color = "white", color_scale = "viridis", circle_kw = {}):
     from plotly import express as px
     
     if frame is not None:
@@ -176,7 +176,7 @@ def annotate_image_plotly(image, tracked_df, figax = None, r = None, frame = Non
     if r is None and "r" not in subset_df:
         r = 5
         print(f"Using default r of {r}")
-    fig = px.imshow(image, color_continuous_scale = "viridis", **imshow_kw)
+    fig = px.imshow(image, color_continuous_scale = color_scale, **imshow_kw)
 
     for _idx, row in subset_df.iterrows():
         if r is None:
@@ -188,7 +188,7 @@ def annotate_image_plotly(image, tracked_df, figax = None, r = None, frame = Non
             type = "circle", xref = "x", yref = "y",
             x0 = x - inner_r, y0 = y - inner_r,
             x1 = x + inner_r, y1 = y + inner_r,
-            line_color = "black", line_width = 1,
+            line_color = circle_color, line_width = 1, **circle_kw
         )
     return fig
 

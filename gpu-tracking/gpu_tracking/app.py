@@ -1,12 +1,18 @@
 from dash import Dash, dcc, html, Input, Output, State, MATCH, ALL, ctx
 import uuid
 import os
-from .lib import load, annotate_image_plotly, batch, LoG
+from lib import load, annotate_image_plotly, batch, LoG
+# from .lib import load, annotate_image_plotly, batch, LoG
 import plotly.express as px
 import plotly.graph_objs as go
 import numpy as np
+import dash_daq as daq
 
 app = Dash(__name__, suppress_callback_exceptions=True)
+# add external stylesheets
+# app.css.append_css({
+#     "external_url": "https://codepen.io/chriddyp/pen/bWLwgP.css"
+# })
 
 app.layout = html.Div([
     html.Button("Add element", id={"type": "add", "index": -1}, n_clicks=0),
@@ -146,8 +152,16 @@ def create_element(idx):
         html.Div([
             dcc.RadioItems(["Trackpy", "LoG"], "Trackpy", id = {"type": "flavor", "index": idx}, style = {"display": "inline-block"}),
             dcc.Checklist(["Extended options"], id = {"type": "extended", "index": idx}, style = {"display": "inline-block"}),
+            dcc.Checklist(["Color Options"], id = {"type": "color_options_toggle", "index": idx}, style = {"display": "inline-block"}),
             dcc.Dropdown([], id = {"type": "var 1", "index": idx}, style = {"horizontalAlign": "right"}),
             dcc.Dropdown([], id = {"type": "var 2", "index": idx}, style = {"horizontalAlign": "right"}),
+            html.Div([
+            daq.ColorPicker(
+                id = {"type": "colorpicker", "index": idx},
+                value = dict(hex = "#FFFFFF")
+            ),
+            dcc.Dropdown(px.colors.named_colorscales(), value = "viridis", id = {"type": "colorscale", "index": idx}, style = {"horizontalAlign": "right"}),
+            ], id = {"type": "color_options", "index": idx}, style = {"display": "none"}),
         ]),
         html.Div([
             *create_input("diameter", idx, value = 7),
@@ -169,8 +183,8 @@ def create_element(idx):
             ], id = {"type": "LoG-extended", "index": idx}),
         ], id = {"type": "LoG-options", "index": idx}, style = {"display": "none"}),
         html.Div([
-            *create_input("snr", idx, value = 1.5),
-            *create_input("minmass_snr", idx, value = 0.3),
+            *create_input("Peak SNR", idx, value = 1.5),
+            *create_input("Area SNR", idx, value = 0.3),
             dcc.Checklist(["characterize", "doughnut_correction"], ["characterize", "doughnut_correction"], id = {"type": "char_list", "index": idx}),
             
         ]),
@@ -273,12 +287,23 @@ def set_visibility(flavor_value, extended_value):
         out = ({"display": "block"}, {"display": "none"})
     if flavor_value == "LoG":
         out = ({"display": "none"}, {"display": "block"})
-
+    
     if extended_value:
         out = (*out, *out, {"display": "block"})
     else:
         out = (*out, {"display": "none"}, {"display": "none"}, {"display": "none"})
     return out
+
+@app.callback(
+    Output({"type": "color_options", "index": MATCH}, "style"),
+    Input({"type": "color_options_toggle", "index": MATCH}, "value"),
+)
+def set_color_opt_visibility(color_options_toggle_value):
+    # print(color_options_toggle_value)
+    if color_options_toggle_value is not None and "Color Options" in color_options_toggle_value:
+        return {"display": "block"}
+    else:
+        return {"display": "none"}
     
 
 @app.callback(
@@ -290,6 +315,8 @@ def set_visibility(flavor_value, extended_value):
     
     State({"type": "input-path", "index": MATCH}, "value"),
     State({"type": "Up to frame", "index": MATCH}, "value"),
+    State({"type": "colorpicker", "index": MATCH}, "value"),
+    State({"type": "colorscale", "index": MATCH}, "value"),
     
     State({"type": "flavor", "index": MATCH}, "value"),
     
@@ -310,8 +337,8 @@ def set_visibility(flavor_value, extended_value):
     State({"type": "char_list", "index": MATCH}, "value"),
     State({"type": "bg_radius", "index": MATCH}, "value"),
     State({"type": "gap_radius", "index": MATCH}, "value"),
-    State({"type": "snr", "index": MATCH}, "value"),
-    State({"type": "minmass_snr", "index": MATCH}, "value"),
+    State({"type": "Peak SNR", "index": MATCH}, "value"),
+    State({"type": "Area SNR", "index": MATCH}, "value"),
     State({"type": "truncate_preprocessed", "index": MATCH}, "value"),
     State({"type": "illumination_sigma", "index": MATCH}, "value"),
     State({"type": "adaptive_background", "index": MATCH}, "value"),
@@ -321,6 +348,8 @@ def modify(
     
     path,
     frames,
+    circle_color,
+    color_scale,
 
     flavor,
 
@@ -348,6 +377,8 @@ def modify(
     truncate_preprocessed,
     illumination_sigma,
     adaptive_background,
+
+
 ):
     # print("\n"*5)
     # print(ctx.triggered_prop_ids)
@@ -400,6 +431,9 @@ def modify(
         truncate_preprocessed,
         illumination_sigma,
         adaptive_background,
+
+        circle_color = circle_color["hex"],
+        color_scale = color_scale,
     )
     # fig.update_layout(height = 750, width = 750, coloraxis_showscale=False)
     fig.update_layout(height = 750, width = 750, margin=dict(l=0, r=0, b=0, t=0), coloraxis_showscale=False)
@@ -429,8 +463,8 @@ def modify(
     # full_fig = fig.full_figure_for_development()
     # print(full_fig.layout.xaxis.range)
     fig.add_trace(go.Scatter(x = scatter_df["x"], y = scatter_df["y"], text = hovertext, mode = "markers", marker_color = 'rgba(0,0,0,0)'))
-    fig.update_xaxes(range = [0, im_shape[1]], autorange = False)
-    fig.update_yaxes(range = [0, im_shape[0]], autorange = False)
+    fig.update_xaxes(range = [0, im_shape[1]])
+    fig.update_yaxes(range = [0, im_shape[0]])
     options1 = list(scatter_df.columns.drop(["x", "y"]))
     options2 = ["None"] + options1
 
