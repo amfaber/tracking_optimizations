@@ -443,10 +443,25 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         let mut n_frames = 0;
         match keys{
             Some(keys) => {
-                for key in keys{
-                    let image = provider.get_frame(key)?;
-                    output.extend(image.into_iter());
-                    n_frames += 1;
+                if keys.iter().enumerate().all(|(idx, &key)| idx == key){
+                    let image_iter = provider.into_iter().take(keys.len());
+                    for image in image_iter{
+                        let image = image?;
+                        output.extend(image.into_iter());
+                        n_frames += 1;
+                    }
+                } else {                
+                    for key in keys{
+                        let image = provider.get_frame(key)
+                            .map_err(|err|{
+                                match err{
+                                    Error::FrameOOB => Error::FrameOutOfBounds { vid_len: provider.len(Some(key)), problem_idx: key },
+                                    _ => err,
+                                }
+                            })?;
+                        output.extend(image.into_iter());
+                        n_frames += 1;
+                    }
                 }
             },
             None => {
@@ -469,20 +484,34 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         memory: Option<usize>) -> PyResult<&'py PyArray1<usize>> {
         let memory = memory.unwrap_or(0);
         let array = pyarr.as_array();
-        let frame_iter = linking::FrameSubsetter::new(array, Some(0), (1, 2), None, SubsetterType::Linking);
-        // let frame_iter = frame_iter.map(|res| res.unwrap());
-        let frame_iter = frame_iter.map(|idk|{
-            let out = idk.map(|(frame, subset_outputter)| {
-                let vec = match subset_outputter{
-                    SubsetterOutput::Linking(vec) => vec,
-                    _ => unreachable!()
-                };
-                (frame, vec)
-            });
-            out
-        });
+        let frame_iter = linking::FrameSubsetter::new(array, Some(0), (1, 2), None, SubsetterType::Linking)
+            .into_linking_iter();
+        // let frame_iter = frame_iter.map(|subsetter_element|{
+        //     let out = subsetter_element.map(|(frame, subset_outputter)| {
+        //         let vec = match subset_outputter{
+        //             SubsetterOutput::Linking(vec) => vec,
+        //             _ => unreachable!()
+        //         };
+        //         (frame, vec)
+        //     });
+        //     out
+        // });
         let res = linking::linker_all(frame_iter, search_range, memory)?;
         Ok(res.into_pyarray(py))
+    }
+
+    #[pyfn(m)]
+    #[pyo3(name = "connect_rust")]
+    fn connect<'py>(py: Python<'py>, pyarr1: PyReadonlyArray2<my_dtype>, pyarr2: PyReadonlyArray2<my_dtype>, search_range: my_dtype)
+    -> PyResult<(&'py PyArray1<usize>, &'py PyArray1<usize>)>{
+        let array1 = pyarr1.as_array();
+        let array2 = pyarr2.as_array();
+        let frame_iter1 = linking::FrameSubsetter::new(array1, Some(0), (1, 2), None, SubsetterType::Linking)
+            .into_linking_iter();
+        let frame_iter2 = linking::FrameSubsetter::new(array2, Some(0), (1, 2), None, SubsetterType::Linking)
+            .into_linking_iter();
+        let (res1, res2) = linking::connect_all(frame_iter1, frame_iter2, search_range)?;
+        Ok((res1.into_pyarray(py), res2.into_pyarray(py)))
     }
 
     #[pyfn(m)]

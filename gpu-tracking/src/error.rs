@@ -31,8 +31,10 @@ pub enum Error{
 	#[error("the points provided for characterization aren't sorted in ascending frame number.")]
 	NonSortedCharacterization,
 
-	#[error("Requested characterization for a frame outside the length
- of the video. Video length is {}, requested characterization in frame {}", vid_len, problem_idx)]
+	#[error("Requested a frame outside the length
+ of the video. Video length is {}, requested frame {}", vid_len, problem_idx)]
+	// #[error("Requested characterization for a frame outside the length
+ // of the video. Video length is {}, requested characterization in frame {}", vid_len, problem_idx)]
 	FrameOutOfBounds{
 		vid_len: usize,
 		problem_idx: usize,

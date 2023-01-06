@@ -88,9 +88,11 @@ def characterize_points(
 
 def link(to_link, search_range, memory):
     if isinstance(to_link, pd.DataFrame):
-        to_link = to_link[["frame", "y", "x"]].to_numpy()
-
-    result = link_rust(to_link, search_range, memory)
+        to_link_np = to_link[["frame", "y", "x"]].to_numpy()
+    else:
+        to_link_np = to_link
+    to_link_np = to_link_np.as_type("float32")
+    result = link_rust(to_link_np, search_range, memory)
 
     if isinstance(to_link, pd.DataFrame):
         output = to_link.copy()
@@ -99,6 +101,36 @@ def link(to_link, search_range, memory):
         output = result
 
     return output
+
+def connect(to_link1, to_link2, search_range):
+    if isinstance(to_link1, pd.DataFrame):
+        to_link_np1 = to_link1[["frame", "y", "x"]].to_numpy()
+    else:
+        to_link_np1 = to_link1
+    
+    if isinstance(to_link2, pd.DataFrame):
+        to_link_np2 = to_link2[["frame", "y", "x"]].to_numpy()
+    else:
+        to_link_np2 = to_link2
+    
+    to_link_np1 = to_link_np1.astype("float32")
+    to_link_np2 = to_link_np2.astype("float32")
+    result = connect_rust(to_link_np1, to_link_np2, search_range)
+
+    if isinstance(to_link1, pd.DataFrame):
+        output1 = to_link1.copy()
+        output1["particle"] = result[0]
+    else:
+        output1 = result[0]
+        
+    if isinstance(to_link2, pd.DataFrame):
+        output2 = to_link2.copy()
+        output2["particle"] = result[1]
+    else:
+        output2 = result[1]
+
+    return output1, output2
+
 
 def LoG(video_or_path, min_r, max_r, **kwargs):
     if isinstance(video_or_path, np.ndarray):
@@ -123,20 +155,6 @@ def LoG(video_or_path, min_r, max_r, **kwargs):
     columns = {name: typ for name, typ in columns}
     return pd.DataFrame(arr, columns = columns).astype(columns)
 
-# def load(path, ets_channel = 0, keys = None):
-#     extension = path.split(".")[1].lower()
-#     if extension == "tif" or extension == "tiff":
-#         import tifffile
-#         video = tifffile.imread(path, key = keys)
-#     elif extension == "ets":
-#         if keys is not None:
-#             keys = list(keys)
-#             video = parse_ets_with_keys(path, keys, ets_channel)
-#         else:
-#             video = parse_ets(path)[ets_channel]
-#     else:
-#         raise ValueError("Unrecognized file format. Recognized formats: tiff, ets")
-#     return video
 
 def annotate_image(image, tracked_df, figax = None, r = None, frame = None, imshow_kw = {}, circle_kw = {}, subplot_kw = {}):
     import matplotlib.pyplot as plt

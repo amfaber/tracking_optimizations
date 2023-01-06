@@ -1,7 +1,0 @@
-#[build-system]
-#requires = ["maturin>=0.13,<0.15"]
-#build-backend = "maturin"
-
-[project]
-name = "gpu_tracking"
-dependencies = ["numpy>=1", "pandas>=1", "dash>=2.7", "matplotlib>=3.5"]

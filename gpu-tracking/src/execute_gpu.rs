@@ -893,7 +893,7 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F>>(
                 match keys{
                     Some(keys) => {
                         if keys.iter().enumerate().all(|(idx, &key)| idx == key){
-                            let frames_iter = frames.into_iter().enumerate().take(*keys.last().ok_or_else(|| Error::EmptyIterator)?);
+                            let frames_iter = frames.into_iter().enumerate().take(keys.len());
                             Box::new(frames_iter.map(|res|{
                                 let (frame_idx, frame) = res;
                                 let frame = frame?;
