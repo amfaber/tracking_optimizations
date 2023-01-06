@@ -240,7 +240,6 @@ impl CommonBuffers{
         });
         
         let params = gpuparams_from_tracking_params(&tracking_params, *dims);
-        dbg!(&params);
         let param_buffer = unsafe{
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Width Buffer"),
