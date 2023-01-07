@@ -100,8 +100,6 @@ macro_rules! make_args {
             
             let maxsize = maxsize.unwrap_or(f32::INFINITY);
             let separation = separation.unwrap_or(diameter + 1);
-            let noise_size = noise_size.unwrap_or(1.);
-            let smoothing_size = smoothing_size.unwrap_or(diameter);
             let threshold = threshold.unwrap_or(1./255.);
             let invert = invert.unwrap_or(false);
             let percentile = percentile.unwrap_or(64.);
@@ -109,6 +107,8 @@ macro_rules! make_args {
             let preprocess = preprocess.unwrap_or(true);
             let filter_close = filter_close.unwrap_or(true);
                 
+            let noise_size = noise_size.unwrap_or(1.);
+            // let smoothing_size = smoothing_size;
             let minmass = minmass.unwrap_or(0.);
             let max_iterations = max_iterations.unwrap_or(10);
             let characterize = characterize.unwrap_or(false);
@@ -136,8 +136,6 @@ macro_rules! make_args {
 
                     maxsize,
                     separation,
-                    noise_size,
-                    smoothing_size,
                     threshold,
                     invert,
                     percentile,
@@ -164,6 +162,8 @@ macro_rules! make_args {
                 shift_threshold,
                 linker_reset_points,
                 keys,
+                noise_size,
+                smoothing_size,
             };
             $body
         }
@@ -186,6 +186,8 @@ macro_rules! make_log_args {
             // prune_blobs: Option<bool>,
             overlap_threshold: Option<my_dtype>,
 
+            noise_size: Option<my_dtype>,
+            smoothing_size: Option<u32>,
             minmass: Option<my_dtype>,
             max_iterations: Option<u32>,
             characterize: Option<bool>,
@@ -219,6 +221,7 @@ macro_rules! make_log_args {
             let truncate_preprocessed = truncate_preprocessed.unwrap_or(true);
             // let adaptive_background = adaptive_background.unwrap_or(false);
             let shift_threshold = shift_threshold.unwrap_or(0.6);
+            let noise_size = noise_size.unwrap_or(1.0);
             
             let doughnut_correction = doughnut_correction.unwrap_or(false);
 
@@ -259,6 +262,8 @@ macro_rules! make_log_args {
                 shift_threshold,
                 linker_reset_points,
                 keys,
+                noise_size,
+                smoothing_size,
             };
             $body
         }

@@ -1,6 +1,6 @@
 import numpy as np
 from numbers import Number
-def subpix_signals(pos, sigmas, picture = None, intensities = None, normalize = False):
+def subpix_signals(pos, sigmas, picture = None, intensities = None, normalize = True):
     npart = pos.shape[0]
     ndim = pos.shape[1]
     if intensities is None:
@@ -16,7 +16,10 @@ def subpix_signals(pos, sigmas, picture = None, intensities = None, normalize = 
         sigmas = np.full(ndim, sigmas)
 
     if normalize:
-        intensities /= np.prod(sigmas)
+        normer = np.prod(sigmas)
+    else:
+        normer = 1
+        # intensities = intensities / np.prod(sigmas)
     subpix_pos = pos % 1
     shift = subpix_pos > 0.5
     coord_inds = pos.astype(int) + shift
@@ -24,7 +27,7 @@ def subpix_signals(pos, sigmas, picture = None, intensities = None, normalize = 
     rs = np.array(sigmas)*3
     rs = np.ceil(rs).astype(int)
     sqrt2pi = np.sqrt(2*np.pi)
-    gauss = lambda r2: 1/(sqrt2pi)**ndim*np.exp(-r2/(2))
+    gauss = lambda r2: 1/((sqrt2pi)**ndim * normer)*np.exp(-r2/(2))
     
     # Create an open grid going from -r to r + 1 for ndim dimensions
     grids = [np.moveaxis(np.arange(-r, r + 1).reshape([-1] + [1]*(ndim - 1)), 0, dim) for dim, r in enumerate(rs)]

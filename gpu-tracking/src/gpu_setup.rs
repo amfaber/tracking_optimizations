@@ -14,8 +14,8 @@ pub enum ParamStyle{
         diameter: u32,
         // minmass: f32,
         maxsize: f32,
-        noise_size: f32,
-        smoothing_size: u32,
+        // noise_size: f32,
+        // smoothing_size: u32,
         threshold: f32,
         invert: bool,
         percentile: f32,
@@ -56,6 +56,8 @@ pub struct TrackingParams{
     pub shift_threshold: f32,
     pub linker_reset_points: Option<Vec<usize>>,
     pub keys: Option<Vec<usize>>,
+    pub noise_size: f32,
+    pub smoothing_size: Option<u32>,
     // pub keys: Cell<Option<Vec<usize>>>,
 }
 
@@ -79,10 +81,10 @@ impl Default for TrackingParams{
             shift_threshold: 0.6,
             linker_reset_points: None,
             keys: None,
+            noise_size: 1.,
+            smoothing_size: None,
             style: ParamStyle::Trackpy{
                 diameter: 9,
-                noise_size: 1.,
-                smoothing_size: 9,
                 threshold: 0.0,
                 invert: false,
                 percentile: 0.,
@@ -500,17 +502,22 @@ pub enum GpuStateFlavor{
 
 fn gpuparams_from_tracking_params(params: &TrackingParams, pic_dims: [u32; 2]) -> GpuParams {
     let (kernel_size, circle_size, dilation_size, margin, sigma) = match params.style{
-        ParamStyle::Trackpy{separation, smoothing_size, diameter, noise_size, ..} => {
-            let kernel_size = smoothing_size;
+        ParamStyle::Trackpy{separation, diameter, ..} => {
+            let smoothing_size = params.smoothing_size.unwrap_or(diameter);
             let circle_size = diameter;
             let dilation_size = (2. * separation as f32 / (2 as f32).sqrt()) as u32;
             let margin = vec![diameter / 2, separation / 2 - 1, smoothing_size / 2].iter().max().unwrap().clone() as i32;
-            (kernel_size, circle_size, dilation_size, margin, noise_size)
+            (smoothing_size, circle_size, dilation_size, margin, params.noise_size)
         },
         ParamStyle::Log { max_radius, .. } => {
             let radius = (max_radius + 0.5) as u32;
             let diameter = radius * 2 + 1;
-            (diameter, 0, 0, 0, 1.)
+            let smoothing_size = params.smoothing_size.unwrap_or({
+                let radius = (max_radius + 0.5) as u32;
+                let diameter = radius * 2 + 1;
+                diameter
+            });
+            (diameter, 0, 0, 0, params.noise_size)
         }
     };
 

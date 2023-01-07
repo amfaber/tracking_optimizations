@@ -9,6 +9,7 @@ type float = f32;
 use typenum::{self, U2};
 use num_traits;
 use crate::execute_gpu::ResultRow;
+use std::panic;
 
 pub enum SubsetterOutput{
     Linking(Vec<[float; 2]>),
@@ -261,6 +262,7 @@ impl<T: KdPoint, N: typenum::marker_traits::Unsigned> ReturnDistance2<T, N, T> f
         }
 }
 
+#[derive(Debug)]
 pub struct ReuseVecofVec<T>{
     pub vecs: Vec<Vec<T>>,
     pub len: usize,
@@ -316,6 +318,7 @@ impl<T> std::ops::Index<usize> for ReuseVecofVec<T>{
     }
 }
 
+#[derive(Debug)]
 pub struct Linker{
     pub search_range: float,
     pub memory: usize,
@@ -325,7 +328,7 @@ pub struct Linker{
     pub dest_to_src: ReuseVecofVec<(usize, float)>,
     pub visited: [Vec<bool>; 2],
     pub memory_vec: Option<VecDeque<Vec<([float; 2],usize)>>>,
-    pub frame_idx: usize,
+    // pub frame_idx: usize,
     pub part_idx: usize,
 }
 
@@ -348,7 +351,7 @@ impl Linker{
             dest_to_src: ReuseVecofVec::new(),
             visited: [Vec::new(), Vec::new()],
             memory_vec: mem_init,
-            frame_idx: 0,
+            // frame_idx: 0,
             part_idx: 0,
         }
     }
@@ -357,7 +360,7 @@ impl Linker{
         *self = Self::new(self.search_range, self.memory)
     }
 
-    pub fn connect<T: KdPoint<Scalar = float, Dim = U2>>(&mut self, frame1: &[T], frame2: &[T]) -> (Vec<usize>, Vec<usize>){
+    pub fn connect<T: KdPoint<Scalar = float, Dim = U2> + std::fmt::Debug>(&mut self, frame1: &[T], frame2: &[T]) -> (Vec<usize>, Vec<usize>){
 
         let prev: Vec<_>= frame1.iter().map(|(ele)| {
             let out = ([ele.at(0), ele.at(1)], self.part_idx);
@@ -378,7 +381,7 @@ impl Linker{
         (first, result)
     }
 
-    pub fn advance<T: KdPoint<Scalar = float, Dim = U2>>(&mut self, frame: &[T]) 
+    pub fn advance<T: KdPoint<Scalar = float, Dim = U2> + std::fmt::Debug>(&mut self, frame: &[T]) 
             -> Vec<usize> {
         let N = frame.len();
         let memory_start_idx = match self.memory_vec{
@@ -397,7 +400,9 @@ impl Linker{
             }
             None => None,
         };
-        let (result, memory) = 
+        
+        let (result, memory) =
+        // panic::catch_unwind(panic::AssertUnwindSafe(||{
             link(
                 &self.prev,
                 &frame,
@@ -407,7 +412,12 @@ impl Linker{
                 memory_start_idx,
                 self.search_range,
                 &mut self.part_idx,
-        );
+            );
+        // })).map_err(|err|{
+        //     dbg!(&self);
+        //     panic::resume_unwind(err)
+        // }).unwrap();
+        
         self.prev = frame.iter().zip(result.iter()).map(|(a, b)| ([a.at(0), a.at(1)], *b)).collect::<Vec<_>>();
         match self.memory_vec{
             Some(ref mut memvec) => {
@@ -423,7 +433,7 @@ impl Linker{
 }
 
 
-pub fn link<T: KdPoint<Scalar = float, Dim = U2>>(
+pub fn link<T: KdPoint<Scalar = float, Dim = U2> + std::fmt::Debug>(
     src: &Vec<([float; 2], usize)>,
     dest: &[T],
     src_to_dest: &mut ReuseVecofVec<(usize, float)>,
@@ -436,19 +446,28 @@ pub fn link<T: KdPoint<Scalar = float, Dim = U2>>(
     
 
     let tree = kd_tree::KdIndexTree::build_by_ordered_float(dest);
-    let dest_points_near_source = src.iter().map(|point| tree.within_radius_rd2(point, radius));
+    let tree_nonempty = dest.len() != 0;
+    let dest_points_near_source = src.iter().map(|point| {
+        if tree_nonempty{
+            tree.within_radius_rd2(point, radius)
+        } else {
+            Vec::new()
+        }
+    });
+        
     src_to_dest.set_size(src.len());
     dest_to_src.set_size(dest.len());
     src_to_dest.clear();
     dest_to_src.clear();
 
-
+    
     for (source, dest_points) in dest_points_near_source.enumerate(){
         for dest in dest_points{
             src_to_dest.push_to(source, (*dest.0, dest.1));
             dest_to_src.push_to(*dest.0, (source, dest.1));
         }
     }
+    
     #[inline]
     fn recurse(
         src_to_dest: &ReuseVecofVec<(usize, float)>,

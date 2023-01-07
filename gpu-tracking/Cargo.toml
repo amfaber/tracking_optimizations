@@ -53,10 +53,10 @@ crate-type = ["cdylib", "rlib"]
 name = "gpu_tracking"
 
 [profile.release]
-panic = 'abort'
+#panic = 'abort'
 debug = true
 
 [profile.dev]
-panic = 'abort'
+#panic = 'abort'
 debug = true
 

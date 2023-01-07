@@ -1,18 +1,27 @@
 from dash import Dash, dcc, html, Input, Output, State, MATCH, ALL, ctx
 import uuid
 import os
-# from lib import load, annotate_image_plotly, batch, LoG
-from .lib import load, annotate_image_plotly, batch, LoG
+if __name__ == "__main__":
+    from lib import load, annotate_image_plotly, batch, LoG
+else:
+    from .lib import load, annotate_image_plotly, batch, LoG
 import plotly.express as px
 import plotly.graph_objs as go
 import numpy as np
 import dash_daq as daq
 
-app = Dash(__name__, suppress_callback_exceptions=True)
-# add external stylesheets
-# app.css.append_css({
-#     "external_url": "https://codepen.io/chriddyp/pen/bWLwgP.css"
-# })
+external_stylesheets = [
+    'https://codepen.io/chriddyp/pen/bWLwgP.css',
+    # r"C:\Users\andre\Downloads\Leadmark Free Website Template - Free-CSS.com.zip\leadmark\public_html\assets\css\leadmark.css",
+    {
+        'href': 'https://stackpath.bootstrapcdn.com/bootstrap/4.1.3/css/bootstrap.min.css',
+        'rel': 'stylesheet',
+        'integrity': 'sha384-MCw98/SFnGE8fJT3GXwEOngsV7Zt27NXFoaoApmYm81iuXoPkFOJwJ8ERdknLPMO',
+        'crossorigin': 'anonymous'
+    }
+]
+app = Dash(__name__, suppress_callback_exceptions=True, external_stylesheets = external_stylesheets)
+app.layout = html.Div()
 
 app.layout = html.Div([
     html.Button("Add element", id={"type": "add", "index": -1}, n_clicks=0),
@@ -177,7 +186,7 @@ def create_element(idx):
             *create_input("min_r", idx, value = 2.2),
             *create_input("max_r", idx, value = 3.5),
             html.Div([
-                *create_input("n_radii", idx),
+                *create_input("n_radii", idx, value = 10),
                 dcc.Checklist(["log_spacing"], id = {"type": "log_spacing", "index": idx}),
                 *create_input("overlap_threshold", idx, 0),
             ], id = {"type": "LoG-extended", "index": idx}),
@@ -519,7 +528,7 @@ def add_remove(_add_n_clicks, _remove_n_clicks, children):
     who_triggered = list(ctx.triggered_prop_ids.values())
     if len(who_triggered) != 1:
         return children
-    print("\n"*5)
+    # print("\n"*5)
     triggering = who_triggered[0]
     triggering_type = triggering["type"]
     triggering_idx = triggering["index"]

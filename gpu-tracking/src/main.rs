@@ -39,7 +39,8 @@ fn test_trackpy_easy() -> gpu_tracking::error::Result<()>{
     let now_top = Instant::now();
     dbg!(std::env::current_dir());
     // let path = args.input.unwrap_or("testing/easy_test_data.tif".to_string());
-    let path = args.input.unwrap_or(r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\testing\marcus_blobs\big_blobs.tif".to_string());
+    // let path = args.input.unwrap_or(r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\testing\marcus_blobs\big_blobs.tif".to_string());
+    let path = args.input.unwrap_or(r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\testing\kdtree_panic\emily_she_kdtree_panic.tif".to_string());
     // let path = args.input.unwrap_or(r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\tiff_vsi\vsi dummy\_Process_9747_\stack1\frame_t_0.ets".to_string());
     // let path = args.input.unwrap_or("testing/easy_test_data.tif".to_string());
     let debug = args.debug.unwrap_or(false);
@@ -51,36 +52,34 @@ fn test_trackpy_easy() -> gpu_tracking::error::Result<()>{
     // let dims = [height, width];
     // let mut decoderiter = IterDecoder::from(decoder).take(10);
     let params = TrackingParams {
-        // style: ParamStyle::Trackpy {
-        //     separation: 8,
-        //     diameter: 7,
-        //     maxsize: 0.0,
-        //     noise_size: 1.,
-        //     smoothing_size: 7,
-        //     threshold: 0.0,
-        //     invert: false,
-        //     percentile: 0.,
-        //     topn: 0,
-        //     preprocess: true,
-        //     filter_close: true,
-        // },
-        style: ParamStyle::Log{
-            min_radius: 3.0,
-            max_radius: 25.0,
-            log_spacing: true,
-            overlap_threshold: 0.5,
-            n_radii: 10,
+        style: ParamStyle::Trackpy {
+            separation: 10,
+            diameter: 9,
+            maxsize: 0.0,
+            threshold: 0.0,
+            invert: false,
+            percentile: 0.,
+            topn: 0,
+            preprocess: true,
+            filter_close: true,
         },
+        noise_size: 1.,
+        // style: ParamStyle::Log{
+        //     min_radius: 3.0,
+        //     max_radius: 25.0,
+        //     log_spacing: true,
+        //     overlap_threshold: 0.5,
+        //     n_radii: 10,
+        // },
         snr: Some(1.5),
-        // minmass_snr: Some(0.3),
+        minmass_snr: Some(0.3),
         // adaptive_background: Some(4),
-        // characterize: true,
-        // illumination_sigma: Some(30.),
-        
-        // minmass: 800.,
-        include_r_in_output: true,
-        truncate_preprocessed: true,
         characterize: true,
+        illumination_sigma: Some(30.),
+        search_range: Some(10.),
+        
+        // include_r_in_output: true,
+        truncate_preprocessed: true,
         ..Default::default()
     };
     let now = Instant::now();

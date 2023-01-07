@@ -119,13 +119,13 @@ def connect(to_link1, to_link2, search_range):
 
     if isinstance(to_link1, pd.DataFrame):
         output1 = to_link1.copy()
-        output1["particle"] = result[0]
+        output1["connect particle"] = result[0]
     else:
         output1 = result[0]
         
     if isinstance(to_link2, pd.DataFrame):
         output2 = to_link2.copy()
-        output2["particle"] = result[1]
+        output2["connect particle"] = result[1]
     else:
         output2 = result[1]
 
