@@ -102,7 +102,7 @@ def link(to_link, search_range, memory):
 
     return output
 
-def connect(to_link1, to_link2, search_range):
+def connect(to_link1, to_link2, search_range, merge = True):
     if isinstance(to_link1, pd.DataFrame):
         to_link_np1 = to_link1[["frame", "y", "x"]].to_numpy()
     else:
@@ -128,8 +128,10 @@ def connect(to_link1, to_link2, search_range):
         output2["connect particle"] = result[1]
     else:
         output2 = result[1]
-
-    return output1, output2
+    if not merge:
+        return output1, output2
+    else:
+        return output1.merge(output2, how = "outer", on = "connect particle")
 
 
 def LoG(video_or_path, min_r, max_r, **kwargs):

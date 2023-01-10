@@ -446,13 +446,13 @@ pub fn link<T: KdPoint<Scalar = float, Dim = U2> + std::fmt::Debug>(
     
 
     let tree = kd_tree::KdIndexTree::build_by_ordered_float(dest);
-    let tree_nonempty = dest.len() != 0;
+    // let tree_nonempty = dest.len() != 0;
     let dest_points_near_source = src.iter().map(|point| {
-        if tree_nonempty{
+        // if tree_nonempty{
             tree.within_radius_rd2(point, radius)
-        } else {
-            Vec::new()
-        }
+        // } else {
+        //     Vec::new()
+        // }
     });
         
     src_to_dest.set_size(src.len());
@@ -680,21 +680,169 @@ pub fn linker_all(frame_iter: impl Iterator<Item = crate::error::Result<(Option<
     Ok(results)
 }
 
+enum LR{
+    Left,
+    Right,
+}
+
+struct LRContainer{
+    item: (Option<usize>, Vec<[float; 2]>),
+    side: LR,
+}
+
+impl LRContainer{
+    fn other(self, new_item: (Option<usize>, Vec<[float; 2]>)) -> Self{
+        match self.side{
+            LR::Left => LRContainer{
+                item: new_item,
+                side: LR::Right,
+            },
+            LR::Right => LRContainer{
+                item: new_item,
+                side: LR::Left,
+            },
+        }
+    }
+
+    fn cmp(&self, other: &(Option<usize>, Vec<[float; 2]>)) -> std::cmp::Ordering{
+        self.item.0.unwrap().cmp(other.0.as_ref().unwrap())
+    }
+    
+    fn into_inner(self) -> (Option<usize>, Vec<[float; 2]>){
+        self.item
+    }
+
+    fn finish(self, other: (Option<usize>, Vec<[float; 2]>)) -> ((Option<usize>, Vec<[float; 2]>), (Option<usize>, Vec<[float; 2]>)){
+        match self.side{
+            LR::Left => {
+                (self.into_inner(), other)
+            },
+            LR::Right => {
+                (other, self.into_inner())
+            },
+        }
+    }
+
+    fn fill(&self, results1: &mut Vec<usize>, results2: &mut Vec<usize>, linker: &mut Linker){
+        match self.side{
+            LR::Left => {
+                fill_base(&self.item, results1, linker);
+            },
+            LR::Right => {
+                fill_base(&self.item, results2, linker);
+            },
+        }
+    }
+
+    fn fill_other(&self, other: &(Option<usize>, Vec<[f32; 2]>), results1: &mut Vec<usize>, results2: &mut Vec<usize>, linker: &mut Linker){
+        match self.side{
+            LR::Left => {
+                fill_base(other, results2, linker);
+            },
+            LR::Right => {
+                fill_base(other, results1, linker);
+            },
+        }
+    }
+}
+
+fn fill_base(item: &(Option<usize>, Vec<[f32; 2]>), result: &mut Vec<usize>, linker: &mut Linker){
+    for _ in 0..item.1.len(){
+        result.push(linker.part_idx);
+        linker.part_idx += 1;
+    }
+}
+
+
+fn sync_iterators(
+    frame_iter1: &mut impl Iterator<Item = crate::error::Result<(Option<usize>, Vec<[float; 2]>)>>,
+    frame_iter2: &mut impl Iterator<Item = crate::error::Result<(Option<usize>, Vec<[float; 2]>)>>,
+    to_hit: LRContainer,
+    linker: &mut Linker,
+    results1: &mut Vec<usize>,
+    results2: &mut Vec<usize>,
+    ) -> crate::error::Result<Option<((Option<usize>, Vec<[float; 2]>), (Option<usize>, Vec<[float; 2]>))>>{
+    let next_item = match to_hit.side{
+        LR::Left => {
+            frame_iter2.next()
+        },
+        LR::Right => {
+            frame_iter1.next()
+        },
+    };
+
+    let next_item = match next_item{
+        Some(inner) => inner?,
+        None => {
+            to_hit.fill(results1, results2, linker);
+            return Ok(None)
+        }
+    };
+    match to_hit.cmp(&next_item){
+        std::cmp::Ordering::Greater => {
+            to_hit.fill_other(&next_item, results1, results2, linker);
+            return sync_iterators(frame_iter1, frame_iter2, to_hit, linker, results1, results2)
+        },
+        std::cmp::Ordering::Equal => {
+            return Ok(Some(to_hit.finish(next_item)))
+        },
+        std::cmp::Ordering::Less => {
+            to_hit.fill_other(&next_item, results1, results2, linker);
+            to_hit.fill(results1, results2, linker);
+            return sync_iterators(frame_iter1, frame_iter2, to_hit.other(next_item), linker, results1, results2)
+        },
+    }
+}
+
 pub fn connect_all(
-    frame_iter1: impl Iterator<Item = crate::error::Result<(Option<usize>, Vec<[float; 2]>)>>,
-    frame_iter2: impl Iterator<Item = crate::error::Result<(Option<usize>, Vec<[float; 2]>)>>,
+    mut frame_iter1: impl Iterator<Item = crate::error::Result<(Option<usize>, Vec<[float; 2]>)>>,
+    mut frame_iter2: impl Iterator<Item = crate::error::Result<(Option<usize>, Vec<[float; 2]>)>>,
     radius: float,
     ) -> crate::error::Result<(Vec<usize>, Vec<usize>)>{
 
     let mut linker = Linker::new(radius, 0);
     let mut results1 = Vec::new();
     let mut results2 = Vec::new();
-    for (frame1, frame2) in frame_iter1.zip(frame_iter2){
-        let frame1 = frame1?;
-        let frame2 = frame2?;
-        let (result1, result2) = linker.connect(&frame1.1, &frame2.1);
-        results1.extend(result1.into_iter());
-        results2.extend(result2.into_iter());
+    loop{
+        let frame1 = frame_iter1.next();
+        let frame2 = frame_iter2.next();
+
+        match (frame1, frame2){
+            (Some(Ok(frame1)), Some(Ok(frame2))) => {
+                let both_frames = match frame1.0.unwrap().cmp(&frame2.0.unwrap()){
+                    std::cmp::Ordering::Equal => {
+                        Some((frame1, frame2))
+                    },
+                    std::cmp::Ordering::Greater => {
+                        let to_hit = LRContainer { item: frame1, side: LR::Left };
+                        fill_base(&frame2, &mut results2, &mut linker);
+                        sync_iterators(&mut frame_iter1, &mut frame_iter2, to_hit, &mut linker, &mut results1, &mut results2)?
+                    },
+                    std::cmp::Ordering::Less => {
+                        let to_hit = LRContainer { item: frame2, side: LR::Right };
+                        fill_base(&frame1, &mut results1, &mut linker);
+                        sync_iterators(&mut frame_iter1, &mut frame_iter2, to_hit, &mut linker, &mut results1, &mut results2)?
+                    },
+                };
+                if let Some((frame1, frame2)) = both_frames{
+                    let (result1, result2) = linker.connect(&frame1.1, &frame2.1);
+                    results1.extend(result1.into_iter());
+                    results2.extend(result2.into_iter());
+                }
+            },
+            (Some(Ok(frame1)), None) => {
+                fill_base(&frame1, &mut results1, &mut linker)
+            },
+            (None, Some(Ok(frame2))) => {
+                fill_base(&frame2, &mut results2, &mut linker)
+            },
+            (None, None) => {
+                break
+            }
+            (Some(Err(e)), _) | (_, Some(Err(e))) => {
+                return Err(e)
+            }
+        }
     }
     Ok((results1, results2))
 }

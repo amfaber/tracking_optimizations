@@ -594,7 +594,7 @@ dependencies = [
 
 [[package]]
 name = "gpu-tracking"
-version = "0.5.9"
+version = "0.5.10"
 dependencies = [
  "anyhow",
  "bencher",
@@ -737,9 +737,9 @@ dependencies = [
 
 [[package]]
 name = "kd-tree"
-version = "0.4.2"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9188b383af4f1e1131b0d7065060b0ab808995c5bd18b8bbcff73c7c6af61afc"
+checksum = "f54287107c30b23cf7a32e394c68b9472220a090c897d916dfdf467caef88864"
 dependencies = [
  "num-traits",
  "ordered-float",
