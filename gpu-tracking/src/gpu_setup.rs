@@ -4,7 +4,6 @@ use crate::{my_dtype, utils::*};
 
 use pollster::FutureExt;
 use wgpu::{Buffer, Device, self, util::{DeviceExt, BufferInitDescriptor}, ComputePipeline, BindGroupLayout};
-use wgpu_fft::{self, fft::{FftPlan, FftPass}, infer_compute_bindgroup_layout};
 
 
 #[derive(Clone)]

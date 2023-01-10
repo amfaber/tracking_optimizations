@@ -2,6 +2,7 @@
 use std::rc::Rc;
 use wgpu::{self, util::DeviceExt};
 use crate::gpu_setup::GpuState;
+use regex;
 
 
 pub unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
@@ -665,4 +666,49 @@ pub fn inspect_buffers<P: AsRef<std::path::Path>>(
     }
 
     panic!("intended panic")
+}
+
+
+
+pub fn infer_compute_bindgroup_layout(device: &wgpu::Device, source: &str) -> wgpu::BindGroupLayout{
+    let re = regex::Regex::new(r"@binding\((?P<idx>\d+)\)\s*var<(?P<type>.*?)>").unwrap();
+
+    let mut entries = Vec::new();
+    for capture in re.captures_iter(source){
+        let idx: u32 = capture.name("idx").expect("Regex failed parse at binding idx").as_str().parse().unwrap();
+        let ty = capture.name("type").expect("Regex failed parse at binding type").as_str();
+        let ty = match ty{
+            "uniform" => wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            "storage, read" => wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            "storage, read_write" => wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            _ => panic!("Unrecognized binding type: {}", ty)
+        };
+        entries.push(
+            wgpu::BindGroupLayoutEntry{
+                binding: idx,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty,
+                count: None,
+            }
+        );
+    }
+    let bindgrouplayout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+        label: None,
+        entries: &entries[..]
+    });
+
+    bindgrouplayout
+    
 }
