@@ -176,8 +176,6 @@ def create_element(idx):
             *create_input("diameter", idx, value = 7),
             html.Div([
                 *create_input("separation", idx),
-                *create_input("noise_size", idx),
-                *create_input("smoothing_size", idx),
                 dcc.Checklist(["filter_close"], value = ["filter_close"], id = {"type": "filter_close", "index": idx}, style = {"display": "inline-block"}),
                 # *create_input("filter_close", idx),
             ], id = {"type": "Trackpy-extended", "index": idx}),
@@ -198,6 +196,7 @@ def create_element(idx):
             
         ]),
         html.Div([
+            *create_input("smoothing_size", idx),
             *create_input("minmass", idx),
             *create_input("max_iterations", idx),
             *create_input("bg_radius", idx),
@@ -206,6 +205,7 @@ def create_element(idx):
             dcc.Checklist(["truncate_preprocessed"], value = ["truncate_preprocessed"], id = {"type": "truncate_preprocessed", "index": idx}, style = {"display": "inline-block"}),
             *create_input("illumination_sigma", idx),
             *create_input("adaptive_background", idx),
+            *create_input("noise_size", idx),
             
         ], id = {"type": "shared_extended", "index": idx}, style = {"display": "none"}),
         html.Div([
