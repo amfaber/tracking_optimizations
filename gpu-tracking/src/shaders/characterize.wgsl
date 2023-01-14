@@ -117,9 +117,13 @@ fn characterize(part_idx: u32, kernel_rows: i32, kernel_cols: i32){
       // Rg += 1.0;
       raw_mass += raw_frame[pic_idx];
       signal = max(signal, data);
-      let theta = atan2(y, x);
-      ecc_sin += data * sin(2.*theta);
-      ecc_cos += data * cos(2.*theta);
+      if (x != 0.) | (y != 0.){
+        let theta = atan2(y, x);
+        ecc_sin += data * sin(2.*theta);
+        ecc_cos += data * cos(2.*theta);
+      } else {
+        ecc_cos += data;
+      }
     }
   }
   ecc_sin *= ecc_sin;
