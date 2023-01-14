@@ -707,12 +707,12 @@ fn post_process<A: IntoSlice>(
     for (idx, row) in relevant_points.iter().enumerate(){
         output.push(frame_index as my_dtype);
         row.insert_in_output(output, tracking_params);
-        part_ids.as_ref().map(|part_ids| output.push(part_ids[idx] as my_dtype));
         raw_properties.as_ref().map(|raw_properties|{
             output.push(raw_properties.0[idx]);
             output.push(raw_properties.1[idx]);
             output.push(raw_properties.2[idx]);
         });
+        part_ids.as_ref().map(|part_ids| output.push(part_ids[idx] as my_dtype));
     }
 }
 
