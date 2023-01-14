@@ -1,10 +1,10 @@
 use std::{fs::File, path::PathBuf};
 
-use crate::{my_dtype, linking::{FrameSubsetter, SubsetterType, SubsetterOutput}};
+use crate::{my_dtype, linking::SubsetterType};
 use ndarray::Array;
-use pyo3::{prelude::*, types::{PyDict, PyList}};
+use pyo3::{prelude::*, types::PyDict};
 // #[cfg(feature = "python")]
-use numpy::{IntoPyArray, PyReadonlyArray3, PyReadonlyArray2, PyArray2, PyArray1, PyArrayDyn, PyArray3};
+use numpy::{IntoPyArray, PyReadonlyArray3, PyReadonlyArray2, PyArray2, PyArray1, PyArray3};
 use crate::{execute_gpu::{execute_ndarray, execute_file, path_to_iter, mean_from_iter}, decoderiter::MinimalETSParser, gpu_setup::{TrackingParams, ParamStyle}, linking, error::Error};
 
 impl std::convert::From::<Error> for PyErr{
@@ -40,19 +40,6 @@ impl std::convert::From::<Error> for PyErr{
 			
 		}
 	}
-}
-
-macro_rules! not_implemented {
-    ($name:ident) => {
-        if $name.is_some(){
-            panic!("{} is not implemented", stringify!($name));
-        }
-    };
-    
-    ($name:ident, $($names:ident), +) => {
-        not_implemented!($name);
-        not_implemented!($($names), +);
-    };
 }
 
 macro_rules! make_args {
@@ -295,12 +282,10 @@ make_args!(
         pyarr: PyReadonlyArray3<my_dtype>,
     },
     {
-        debug: Option<bool>,
     }
     ) -> PyResult<(&'py PyArray2<my_dtype>, Py<PyAny>)> => params{
-        let debug = debug.unwrap_or(false);
         let array = pyarr.as_array();
-        let (res, columns) = execute_ndarray(&array, params, debug, 0, None)?;
+        let (res, columns) = execute_ndarray(&array, params, 0, None)?;
         Ok((res.into_pyarray(py), columns.into_py(py)))
     }
 );
@@ -314,13 +299,11 @@ make_args!(
         },
         {
             channel: Option<usize>,
-            debug: Option<bool>,
         }
         ) -> PyResult<(&'py PyArray2<my_dtype>, Py<PyAny>)> => params {
-        let debug = debug.unwrap_or(false);
 
         let (res, columns) = execute_file(
-            &filename, channel, params, debug, 0, None)?;
+            &filename, channel, params, 0, None)?;
         Ok((res.into_pyarray(py), columns.into_py(py)))
     }
 );
@@ -335,10 +318,8 @@ make_args!(
         points_has_r: bool,
     },
     {
-        debug: Option<bool>,
     }
     ) -> PyResult<(&'py PyArray2<my_dtype>, Py<PyAny>)> => params{
-        let debug = debug.unwrap_or(false);
         let array = pyarr.as_array();
         
         params.characterize = true;
@@ -350,7 +331,7 @@ make_args!(
         }
         
         let inp = Some((points_to_characterize.as_array(), points_has_frames, points_has_r));
-        let (res, columns) = execute_ndarray(&array, params, debug, 0, inp)?;
+        let (res, columns) = execute_ndarray(&array, params, 0, inp)?;
         Ok((res.into_pyarray(py), columns.into_py(py)))
     }
 );
@@ -366,10 +347,8 @@ make_args!(
         },
         {
             channel: Option<usize>,
-            debug: Option<bool>,
         }
         ) -> PyResult<(&'py PyArray2<my_dtype>, Py<PyAny>)> => params {
-        let debug = debug.unwrap_or(false);
 
         params.characterize = true;
         let inp = Some((points_to_characterize.as_array(), points_has_frames, points_has_r));
@@ -380,7 +359,7 @@ make_args!(
             *filter_close = false;
         }
         
-        let (res, columns) = execute_file(&filename, channel, params, debug, 0, inp)?;
+        let (res, columns) = execute_file(&filename, channel, params, 0, inp)?;
         Ok((res.into_pyarray(py), columns.into_py(py)))
     }
 );
@@ -392,12 +371,10 @@ make_log_args!(
         pyarr: PyReadonlyArray3<my_dtype>,
     },
     {
-        debug: Option<bool>,
     }
     ) -> PyResult<(&'py PyArray2<my_dtype>, Py<PyAny>)> => params{
-    let debug = debug.unwrap_or(false);
     let array = pyarr.as_array();
-    let (res, columns) = execute_ndarray(&array, params, debug, 0, None)?;
+    let (res, columns) = execute_ndarray(&array, params, 0, None)?;
     Ok((res.into_pyarray(py), columns.into_py(py)))
 }
 );
@@ -410,15 +387,11 @@ make_log_args!(
         },
         {
             channel: Option<usize>,
-            // points_to_characterize: Option<PyReadonlyArray2<my_dtype>>,
-            debug: Option<bool>,
         }
         ) -> PyResult<(&'py PyArray2<my_dtype>, Py<PyAny>)> => params {
-        let debug = debug.unwrap_or(false);
-        // let points_rust_array = points_to_characterize.as_ref().map(|arr| arr.as_array());
 
         let (res, columns) = execute_file(
-            &filename, channel, params, debug, 0, None)?;
+            &filename, channel, params, 0, None)?;
         Ok((res.into_pyarray(py), columns.into_py(py)))
     }
 );
@@ -549,7 +522,7 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         let n_frames = keys.len();
         let mut vec = Vec::with_capacity(n_frames * parser.dims.iter().product::<usize>());
         for key in keys{
-            iter.seek(key);
+            iter.seek(key)?;
             vec.extend(iter.next().unwrap().into_iter().flatten());
         }
         let array = Array::from_shape_vec((n_frames, parser.dims[1], parser.dims[0]), vec).unwrap();
@@ -566,7 +539,7 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         //     .map(|i| provider.get_frame(i))
         //     .take_while(|res| !matches!(res, Err(crate::error::Error::FrameOOB)));
         let iter = provider.into_iter();
-        let mean_arr = mean_from_iter(iter, &dims, channel)?;
+        let mean_arr = mean_from_iter(iter, &dims)?;
         // let idk = provider.get_frame(0);
         // let mut n_frames = 0;
         // let mut mean_vec = iter.fold(vec![0f32; (dims[0] * dims[1]) as usize], |mut acc, ele|{

@@ -1,8 +1,8 @@
 // #![allow(warnings)]
-#![allow(const_item_mutation)]
+// #![allow(const_item_mutation)]
 use kd_tree::{KdPoint, KdTree, KdIndexTree};
 use std::cmp::Ordering;
-use ndarray::{ArrayView2};
+use ndarray::ArrayView2;
 use kd_tree;
 use std::{collections::{HashMap, HashSet, VecDeque}, iter::FromIterator};
 type float = f32;
@@ -328,8 +328,24 @@ pub struct Linker{
     pub dest_to_src: ReuseVecofVec<(usize, float)>,
     pub visited: [Vec<bool>; 2],
     pub memory_vec: Option<VecDeque<Vec<([float; 2],usize)>>>,
-    // pub frame_idx: usize,
+    pub frame_idx: usize,
     pub part_idx: usize,
+    pub starting_frame: Vec<DurationBookkeep>,
+}
+
+#[derive(Debug)]
+pub struct DurationBookkeep{
+    pub start: usize,
+    pub duration: usize,
+}
+
+impl DurationBookkeep{
+    fn new(start: usize) -> Self{
+        Self {
+            start,
+            duration: 0,
+        }
+    }
 }
 
 impl Linker{
@@ -351,8 +367,9 @@ impl Linker{
             dest_to_src: ReuseVecofVec::new(),
             visited: [Vec::new(), Vec::new()],
             memory_vec: mem_init,
-            // frame_idx: 0,
+            frame_idx: 0,
             part_idx: 0,
+            starting_frame: Vec::new(),
         }
     }
 
@@ -362,12 +379,12 @@ impl Linker{
 
     pub fn connect<T: KdPoint<Scalar = float, Dim = U2> + std::fmt::Debug>(&mut self, frame1: &[T], frame2: &[T]) -> (Vec<usize>, Vec<usize>){
 
-        let prev: Vec<_>= frame1.iter().map(|(ele)| {
+        let prev: Vec<_>= frame1.iter().map(|ele| {
             let out = ([ele.at(0), ele.at(1)], self.part_idx);
             self.part_idx += 1;
             out
         }).collect();
-        let (result, memory) = link(
+        let (result, _memory) = link(
             &prev,
             frame2,
             &mut self.src_to_dest,
@@ -400,9 +417,9 @@ impl Linker{
             }
             None => None,
         };
+        let prev_part_idx = self.part_idx;
         
         let (result, memory) =
-        // panic::catch_unwind(panic::AssertUnwindSafe(||{
             link(
                 &self.prev,
                 &frame,
@@ -413,21 +430,48 @@ impl Linker{
                 self.search_range,
                 &mut self.part_idx,
             );
-        // })).map_err(|err|{
-        //     dbg!(&self);
-        //     panic::resume_unwind(err)
-        // }).unwrap();
+
+        for _ in 0..(self.part_idx - prev_part_idx){
+            self.starting_frame.push(DurationBookkeep::new(self.frame_idx));
+        }
         
         self.prev = frame.iter().zip(result.iter()).map(|(a, b)| ([a.at(0), a.at(1)], *b)).collect::<Vec<_>>();
         match self.memory_vec{
             Some(ref mut memvec) => {
                 memvec.push_back(memory);
-                memvec.pop_front();
+                let leaving_pool = memvec.pop_front().unwrap();
+                for entry in leaving_pool{
+                    let start_frame = self.starting_frame.get_mut(entry.1).unwrap();
+                    start_frame.duration = (self.frame_idx - start_frame.start) - memvec.len();
+                }
             }
-            None => {},
+            None => {
+                let leaving_pool = memory;
+                for entry in leaving_pool{
+                    let start_frame = self.starting_frame.get_mut(entry.1).unwrap();
+                    start_frame.duration = self.frame_idx - start_frame.start;
+                }
+            },
         }
         self.prev_N = N;
+        self.frame_idx += 1;
         result
+    }
+    
+    pub fn finish(mut self) -> Vec<DurationBookkeep> {
+        if let Some(memvec) = self.memory_vec{
+            for (i, vec) in memvec.iter().enumerate(){
+                for entry in vec{
+                    let start_frame = self.starting_frame.get_mut(entry.1).unwrap();
+                    start_frame.duration = (self.frame_idx - start_frame.start) - (memvec.len() - i);
+                }
+            }
+        }
+        for entry in self.prev{
+            let start_frame = self.starting_frame.get_mut(entry.1).unwrap();
+            start_frame.duration = self.frame_idx - start_frame.start;
+        }
+        self.starting_frame
     }
 
 }
@@ -446,13 +490,8 @@ pub fn link<T: KdPoint<Scalar = float, Dim = U2> + std::fmt::Debug>(
     
 
     let tree = kd_tree::KdIndexTree::build_by_ordered_float(dest);
-    // let tree_nonempty = dest.len() != 0;
     let dest_points_near_source = src.iter().map(|point| {
-        // if tree_nonempty{
             tree.within_radius_rd2(point, radius)
-        // } else {
-        //     Vec::new()
-        // }
     });
         
     src_to_dest.set_size(src.len());
@@ -599,19 +638,17 @@ pub fn link<T: KdPoint<Scalar = float, Dim = U2> + std::fmt::Debug>(
         let mut used = HashMap::new();
         let mut nulls = HashSet::new();
         let score = &mut 0.0;
-        let best = &mut f32::INFINITY;
+        let best = &mut f32::INFINITY.clone();
         recurse2(0, &path, score, best, &mut used, &mut output,
             dest_to_src, radius * radius, &src, &mut nulls)
     }
 
     let output = output.into_iter().map(|ele| match ele{ Some(val) => val, None => { let old = *counter; *counter += 1; old } }).collect::<Vec<_>>();
 
+    let used_sources: HashSet<_> = HashSet::from_iter(output.iter().cloned());
     let unused_sources = match memory_start_idx{
-        Some(idx) => {
-            let used_sources: HashSet<_> = HashSet::from_iter(output.iter().cloned());
-            src.iter().take(idx).filter(|ele| !used_sources.contains(&ele.1)).map(|ele| *ele).collect::<Vec<_>>()
-        },
-        None => Vec::new(),
+        Some(idx) => src.iter().take(idx).filter(|ele| !used_sources.contains(&ele.1)).map(|ele| *ele).collect::<Vec<_>>(),
+        None => src.iter().filter(|ele| !used_sources.contains(&ele.1)).map(|ele| *ele).collect::<Vec<_>>(),
     };
 
     (output, unused_sources)

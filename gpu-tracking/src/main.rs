@@ -1,4 +1,6 @@
-#![allow(warnings)]
+// #![allow(warnings)]
+#![allow(unused)]
+#![allow(non_camel_case_types)]
 use futures;
 use futures_intrusive;
 use gpu_tracking::execute_gpu::path_to_iter;
@@ -38,9 +40,9 @@ fn test_trackpy_easy() -> gpu_tracking::error::Result<()>{
     let args: Args = Args::parse();
     let now_top = Instant::now();
     dbg!(std::env::current_dir());
-    // let path = args.input.unwrap_or("testing/easy_test_data.tif".to_string());
+    let path = args.input.unwrap_or("testing/easy_test_data.tif".to_string());
     // let path = args.input.unwrap_or(r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\testing\marcus_blobs\big_blobs.tif".to_string());
-    let path = args.input.unwrap_or(r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\testing\kdtree_panic\emily_she_kdtree_panic.tif".to_string());
+    // let path = args.input.unwrap_or(r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\testing\kdtree_panic\emily_she_kdtree_panic.tif".to_string());
     // let path = args.input.unwrap_or(r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\tiff_vsi\vsi dummy\_Process_9747_\stack1\frame_t_0.ets".to_string());
     // let path = args.input.unwrap_or("testing/easy_test_data.tif".to_string());
     let debug = args.debug.unwrap_or(false);
@@ -101,7 +103,6 @@ fn test_trackpy_easy() -> gpu_tracking::error::Result<()>{
         &path,
         Some(1),
         params,
-        debug,
         1,
         // Some((points.view(), true, true)),
         // Some(&points.view()),
@@ -219,7 +220,7 @@ fn test_unedited() -> gpu_tracking::error::Result<()>{
     ];
     let points = Array2::from_shape_vec((4, 3), points).unwrap();
     let point_view = points.view();
-    let state = setup_state(&params, &dims, debug, false)?;
+    let state = setup_state(&params, &dims, false)?;
     // let point_iter = FrameSubsetter::new(&point_view, Some(0), (1, 2));
     // let (results, column_names) = execute_gpu::execute_gpu(
     //     decoderiter,

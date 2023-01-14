@@ -321,7 +321,7 @@ impl MeanArray{
         //         resource: temp_buffer.as_entire_binding(),
         //     },
         // ];
-        let mut inplace_bind_group_entries = [
+        let inplace_bind_group_entries = [
             wgpu::BindGroupEntry{
                 binding: 0,
                 resource: temp_buffer.as_entire_binding(),
@@ -389,8 +389,8 @@ impl MeanArray{
     }
     
     
-    pub fn execute(&self, encoder: &mut wgpu::CommandEncoder, state: &GpuState, staging_buffer: &wgpu::Buffer){
-    // pub fn execute(&self, encoder: &mut wgpu::CommandEncoder){
+    // pub fn execute(&self, encoder: &mut wgpu::CommandEncoder, state: &GpuState, staging_buffer: &wgpu::Buffer){
+    pub fn execute(&self, encoder: &mut wgpu::CommandEncoder){
         let mut to_start = self.size;
         // to_start += 7;
         // to_start /= 8;
@@ -450,7 +450,7 @@ impl MeanArrayOutplace{
             workgroup_size1d,
             sqrt_mean,
         );
-        let mut outplace_bind_group_entries = [
+        let outplace_bind_group_entries = [
             wgpu::BindGroupEntry{
                 binding: 0,
                 resource: frame_buffer.as_entire_binding(),
@@ -482,8 +482,8 @@ impl MeanArrayOutplace{
     }
     
     
-    // pub fn execute(&self, encoder: &mut wgpu::CommandEncoder){
-    pub fn execute(&self, encoder: &mut wgpu::CommandEncoder, state: &GpuState, staging_buffer: &wgpu::Buffer){
+    pub fn execute(&self, encoder: &mut wgpu::CommandEncoder){
+    // pub fn execute(&self, encoder: &mut wgpu::CommandEncoder, state: &GpuState, staging_buffer: &wgpu::Buffer){
         let mut to_start = self.size;
         to_start += 7;
         to_start /= 8;
@@ -491,8 +491,8 @@ impl MeanArrayOutplace{
         self.outplace.execute_with_dispatcher(encoder, unsafe { any_as_u8_slice(&(to_start)) }, &dispatcher);
         // self.outplace.execute_with_dispatcher(encoder, unsafe { any_as_u8_slice(&(to_start, self.meanarray.sqrt_mean as u32)) }, &dispatcher);
         
-        // self.meanarray.execute(encoder);
-        self.meanarray.execute(encoder, state, staging_buffer);
+        self.meanarray.execute(encoder);
+        // self.meanarray.execute(encoder, state, staging_buffer);
         // let to_print = vec![
         //     &state.common_buffers.std_buffer,
         //     &state.common_buffers.temp_buffer,
@@ -591,13 +591,13 @@ impl StdArray{
         }
     }
 
-    // pub fn execute(&self, encoder: &mut wgpu::CommandEncoder){
-    pub fn execute(&self, encoder: &mut wgpu::CommandEncoder, state: &GpuState, staging_buffer: &wgpu::Buffer){
-        // self.mean_pass1.execute(encoder);
-        self.mean_pass1.execute(encoder, state, staging_buffer);
+    pub fn execute(&self, encoder: &mut wgpu::CommandEncoder){
+    // pub fn execute(&self, encoder: &mut wgpu::CommandEncoder, state: &GpuState, staging_buffer: &wgpu::Buffer){
+        self.mean_pass1.execute(encoder);
+        // self.mean_pass1.execute(encoder, state, staging_buffer);
         self.std_pass.execute(encoder, bytemuck::cast_slice(&[self.mean_pass2.size]));
-        // self.mean_pass2.execute(encoder);
-        self.mean_pass2.execute(encoder, state, staging_buffer);
+        self.mean_pass2.execute(encoder);
+        // self.mean_pass2.execute(encoder, state, staging_buffer);
         // let to_print = vec![
         //     &state.common_buffers.std_buffer,
         //     &state.common_buffers.temp_buffer,

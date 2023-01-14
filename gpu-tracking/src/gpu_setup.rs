@@ -1,9 +1,9 @@
-use std::{collections::HashMap, fs::File, io::Read, rc::Rc, cell::Cell};
+use std::{collections::HashMap, rc::Rc, cell::Cell};
 
 use crate::{my_dtype, utils::*};
 
 use pollster::FutureExt;
-use wgpu::{Buffer, Device, self, util::{DeviceExt, BufferInitDescriptor}, ComputePipeline, BindGroupLayout};
+use wgpu::{Buffer, Device, self, util::DeviceExt, ComputePipeline, BindGroupLayout};
 
 
 #[derive(Clone)]
@@ -285,7 +285,7 @@ impl CommonBuffers{
             mapped_at_creation: false,
         });
         
-        let illumination_correcter = if (tracking_params.illumination_sigma.is_some()) {
+        let illumination_correcter = if tracking_params.illumination_sigma.is_some() {
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: None,
                 size,
@@ -337,10 +337,8 @@ impl CommonBuffers{
 
 impl TrackpyGpuBuffers{
     fn create(
-        tracking_params: &TrackingParams,
         device: &wgpu::Device,
         size: u64,
-        dims: &[u32; 2],
         ) -> Self{
         
         let masses_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -368,18 +366,11 @@ impl TrackpyGpuBuffers{
 
 impl LogGpuBuffers{
     fn create(
-        tracking_params: &TrackingParams,
         device: &wgpu::Device,
         size: u64,
-        dims: &[u32; 2],
-        // fftplan: &FftPlan,
         common_buffers: &CommonBuffers,
         pipelines: &mut HashMap<String, (Rc<ComputePipeline>, BindGroupLayout, Option<Rc<Dispatcher>>)>
     ) -> Self {
-        let (min_radius, max_radius, n_radii, log_spacing) = if let ParamStyle::Log { min_radius, max_radius, n_radii, log_spacing, .. } = tracking_params.style{
-            (min_radius, max_radius, n_radii, log_spacing)
-        } else {panic!()};
-
         let frame_buffer = &common_buffers.frame_buffer;
         let param_buffer = &common_buffers.param_buffer;
 
@@ -509,14 +500,12 @@ fn gpuparams_from_tracking_params(params: &TrackingParams, pic_dims: [u32; 2]) -
             (smoothing_size, circle_size, dilation_size, margin, params.noise_size)
         },
         ParamStyle::Log { max_radius, .. } => {
-            let radius = (max_radius + 0.5) as u32;
-            let diameter = radius * 2 + 1;
             let smoothing_size = params.smoothing_size.unwrap_or({
                 let radius = (max_radius + 0.5) as u32;
                 let diameter = radius * 2 + 1;
                 diameter
             });
-            (diameter, 0, 0, 0, params.noise_size)
+            (smoothing_size, 0, 0, 0, params.noise_size)
         }
     };
 
@@ -548,7 +537,6 @@ fn gpuparams_from_tracking_params(params: &TrackingParams, pic_dims: [u32; 2]) -
 pub fn setup_state(
     tracking_params: &TrackingParams,
     dims: &[u32; 2],
-    debug: bool,
     characterize_new_points: bool,
     ) -> crate::error::Result<GpuState> {
     
@@ -667,7 +655,7 @@ pub fn setup_state(
         ]);
     }
 
-    let (flavor, mut pipelines, common_header, common_buffers) = match &tracking_params.style{
+    let (flavor, mut pipelines, common_buffers) = match &tracking_params.style{
         
         ParamStyle::Trackpy{..} => {
             // let mut shaders = HashMap::from([
@@ -693,9 +681,9 @@ pub fn setup_state(
                 // Some("std_image".to_string()),
                 Some("preprocess_rows".to_string()),
                 Some("preprocess_cols".to_string()),
-                if (!characterize_new_points) { Some("max_rows".to_string()) } else {None},
-                if (!characterize_new_points) { Some("extract_max".to_string()) } else {None},
-                if (!characterize_new_points) { Some("walk".to_string()) } else {None},
+                if !characterize_new_points { Some("max_rows".to_string()) } else {None},
+                if !characterize_new_points { Some("extract_max".to_string()) } else {None},
+                if !characterize_new_points { Some("walk".to_string()) } else {None},
                 // if (tracking_params.characterize | characterize_new_points) { Some("characterize".to_string()) } else {None},
             ];
 
@@ -703,7 +691,7 @@ pub fn setup_state(
             
             // let GpuBuffers::Trackpy(buffers) = create_buffers(&tracking_params, &device, size * 2, dims, None, &mut pipelines) else {unreachable!()};
             let buffers = TrackpyGpuBuffers::create(
-                &tracking_params, &device, size, dims
+                &device, size,
             );
 
             let flavor = GpuStateFlavor::Trackpy{
@@ -712,7 +700,7 @@ pub fn setup_state(
             };
 
 
-            (flavor, pipelines, common_header, common_buffers)
+            (flavor, pipelines, common_buffers)
         },
         ParamStyle::Log{ max_radius, min_radius, log_spacing, n_radii, .. } => {
             // let direct_dispatcher = Rc::new(Dispatcher::new_direct(&wg_dims, &workgroup_size2d));
@@ -749,10 +737,8 @@ pub fn setup_state(
                 &tracking_params, &device, size, dims, &mut pipelines,
             );
             
-            // let GpuBuffers::Log(buffers) = create_buffers(&tracking_params, &device, size, dims, fftplan.as_ref(), &mut pipelines) else {unreachable!()};
             let buffers = LogGpuBuffers::create(
-                &tracking_params, &device, size, dims, &common_buffers, &mut pipelines,
-                // &tracking_params, &device, size, dims, &fftplan, &common_buffers, &mut pipelines,
+                &device, size, &common_buffers, &mut pipelines,
             );
 
             let radii = if *log_spacing{
@@ -774,7 +760,7 @@ pub fn setup_state(
                 buffers,
                 radii,
             };
-            (flavor, pipelines, common_header, common_buffers,)
+            (flavor, pipelines, common_buffers,)
         },
     };
     
