@@ -117,6 +117,7 @@ macro_rules! make_args {
                 }
             };
     
+            #[allow(unused_mut)]
             let mut $params = TrackingParams {
                 style: ParamStyle::Trackpy{
                     diameter,
@@ -223,6 +224,7 @@ macro_rules! make_log_args {
                 }
             };
     
+            #[allow(unused_mut)]
             let mut $params = TrackingParams {
                 style: ParamStyle::Log{
                     min_radius,
