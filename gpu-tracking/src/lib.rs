@@ -1,4 +1,4 @@
-#![allow(warnings)]
+// #![allow(warnings)]
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
@@ -12,12 +12,7 @@ pub mod gpu_setup;
 pub mod linking;
 pub mod utils;
 pub mod error;
-use linking::FrameSubsetter;
-use ndarray::Array2;
-use crate::{execute_gpu::{execute_ndarray}, decoderiter::{MinimalETSParser}, gpu_setup::{TrackingParams}};
-use ndarray::Array;
-use std::{fs::File, collections::HashMap};
 
 pub mod python_bindings;
-use crate::python_bindings::*;
+// use crate::python_bindings::*;
 

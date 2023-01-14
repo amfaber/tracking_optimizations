@@ -1,6 +1,5 @@
-use std::{ffi::OsString, path::PathBuf};
+use std::path::PathBuf;
 
-use anyhow;
 use thiserror;
 use wgpu;
 

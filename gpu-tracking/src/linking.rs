@@ -1,8 +1,8 @@
 // #![allow(warnings)]
-#![allow(const_item_mutation)]
+// #![allow(const_item_mutation)]
 use kd_tree::{KdPoint, KdTree, KdIndexTree};
 use std::cmp::Ordering;
-use ndarray::{ArrayView2};
+use ndarray::ArrayView2;
 use kd_tree;
 use std::{collections::{HashMap, HashSet, VecDeque}, iter::FromIterator};
 type float = f32;
@@ -379,12 +379,12 @@ impl Linker{
 
     pub fn connect<T: KdPoint<Scalar = float, Dim = U2> + std::fmt::Debug>(&mut self, frame1: &[T], frame2: &[T]) -> (Vec<usize>, Vec<usize>){
 
-        let prev: Vec<_>= frame1.iter().map(|(ele)| {
+        let prev: Vec<_>= frame1.iter().map(|ele| {
             let out = ([ele.at(0), ele.at(1)], self.part_idx);
             self.part_idx += 1;
             out
         }).collect();
-        let (result, memory) = link(
+        let (result, _memory) = link(
             &prev,
             frame2,
             &mut self.src_to_dest,
@@ -449,7 +449,7 @@ impl Linker{
                 let leaving_pool = memory;
                 for entry in leaving_pool{
                     let start_frame = self.starting_frame.get_mut(entry.1).unwrap();
-                    start_frame.duration = (self.frame_idx - start_frame.start);
+                    start_frame.duration = self.frame_idx - start_frame.start;
                 }
             },
         }
@@ -469,7 +469,7 @@ impl Linker{
         }
         for entry in self.prev{
             let start_frame = self.starting_frame.get_mut(entry.1).unwrap();
-            start_frame.duration = (self.frame_idx - start_frame.start);
+            start_frame.duration = self.frame_idx - start_frame.start;
         }
         self.starting_frame
     }
@@ -638,7 +638,7 @@ pub fn link<T: KdPoint<Scalar = float, Dim = U2> + std::fmt::Debug>(
         let mut used = HashMap::new();
         let mut nulls = HashSet::new();
         let score = &mut 0.0;
-        let best = &mut f32::INFINITY;
+        let best = &mut f32::INFINITY.clone();
         recurse2(0, &path, score, best, &mut used, &mut output,
             dest_to_src, radius * radius, &src, &mut nulls)
     }

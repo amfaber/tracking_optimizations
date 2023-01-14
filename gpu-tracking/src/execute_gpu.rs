@@ -1,14 +1,12 @@
-use bencher::black_box;
 use bytemuck::{Pod, Zeroable};
 use futures_intrusive;
 type my_dtype = f32;
 type my_dtype_u = u32;
-use image::Frame;
-use ndarray::{Array, Array2, ArrayView3, Axis, ArrayView, Array3, ArrayView2, ShapeError};
+use ndarray::{Array, Array2, ArrayView3, ArrayView, ArrayView2};
 use num_traits::Pow;
 use pollster::FutureExt;
 use tiff::decoder::Decoder;
-use std::{collections::{VecDeque, HashMap}, time::Instant, sync::mpsc::Sender, path::{Path, PathBuf}, fs::{File, self}, io::Write, marker::PhantomData, f32::consts::PI, cell::RefCell, thread::Scope, rc::Rc};
+use std::{collections::{VecDeque, HashMap}, time::Instant, sync::mpsc::Sender, path::{Path, PathBuf}, fs::File, f32::consts::PI, cell::RefCell, thread::Scope, rc::Rc};
 use wgpu::{Buffer, SubmissionIndex};
 use crate::{kernels, into_slice::IntoSlice,
     gpu_setup::{
@@ -16,13 +14,13 @@ use crate::{kernels, into_slice::IntoSlice,
 }, linking::{
     Linker, FrameSubsetter, ReturnDistance2, SubsetterOutput, SubsetterType,
 }, decoderiter::{
-    IterDecoder, self, FrameProvider,
+    self, FrameProvider,
 }, utils::{
-    any_as_u8_slice, inspect_buffers, inspect_through_state, Dispatcher,
+    any_as_u8_slice, 
+    // inspect_buffers, inspect_through_state,
+    Dispatcher,
 }, error::{Error, Result}};
 use kd_tree::{self, KdPoint};
-use ndarray_stats::{QuantileExt, MaybeNanExt};
-use rayon::prelude::*;
 
 type inner_output = my_dtype;
 type output_type = Vec<inner_output>;
@@ -87,7 +85,7 @@ fn submit_work(
     staging_buffer: &wgpu::Buffer,
     state: &GpuState,
     tracking_params: &TrackingParams,
-    debug: bool,
+    // debug: bool,
     positions: Option<SubsetterOutput>,
     // frame_idx: usize,
     ) -> SubmissionIndex {
@@ -134,7 +132,8 @@ fn submit_work(
     // );
     
     if let Some(ref pass) = state.std_pass{
-        pass.execute(&mut encoder, state, staging_buffer)
+        pass.execute(&mut encoder)
+        // pass.execute(&mut encoder, state, staging_buffer)
     }
     
 
@@ -221,17 +220,18 @@ fn submit_work(
 
     if let Some(n_iter) = tracking_params.adaptive_background{
         let the_atomics = [&state.common_buffers.atomic_buffer, &state.common_buffers.atomic_buffer2];
-        let mut iter = the_atomics.iter().zip(state.passes["adaptive_filter"].iter()).cycle().take(n_iter).enumerate();
+        let mut iter = the_atomics.iter().zip(state.passes["adaptive_filter"].iter()).cycle().take(n_iter);
         state.common_buffers.raw_frame.as_ref().map(|buf| encoder.copy_buffer_to_buffer(&state.common_buffers.frame_buffer, 0, buf, 0, buf.size()));
 
         {
-            let (i, (to_reset, pass)) = iter.next().unwrap();
+            let (to_reset, pass) = iter.next().unwrap();
             encoder.clear_buffer(to_reset, 0, None);
             pass.execute(&mut encoder, &[]);
             pass.reset_indirect(&mut encoder);
         }
-        for (i, (to_reset, pass)) in iter{
-            state.std_pass.as_ref().unwrap().execute(&mut encoder, state, staging_buffer);
+        for (to_reset, pass) in iter{
+            state.std_pass.as_ref().unwrap().execute(&mut encoder);
+            // state.std_pass.as_ref().unwrap().execute(&mut encoder, state, staging_buffer);
             encoder.clear_buffer(to_reset, 0, None);
             pass.execute(&mut encoder, &[]);
             pass.reset_indirect(&mut encoder);
@@ -305,10 +305,10 @@ fn submit_work(
         
     // }
 
-    let to_print = vec![
-        &state.common_buffers.result_buffer,
-        &state.common_buffers.atomic_filtered_buffer,
-    ];
+    // let to_print = vec![
+    //     &state.common_buffers.result_buffer,
+    //     &state.common_buffers.atomic_filtered_buffer,
+    // ];
     // fs::write("testing/mean_pic/shape0.dump", bytemuck::cast_slice(&[1000u32, 10, 0]));
     // fs::write("testing/mean_pic/shape1.dump", bytemuck::cast_slice(&[1, 1]));
     // inspect_buffers(
@@ -346,14 +346,14 @@ fn submit_work(
 fn get_work(
     finished_staging_buffer: &Buffer,
     state: &GpuState,
-    tracking_params: &TrackingParams,
+    // tracking_params: &TrackingParams,
     old_submission: wgpu::SubmissionIndex,
     wait_gpu_time: &mut Option<f64>,
     frame_index: usize,
-    debug: bool,
+    // debug: bool,
     job_sender: Option<&Sender<channel_type>>,
-    circle_inds: &Vec<[i32; 2]>,
-    dims: &[u32; 2],
+    // circle_inds: &Vec<[i32; 2]>,
+    // dims: &[u32; 2],
     ) -> Option<(Vec<ResultRow>, usize)> {
     // println!("getting frame: {}", frame_index);
     let buffer_slice = finished_staging_buffer.slice(..);
@@ -377,7 +377,7 @@ fn get_work(
 
     let out = match job_sender{
         Some(job_sender) => {
-            job_sender.send(Some((results, frame_index, neighborhoods)));
+            job_sender.send(Some((results, frame_index, neighborhoods))).unwrap();
             None
         },
         None => Some((results, frame_index)),
@@ -456,7 +456,7 @@ fn filter_close_trackpy(results: &Vec<ResultRow>, separation: my_dtype) -> Vec<R
         let neighbors = tree.within_radius_rd2(query, separation);
         // let neighbors = tree.within_radius(query, tracking_params.separation as my_dtype);
         let mut keep_point = true;
-        for (&neighbor_idx, distance) in neighbors{
+        for (&neighbor_idx, _distance) in neighbors{
             let neighbor_mass = results[neighbor_idx].mass;
             if neighbor_idx != idx{
                 if mass < neighbor_mass{
@@ -485,15 +485,15 @@ fn prune_blobs_log(results: &Vec<ResultRow>, overlap_threshold: my_dtype) -> Vec
     // priority is here chosen to be blob radius, with mass as tiebreaker.
     fn disk_overlap(d: my_dtype, r1: my_dtype, r2: my_dtype) -> my_dtype{
         
-        fn make_acos(d: my_dtype, r1: my_dtype, r2: my_dtype, r1s: my_dtype, r2s: my_dtype) -> my_dtype{
+        fn make_acos(d: my_dtype, r1: my_dtype, r1s: my_dtype, r2s: my_dtype) -> my_dtype{
             let mut ratio: my_dtype = (d.pow(2) + r1s - r2s) / (2f32 * d * r1);
             ratio = ratio.clamp(-1., 1.);
             return ratio.acos()
         }
         let r1s = r1.pow(2);
         let r2s = r2.pow(2);
-        let acos1 = make_acos(d, r1, r2, r1s, r2s);
-        let acos2 = make_acos(d, r2, r1, r2s, r1s);
+        let acos1 = make_acos(d, r1, r1s, r2s);
+        let acos2 = make_acos(d, r2, r2s, r1s);
 
         let a = -d + r2 + r1;
         let b =  d - r2 + r1;
@@ -568,18 +568,17 @@ fn post_process<A: IntoSlice>(
     mut results: Vec<ResultRow>,
     output: &mut Vec<my_dtype>,
     frame_index: usize,
-    debug: bool,
+    // debug: bool,
     mut linker: Option<&mut Linker>,
-    neighborhoods: Option<Vec<f32>>,
-    neighborhood_size: usize,
+    // neighborhoods: Option<Vec<f32>>,
+    // neighborhood_size: usize,
     kernels: Option<&mut PostProcessKernels<impl Fn(my_dtype) -> (Vec<[i32; 2]>, usize), impl Fn(my_dtype) -> Vec<[i32; 2]>>>,
-    middle_most: usize,
+    // middle_most: usize,
     frame: Option<A>,
     dims: [u32; 2],
     tracking_params: &TrackingParams,
     ) -> () {
     
-    let N = results.len();
     let relevant_points = match tracking_params.style{
         ParamStyle::Trackpy{filter_close, separation, ..} => {
             if filter_close{
@@ -717,7 +716,7 @@ fn post_process<A: IntoSlice>(
     }
 }
 
-pub fn mean_from_iter<A: IntoSlice, T: Iterator<Item = Result<A>>>(mut iter: T, dims: &[u32; 2], channel: Option<usize>) -> crate::error::Result<Array2<my_dtype>>{
+pub fn mean_from_iter<A: IntoSlice, T: Iterator<Item = Result<A>>>(mut iter: T, dims: &[u32; 2]) -> crate::error::Result<Array2<my_dtype>>{
     let mut n_frames = 0;
     let image_size = (dims[0] * dims[1]) as usize;
     let mut mean_vec = iter.try_fold(vec![0f32; image_size], |mut acc, ele|{
@@ -743,7 +742,7 @@ pub fn mean_from_iter<A: IntoSlice, T: Iterator<Item = Result<A>>>(mut iter: T, 
 
 pub fn setup_illumination_profile(
     mean_frame: Array2<my_dtype>,
-    dims: &[u32; 2],
+    // dims: &[u32; 2],
     tracking_params: &TrackingParams,
     state: &mut GpuState,
     ){
@@ -795,14 +794,14 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F>>(
     frames: Box<P>,
     dims: [u32; 2],
     tracking_params: &TrackingParams,
-    debug: bool,
+    // debug: bool,
     verbosity: u32,
-    mut pos_iter: Option<FrameSubsetter>,
+    pos_iter: Option<FrameSubsetter>,
     // mut pos_iter: Option<impl Iterator<Item = crate::error::Result<(Option<usize>, Vec<[my_dtype; 2]>)>>>,
     state: &GpuState,
     ) -> crate::error::Result<(output_type, Vec<(&'static str, &'static str)>)>{
     
-    let (circle_inds, middle_most) = kernels::circle_inds((0 as i32 / 2) as f32);
+    // let (circle_inds, middle_most) = kernels::circle_inds((0 as i32 / 2) as f32);
     // let (circle_inds, middle_most) = kernels::circle_inds((tracking_params.diameter as i32 / 2) as f32);
     let mut wait_gpu_time = if verbosity > 0 { Some(0.) } else {None};
 
@@ -818,7 +817,7 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F>>(
     
     let output = std::thread::scope(|scope: &Scope| -> crate::error::Result<(Vec<f32>, Option<Vec<crate::linking::DurationBookkeep>>)>{
         let handle = {
-            let neighborhood_size = circle_inds.len();
+            // let neighborhood_size = circle_inds.len();
             let thread_tracking_params = tracking_params.clone();
             let mut linker = tracking_params.search_range
                 .map(|range| Linker::new(range, tracking_params.memory.unwrap_or(0)));
@@ -846,11 +845,11 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F>>(
                         Some(inp) => {
                             thread_sleep.as_mut().map(|thread_sleep| *thread_sleep += now.unwrap().elapsed().as_nanos() as f64 / 1e9);
                             let (results, frame_index,
-                                neighborhoods) = inp;
+                                _neighborhoods) = inp;
                             let frame = frame_receiver.recv()
                                 .map_err(|_| crate::error::Error::ThreadError)?;
-                            post_process(results, &mut output, frame_index, debug, linker.as_mut(),
-                                neighborhoods, neighborhood_size, kernels.as_mut(), middle_most, frame, dims.clone(), &thread_tracking_params);
+                            post_process(results, &mut output, frame_index, linker.as_mut(),
+                                kernels.as_mut(), frame, dims.clone(), &thread_tracking_params);
                         }
                     }
                 }
@@ -889,7 +888,7 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F>>(
                         Box::new(frames_iter.zip(subsetter.cycle()).map(|(res1, res2)|{
                             let (frame_idx, frame) = res1;
                             let frame = frame?;
-                            let (frame_to_take, positions) = res2?;
+                            let (_frame_to_take, positions) = res2?;
                             Ok((frame, Some(positions), frame_idx))
                         }))
                     }
@@ -972,10 +971,10 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F>>(
         }
         
         let mut old_submission =
-            submit_work(frame.into_slice(), staging_buffer, state, &tracking_params, debug, positions);
+            submit_work(frame.into_slice(), staging_buffer, state, &tracking_params, positions);
         
         frame_sender.send(if send_frame{Some(frame)} else {None})
-            .map_err(|err| crate::error::Error::ThreadError)?;
+            .map_err(|_err| crate::error::Error::ThreadError)?;
             // .map_err(|err| crate::error::Error::ThreadError { source: Box::new(err) as Box<dyn std::error::Error + Send> })?;
         // dbg!C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\tiff_vsi\vsi dummy\_Process_9747_\stack1\frame_t_0.ets(counter);
 
@@ -1024,24 +1023,24 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F>>(
             if slc.len() != state.pic_size{
                 return Err(crate::error::Error::DimensionMismatch { idx: frame_index, frame_len: slc.len(), dimensions: state.dims.clone() })
             }
-            let new_submission = submit_work(slc, staging_buffer, &state, &tracking_params, debug, positions);
+            let new_submission = submit_work(slc, staging_buffer, &state, &tracking_params, positions);
             frame_sender.send(if send_frame {Some(frame)} else {None})
-                .map_err(|err| crate::error::Error::ThreadError)?;
+                .map_err(|_err| crate::error::Error::ThreadError)?;
                 // .map_err(|err| crate::error::Error::ThreadError { source: Box::new(err) as Box<dyn std::error::Error> })?;
             
             let finished_staging_buffer = in_use_staging_buffers.pop_front().unwrap();
             
             get_work(finished_staging_buffer,
                 &state, 
-                &tracking_params,
+                // &tracking_params,
                 old_submission, 
                 &mut wait_gpu_time,
                 get_work_frame_idx,
-                debug,
+                // debug,
                 inp_sender.as_ref(),
                 // Some(&inp_sender),
-                &circle_inds,
-                &dims,
+                // &circle_inds,
+                // &dims,
             );
 
 
@@ -1054,26 +1053,25 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F>>(
         
         get_work(finished_staging_buffer,
             &state, 
-            &tracking_params,
+            // &tracking_params,
             old_submission, 
             &mut wait_gpu_time,
             get_work_frame_idx,
-            debug,
+            // debug,
             inp_sender.as_ref(),
             // Some(&inp_sender),
-            &circle_inds,
-            &dims,
+            // &circle_inds,
+            // &dims,
         );
         wait_gpu_time.map(|wait_gpu_time| println!("Wait GPU time: {} s", wait_gpu_time));
         inp_sender.map(|sender| sender.send(None)
-            .map_err(|err| crate::error::Error::ThreadError));
+            .map_err(|_err| crate::error::Error::ThreadError));
         // let idk = handle.join().unwrap();
         // dbg!(frames.next().is_some());
         handle.join()
-            .map_err(|err| crate::error::Error::ThreadError)?
+            .map_err(|_err| crate::error::Error::ThreadError)?
     });
     
-    let now = std::time::Instant::now();
     
     let (output, part_durations) = output?;
     let (col_names, particle_column) = column_names(tracking_params);
@@ -1096,9 +1094,6 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F>>(
             panic!("this should never happen")
         }
     };
-    let elapsed = now.elapsed().as_micros();
-    // dbg!(output.len());
-    // dbg!(elapsed);
 
     Ok((output, col_names))
 }
@@ -1107,17 +1102,15 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F>>(
 pub fn execute_ndarray<'a>(
     array: &'a ArrayView3<'a, my_dtype>,
     params: TrackingParams,
-    debug: bool,
     verbosity: u32,
     pos_array: Option<(ArrayView2<'a, my_dtype>, bool, bool)>,
     ) -> crate::error::Result<(Array2<my_dtype>, Vec<(&'static str, &'static str)>)> {
     if !array.is_standard_layout(){
         return Err(crate::error::Error::NonStandardArrayLayout)
     }
-    let axisiter = array.axis_iter(ndarray::Axis(0));
     let dims_usize = array.shape();
     let dims = [dims_usize[1] as u32, dims_usize[2] as u32];
-    let mut pos_iter = match pos_array{
+    let pos_iter = match pos_array{
         Some((pos_array, true, true)) => 
             Some(FrameSubsetter::new(pos_array, Some(0), (1, 2), Some(3), SubsetterType::Characterization)),
         
@@ -1132,19 +1125,19 @@ pub fn execute_ndarray<'a>(
         None => { None }
     };
 
-    let mut state = gpu_setup::setup_state(&params, &dims, debug, pos_iter.is_some())?;
+    let mut state = gpu_setup::setup_state(&params, &dims, pos_iter.is_some())?;
     
     if params.illumination_sigma.is_some(){
         let axisiter = array.axis_iter(ndarray::Axis(0)).map(|x| Ok(x));
-        let mean_array = mean_from_iter(axisiter, &dims, None)?;
-        setup_illumination_profile(mean_array, &dims, &params, &mut state);
+        let mean_array = mean_from_iter(axisiter, &dims)?;
+        setup_illumination_profile(mean_array, &params, &mut state);
     }
     // let idk = &array.view();
     let (res, column_names) = 
         // if debug {
         //     sequential_execute(axisiter, &[dims[1] as u32, dims[2] as u32], params, debug, verbosity)
         // } else {
-            execute_gpu(Box::new(array), dims.clone(), &params, debug, verbosity, pos_iter, &mut state)?;
+            execute_gpu(Box::new(array), dims.clone(), &params, verbosity, pos_iter, &mut state)?;
         // };
     let res_len = res.len();
     let shape = (res_len / column_names.len(), column_names.len());
@@ -1165,8 +1158,8 @@ pub fn path_to_iter<P: AsRef<std::path::Path>>(path: P, channel: Option<usize>)
         .to_ascii_lowercase();
     let (iter, dims): (Box<dyn FrameProvider<Frame = Vec<my_dtype>, FrameIter = Box<dyn Iterator<Item = Result<Vec<f32>>>>>>, _) = match ext.to_str().unwrap() {
         "tif" | "tiff" => {
-            let mut file = File::open(path).map_err(|ioerr| crate::error::Error::FileNotFound { source: ioerr, filename: path.to_path_buf() })?;
-            let mut decoder = RefCell::new(Decoder::new(file).unwrap());
+            let file = File::open(path).map_err(|ioerr| crate::error::Error::FileNotFound { source: ioerr, filename: path.to_path_buf() })?;
+            let decoder = RefCell::new(Decoder::new(file).unwrap());
             let (width, height) = decoder.borrow_mut().dimensions().unwrap();
             let dims = [height, width];
             (Box::new(decoder), dims)
@@ -1206,20 +1199,12 @@ pub fn execute_file<'a>(
     path: &String,
     channel: Option<usize>,
     params: TrackingParams,
-    debug: bool,
     verbosity: u32,
     pos_array: Option<(ArrayView2<'a, my_dtype>, bool, bool)>,
-    // mut pos_iter: Option<impl Iterator<Item = (usize, Vec<[my_dtype; 2]>)>>,
     ) -> crate::error::Result<(Array2<my_dtype>, Vec<(&'static str, &'static str)>)> {
-    // let path = Path::new(&path);
     let path = PathBuf::from(path);
-    let ext = path.extension()
-        .ok_or_else(|| Error::NoExtensionError{ filename: path.to_path_buf() })?
-        .to_ascii_lowercase();
-    // let mut file = File::open(path).expect("Could not open file");
-    // dbg!(path);
-    let (provider, dims) = path_to_iter(&path, None)?;
-    let mut pos_iter = match pos_array{
+    let (provider, dims) = path_to_iter(&path, channel)?;
+    let pos_iter = match pos_array{
         Some((pos_array, true, true)) => 
             Some(FrameSubsetter::new(pos_array, Some(0), (1, 2), Some(3), SubsetterType::Characterization)),
         
@@ -1233,7 +1218,7 @@ pub fn execute_file<'a>(
             Some(FrameSubsetter::new(pos_array, None, (0, 1), None, SubsetterType::Characterization)),
         None => { None }
     };
-    let mut state = gpu_setup::setup_state(&params, &dims, debug, pos_iter.is_some())?;
+    let mut state = gpu_setup::setup_state(&params, &dims, pos_iter.is_some())?;
 
     if params.illumination_sigma.is_some(){
         let (provider, dims) = path_to_iter(&path, None)?;
@@ -1242,11 +1227,11 @@ pub fn execute_file<'a>(
         //     .take_while(|res| !matches!(res, Err(crate::error::Error::FrameOOB)));
         let iter = provider.into_iter();
         // let iter = (0..).map(|i| provider.get_frame(i).map(|inner| (i, inner))).take_while(|res| !matches!(res, Err(crate::error::Error::FrameOutOfBounds { .. })));
-        let mean_frame = mean_from_iter(iter, &dims, channel)?;
-        setup_illumination_profile(mean_frame, &dims, &params, &mut state);
+        let mean_frame = mean_from_iter(iter, &dims)?;
+        setup_illumination_profile(mean_frame, &params, &mut state);
     }
     let (res, column_names) = 
-            execute_gpu(Box::new(provider), dims, &params, debug, verbosity, pos_iter, &mut state)?;
+            execute_gpu(Box::new(provider), dims, &params, verbosity, pos_iter, &mut state)?;
     let res_len = res.len();
     let shape = (res_len / column_names.len(), column_names.len());
     let res = Array2::from_shape_vec(shape, res)

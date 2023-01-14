@@ -1,20 +1,16 @@
-use tiff::decoder::{Decoder, DecodingResult::{self, *}};
-use ndarray::{Array2, Array3, ArrayView3, ArrayView2, Axis};
+use tiff::decoder::{Decoder, DecodingResult::*};
+use ndarray::{ArrayView3, ArrayView2, Axis};
 use crate::{my_dtype, into_slice::IntoSlice, error::Error};
 use byteorder::{ReadBytesExt, LittleEndian};
-use std::{io::{self, Read, Seek, SeekFrom}, cell::{Cell, RefCell}};
+use std::{io::{self, Read, Seek, SeekFrom}, cell::RefCell};
 use std::collections::HashMap;
-use num_traits;
-
-type item_type = Vec<my_dtype>;
-// type item_type = Array2<my_dtype>;
 
 // fn cast_vec_to_f32<T: num_traits::NumCast>(to_cast: Vec<T>) -> Result<Vec<my_dtype>, Error>{
 //     let converted = to_cast.into_iter().map(|datum| {num_traits::cast(datum).ok_or(Error::CastError)}).collect();
 //     converted
 // }
 
-fn cast_vec_to_f32<T: Into<my_dtype> + Copy>(res: Vec<T>) -> item_type{
+fn cast_vec_to_f32<T: Into<my_dtype> + Copy>(res: Vec<T>) -> Vec<my_dtype>{
     let data = res.iter().map(|&x| x.into()).collect::<Vec<my_dtype>>();
     data
 }
@@ -73,17 +69,16 @@ impl<R: Read + Seek + 'static> FrameProvider for RefCell<Decoder<R>>{
         let result = self.borrow_mut().read_image().map_err(|_| Error::ReadError)?;
         let out = match result{
             U8(vec) => Ok(cast_vec_to_f32(vec)),
-            U8(vec) => Ok(cast_vec_to_f32(vec)),
             U16(vec) => Ok(cast_vec_to_f32(vec)),
             I8(vec) => Ok(cast_vec_to_f32(vec)),
             I16(vec) => Ok(cast_vec_to_f32(vec)),
             F32(vec) => Ok(cast_vec_to_f32(vec)),
             
-            U32(vec) => Err(Error::CastError)?,
-            U64(vec) => Err(Error::CastError)?,
-            F64(vec) => Err(Error::CastError)?,
-            I32(vec) => Err(Error::CastError)?,
-            I64(vec) => Err(Error::CastError)?,
+            U32(_) => Err(Error::CastError)?,
+            U64(_) => Err(Error::CastError)?,
+            F64(_) => Err(Error::CastError)?,
+            I32(_) => Err(Error::CastError)?,
+            I64(_) => Err(Error::CastError)?,
         };
         out
     }
@@ -120,13 +115,13 @@ impl<R: Read + Seek + 'static> FrameProvider for RefCell<ETSIterator<R>>{
         Ok(out)
     }
 
-    fn len(&self, too_high: Option<usize>) -> usize{
+    fn len(&self, _too_high: Option<usize>) -> usize{
         self.borrow().offsets.len()
     }
 
     fn into_iter(self: Box<Self>) -> Box<dyn Iterator<Item = Result<Self::Frame, Error>>>{
         let mut inner = self.into_inner();
-        inner.seek(0);
+        inner.seek(0).unwrap();
         let out = inner.map(|res_image| {
             res_image.map(|image| {
                 let idk1 = image.iter().map(|&pixel| pixel as f32);
@@ -168,7 +163,7 @@ impl<'a, 'b: 'a> FrameProvider for &'b ArrayView3<'a, my_dtype>{
         Ok(self.index_axis(Axis(0), frame_index))
     }
 
-    fn len(&self, too_high: Option<usize>) -> usize{
+    fn len(&self, _too_high: Option<usize>) -> usize{
         self.shape()[0]
     }
     fn into_iter(self: Box<Self>) -> Box<dyn Iterator<Item = Result<Self::Frame, Error>> + 'a>{
@@ -200,7 +195,7 @@ impl <R: std::io::Read + std::io::Seek> From::<Decoder<R>> for IterDecoder<R>{
 }
 
 impl<R: std::io::Read + std::io::Seek> IterDecoder<R>{
-    fn _treat_data<T: Into<my_dtype> + Copy>(&self, res: Vec<T>) -> item_type{
+    fn _treat_data<T: Into<my_dtype> + Copy>(&self, res: Vec<T>) -> Vec<my_dtype>{
         let data = res.iter().map(|&x| x.into()).collect::<Vec<my_dtype>>();
         data
     }
@@ -217,17 +212,16 @@ impl <R: std::io::Read + std::io::Seek> Iterator for IterDecoder<R>{
         let res = self.decoder.read_image();
         match res{
             Ok(U8(vec)) => Some(Ok(cast_vec_to_f32(vec))),
-            Ok(U8(vec)) => Some(Ok(cast_vec_to_f32(vec))),
             Ok(U16(vec)) => Some(Ok(cast_vec_to_f32(vec))),
             Ok(I8(vec)) => Some(Ok(cast_vec_to_f32(vec))),
             Ok(I16(vec)) => Some(Ok(cast_vec_to_f32(vec))),
             Ok(F32(vec)) => Some(Ok(cast_vec_to_f32(vec))),
             
-            Ok(U32(vec)) => Some(Err(Error::CastError)),
-            Ok(U64(vec)) => Some(Err(Error::CastError)),
-            Ok(F64(vec)) => Some(Err(Error::CastError)),
-            Ok(I32(vec)) => Some(Err(Error::CastError)),
-            Ok(I64(vec)) => Some(Err(Error::CastError)),
+            Ok(U32(_)) => Some(Err(Error::CastError)),
+            Ok(U64(_)) => Some(Err(Error::CastError)),
+            Ok(F64(_)) => Some(Err(Error::CastError)),
+            Ok(I32(_)) => Some(Err(Error::CastError)),
+            Ok(I64(_)) => Some(Err(Error::CastError)),
             Err(_) => return Some(Err(Error::ReadError))
         }
     }
@@ -251,7 +245,7 @@ pub struct MinimalETSParser{//<R: Read + Seek>{
     // pub reader: R,
     pub offsets: HashMap<usize, Vec<Option<u64>>>,
     pub dims: [usize; 2],
-    dataType: ETSDataType,
+    data_type: ETSDataType,
 }
 
 pub enum ETSDataBuffer<'a>{
@@ -312,24 +306,24 @@ impl MinimalETSParser{
         assert_eq!("SIS\x00".as_bytes(), &buf4[..]);
         reader.seek(SeekFrom::Current(8))?;
         let ndimensions = reader.read_u32::<LittleEndian>()?;
-        let additionalHeaderOffset = reader.read_u64::<LittleEndian>()?;
+        let additional_header_offset = reader.read_u64::<LittleEndian>()?;
         reader.seek(SeekFrom::Current(8))?;
-        let usedChunkOffset = reader.read_u64::<LittleEndian>()?;
-        let nUsedChunks = reader.read_u32::<LittleEndian>()?;
+        let used_chunk_offset = reader.read_u64::<LittleEndian>()?;
+        let n_used_chunks = reader.read_u32::<LittleEndian>()?;
         
-        reader.seek(SeekFrom::Start(additionalHeaderOffset.into()))?;
+        reader.seek(SeekFrom::Start(additional_header_offset.into()))?;
         reader.read_exact(&mut buf4)?;
         assert_eq!("ETS\x00".as_bytes(), &buf4[..]);
         reader.seek(SeekFrom::Current(4))?;
 
-        let dataType = ETSDataType::from_code(reader.read_u32::<LittleEndian>()?);
+        let data_type = ETSDataType::from_code(reader.read_u32::<LittleEndian>()?);
 
         reader.seek(SeekFrom::Current(16))?;
         let dims = [reader.read_u32::<LittleEndian>()? as usize, reader.read_u32::<LittleEndian>()? as usize];
 
-        reader.seek(SeekFrom::Start(usedChunkOffset))?;
+        reader.seek(SeekFrom::Start(used_chunk_offset))?;
         let mut offsets = HashMap::new();
-        for _ in 0..nUsedChunks{
+        for _ in 0..n_used_chunks{
             reader.seek(SeekFrom::Current(4))?;
             let coord = (0..ndimensions).map(|_| reader.read_u32::<LittleEndian>().unwrap() as usize).collect::<Vec<_>>();
             let entry = offsets.entry(coord[4]).or_insert(Vec::new());
@@ -350,7 +344,7 @@ impl MinimalETSParser{
             // reader,
             offsets,
             dims,
-            dataType,
+            data_type,
         };
         Ok(parser)
     }
@@ -361,7 +355,7 @@ impl MinimalETSParser{
     // }
 
     pub fn iterate_channel<R: Read + Seek>(&self, reader: R, channel: usize) -> ETSIterator<R>{
-        let read_size = self.dims[0] * self.dims[1] * self.dataType.size();
+        let read_size = self.dims[0] * self.dims[1] * self.data_type.size();
         let offsets = self.offsets.get(&channel).unwrap().clone();
         ETSIterator{
             reader,
