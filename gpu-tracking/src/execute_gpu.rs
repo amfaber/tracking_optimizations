@@ -400,7 +400,15 @@ pub fn column_names(params: &TrackingParams) -> (Vec<(&'static str, &'static str
         names.push(("signal", "float"));
         names.push(("ecc", "float"));
     }
+    
+    if params.doughnut_correction{
+        names.push(("raw_mass", "float"));
+        names.push(("raw_bg_median", "float"));
+        names.push(("raw_mass_corrected", "float"));
+    }
 
+    // duration column HAS TO BE THE LAST, as it is added
+    // in a postprocessing step
     let particle_column = if params.search_range.is_some(){
         names.push(("particle", "int"));
         names.push(("duration", "int"));
@@ -409,14 +417,6 @@ pub fn column_names(params: &TrackingParams) -> (Vec<(&'static str, &'static str
         None
     };
     
-    if params.doughnut_correction{
-        names.push(("raw_mass", "float"));
-        names.push(("raw_bg_median", "float"));
-        names.push(("raw_mass_corrected", "float"));
-    }
-
-    
-    // names.iter().map(|(name, t)| (name.to_string(), t.to_string())).collect()
     (names, particle_column)
 }
 

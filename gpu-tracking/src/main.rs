@@ -77,8 +77,9 @@ fn test_trackpy_easy() -> gpu_tracking::error::Result<()>{
         minmass_snr: Some(0.3),
         // adaptive_background: Some(4),
         characterize: true,
-        illumination_sigma: Some(30.),
+        // illumination_sigma: Some(30.),
         search_range: Some(10.),
+        doughnut_correction: true,
         
         // include_r_in_output: true,
         truncate_preprocessed: true,
