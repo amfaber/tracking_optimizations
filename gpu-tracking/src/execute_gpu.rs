@@ -386,7 +386,8 @@ fn get_work(
     out
 }
 
-pub fn column_names(params: &TrackingParams) -> Vec<(String, String)>{
+pub fn column_names(params: &TrackingParams) -> (Vec<(&'static str, &'static str)>, Option<usize>){
+// pub fn column_names(params: &TrackingParams) -> Vec<(&'static str, &'static str)>{
     let mut names = vec![("frame", "int"), ("y", "float"), ("x", "float"), ("mass", "float")];
 
     if params.include_r_in_output{
@@ -400,9 +401,13 @@ pub fn column_names(params: &TrackingParams) -> Vec<(String, String)>{
         names.push(("ecc", "float"));
     }
 
-    if params.search_range.is_some(){
+    let particle_column = if params.search_range.is_some(){
         names.push(("particle", "int"));
-    }
+        names.push(("duration", "int"));
+        Some(names.len() - 2)
+    } else {
+        None
+    };
     
     if params.doughnut_correction{
         names.push(("raw_mass", "float"));
@@ -411,7 +416,8 @@ pub fn column_names(params: &TrackingParams) -> Vec<(String, String)>{
     }
 
     
-    names.iter().map(|(name, t)| (name.to_string(), t.to_string())).collect()
+    // names.iter().map(|(name, t)| (name.to_string(), t.to_string())).collect()
+    (names, particle_column)
 }
 
 pub struct PostProcessKernels<F1, F2>
@@ -794,7 +800,7 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F>>(
     mut pos_iter: Option<FrameSubsetter>,
     // mut pos_iter: Option<impl Iterator<Item = crate::error::Result<(Option<usize>, Vec<[my_dtype; 2]>)>>>,
     state: &GpuState,
-    ) -> crate::error::Result<(output_type, Vec<(String, String)>)>{
+    ) -> crate::error::Result<(output_type, Vec<(&'static str, &'static str)>)>{
     
     let (circle_inds, middle_most) = kernels::circle_inds((0 as i32 / 2) as f32);
     // let (circle_inds, middle_most) = kernels::circle_inds((tracking_params.diameter as i32 / 2) as f32);
@@ -810,7 +816,7 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F>>(
 
     let send_frame = tracking_params.doughnut_correction;
     
-    let output = std::thread::scope(|scope: &Scope| -> crate::error::Result<Vec<f32>>{
+    let output = std::thread::scope(|scope: &Scope| -> crate::error::Result<(Vec<f32>, Option<Vec<crate::linking::DurationBookkeep>>)>{
         let handle = {
             let neighborhood_size = circle_inds.len();
             let thread_tracking_params = tracking_params.clone();
@@ -849,7 +855,8 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F>>(
                     }
                 }
                 thread_sleep.map(|thread_sleep| println!("Thread sleep: {} s", thread_sleep));
-                Ok(output)
+                let part_durations = linker.map(|linker| linker.finish());
+                Ok((output, part_durations))
             })
         };
         
@@ -1065,49 +1072,36 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F>>(
         handle.join()
             .map_err(|err| crate::error::Error::ThreadError)?
     });
+    
+    let now = std::time::Instant::now();
+    
+    let (output, part_durations) = output?;
+    let (col_names, particle_column) = column_names(tracking_params);
+    let output = match (part_durations, particle_column){
+        (Some(durations), Some(particle_column)) => {
+            let n_parts = output.len()/(col_names.len() - 1);
+            let mut new_output = Vec::with_capacity(n_parts * col_names.len());
+            for chunk in output.chunks_exact(col_names.len() - 1){
+                new_output.extend_from_slice(chunk);
+                new_output.push(
+                    durations[chunk[particle_column] as usize].duration as f32
+                )
+            }
+            new_output
+        },
+        (None, None) => {
+            output
+        }
+        _ => {
+            panic!("this should never happen")
+        }
+    };
+    let elapsed = now.elapsed().as_micros();
+    // dbg!(output.len());
+    // dbg!(elapsed);
 
-    Ok((output?, column_names(tracking_params)))
+    Ok((output, col_names))
 }
-
-// pub fn sequential_execute<A: IntoSlice + Send, T: Iterator<Item = A>>(
-//     mut frames: T,
-//     dims: &[u32; 2],
-//     tracking_params: TrackingParams,
-//     debug: bool,
-//     verbosity: u32,
-//     ) -> (output_type, Vec<(String, String)>){
-//     let state = gpu_setup::setup_state(&tracking_params, dims, debug, false);
-    
-//     let staging_buffer = &state.staging_buffers()[0];
-//     let mut output = Vec::new();
-    
-//     let mut linker = tracking_params.search_range.map(|search_range| {
-//         Linker::new(search_range, tracking_params.memory.unwrap_or(0))
-//     });
-//     for (frame_index, frame) in frames.enumerate(){
-//         let frame = frame.into_slice();
-//         let submission = submit_work(frame, staging_buffer, &state, &tracking_params, debug, None);
-//         let (results, frame_index) = get_work(staging_buffer, &state, &tracking_params, submission, &mut None, frame_index, debug, None, &vec![], &dims).unwrap();
-        
-//         if debug{
-//             let buffer_slice = state.buffers.processed_buffer.slice(..);
-//             buffer_slice.map_async(wgpu::MapMode::Read, |_| {});
-//             state.device().poll(wgpu::Maintain::Wait);
-//             let data = buffer_slice.get_mapped_range();
-//             // let dataf32 = bytemuck::cast_slice::<u8, f32>(&data[..]);
-//             let image = data[..].to_vec();
-//             std::fs::OpenOptions::new().write(true).create(true).open("debug_image.bin").unwrap().write_all(&image).unwrap();
-//             // .unwrap().write_all(bytemuck::cast_slice(&image)).unwrap();
-//             drop(data);
-//             state.buffers.processed_buffer.unmap();
-//         }
-
-//         post_process::<A>(results, &mut output, frame_index, debug, linker.as_mut(), None, 0, None, 0, None, dims, &tracking_params)
-
-//     }
-//     let names = column_names(tracking_params);
-//     (output, names)
-// }
 
 
 pub fn execute_ndarray<'a>(
@@ -1116,14 +1110,10 @@ pub fn execute_ndarray<'a>(
     debug: bool,
     verbosity: u32,
     pos_array: Option<(ArrayView2<'a, my_dtype>, bool, bool)>,
-    ) -> crate::error::Result<(Array2<my_dtype>, Vec<(String, String)>)> {
+    ) -> crate::error::Result<(Array2<my_dtype>, Vec<(&'static str, &'static str)>)> {
     if !array.is_standard_layout(){
         return Err(crate::error::Error::NonStandardArrayLayout)
     }
-    // let scuffed = crate::decoderiter::scuffed_array{
-    //     stride: array.shape()[1] * array.shape()[2],
-    //     data: array.as_slice().unwrap(),
-    // };
     let axisiter = array.axis_iter(ndarray::Axis(0));
     let dims_usize = array.shape();
     let dims = [dims_usize[1] as u32, dims_usize[2] as u32];
@@ -1220,7 +1210,7 @@ pub fn execute_file<'a>(
     verbosity: u32,
     pos_array: Option<(ArrayView2<'a, my_dtype>, bool, bool)>,
     // mut pos_iter: Option<impl Iterator<Item = (usize, Vec<[my_dtype; 2]>)>>,
-    ) -> crate::error::Result<(Array2<my_dtype>, Vec<(String, String)>)> {
+    ) -> crate::error::Result<(Array2<my_dtype>, Vec<(&'static str, &'static str)>)> {
     // let path = Path::new(&path);
     let path = PathBuf::from(path);
     let ext = path.extension()
@@ -1264,76 +1254,3 @@ pub fn execute_file<'a>(
     Ok((res, column_names))
 }
 
-// pub fn execute_file(
-//     path: &str,
-//     channel: Option<usize>,
-//     params: TrackingParams,
-//     debug: bool,
-//     verbosity: u32,
-//     mut pos_iter: Option<impl Iterator<Item = (usize, Vec<[my_dtype; 2]>)>>,
-//     ) -> (Array2<my_dtype>, Vec<(String, String)>) {
-//     let path = Path::new(path);
-//     let ext = path.extension().unwrap().to_ascii_lowercase();
-//     let mut file = File::open(path).expect("Could not open file");
-//     // dbg!(path);
-//     let (res, column_names) = match ext.to_str().unwrap() {
-//         "tif" | "tiff" => {
-//             // let file = File::open(path).expect("Could not open file");
-//             // panic!("custom panic");
-//             let mut decoder = Decoder::new(file).unwrap();
-//             let (width, height) = decoder.dimensions().unwrap();
-//             let dims = [height, width];
-//             let iterator = IterDecoder::from(decoder);
-//             // let n_frames = if debug {1} else {usize::MAX};
-//             // let iterator = iterator.take(n_frames);
-//             let mut state = gpu_setup::setup_state(&params, &dims, debug, pos_iter.is_some());
-
-//             if params.illumination_sigma.is_some(){
-//                 let mut file = File::open(path).expect("Could not open file");
-//                 let mut decoder = Decoder::new(file).unwrap();
-//                 let iterator = IterDecoder::from(decoder);
-//                 setup_illumination_profile(iterator, &dims, &params, &mut state);
-//             }
-            
-//             let (res, column_names) = 
-//                 // if debug {
-//                 //     sequential_execute(iterator, &dims, params, debug, verbosity)
-//                 // } else {
-//                     execute_gpu(iterator, &dims, &params, debug, verbosity, pos_iter, &state);
-//                 // };
-//             (res, column_names)
-//         },
-//         "ets" => {
-//             let parser = decoderiter::MinimalETSParser::new(&mut file).unwrap();
-//             let dims = [parser.dims[0] as u32, parser.dims[1] as u32];
-//             let iterator = parser.iterate_channel(
-//                 file, channel.unwrap_or(0))
-//                 .flatten().map(|vec| vec.into_iter().map(|x| x as f32).collect::<Vec<_>>());
-//             // let n_frames = if debug {1} else {usize::MAX};
-//             // let iterator = iterator.take(n_frames);
-//             let mut state = gpu_setup::setup_state(&params, &dims, debug, pos_iter.is_some());
-//             if params.illumination_sigma.is_some(){
-//                 let mut file = File::open(path).expect("Could not open file");
-//                 let parser = decoderiter::MinimalETSParser::new(&mut file).unwrap();
-//                 let iterator = parser.iterate_channel(
-//                     file, channel.unwrap_or(0))
-//                     .flatten().map(|vec| vec.into_iter().map(|x| x as f32).collect::<Vec<_>>());
-//                 setup_illumination_profile(iterator, &dims, &params, &mut state);
-//             }
-//             let (res, column_names) = 
-//                 // if debug{
-//                 //     sequential_execute(iterator, &dims, params, debug, verbosity)
-//                 // } else{
-//                     execute_gpu(iterator, &dims, &params, debug, verbosity, pos_iter, &state);
-//                 // };
-//             (res, column_names)
-//         },
-//         _ => panic!("File extension '{}' not supported", ext.to_str().unwrap()),
-//     };
-
-//     let res_len = res.len();
-//     let shape = (res_len / column_names.len(), column_names.len());
-//     let res = Array2::from_shape_vec(shape, res)
-//         .expect(format!("Could not convert to ndarray. Shape is ({}, {}) but length is {}", shape.0, shape.1, &res_len).as_str());
-//     (res, column_names)
-// }

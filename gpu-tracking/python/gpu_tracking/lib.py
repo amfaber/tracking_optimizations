@@ -52,6 +52,8 @@ def characterize_points(
         if has_r is None:
             has_r = False
         points_arr = points_to_characterize[cols].to_numpy().astype("float32")
+    else:
+        points_arr = points_to_characterize
 
     if diameter is None:
         if has_r:
