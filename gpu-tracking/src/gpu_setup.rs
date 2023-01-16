@@ -57,6 +57,7 @@ pub struct TrackingParams{
     pub keys: Option<Vec<usize>>,
     pub noise_size: f32,
     pub smoothing_size: Option<u32>,
+    pub illumination_correction_per_frame: bool,
     // pub keys: Cell<Option<Vec<usize>>>,
 }
 
@@ -82,6 +83,7 @@ impl Default for TrackingParams{
             keys: None,
             noise_size: 1.,
             smoothing_size: None,
+            illumination_correction_per_frame: false,
             style: ParamStyle::Trackpy{
                 diameter: 9,
                 threshold: 0.0,
@@ -555,12 +557,15 @@ pub fn setup_state(
     desc.limits.max_push_constant_size = 16;
     desc.limits.max_storage_buffers_per_shader_stage = 12;
     // desc.limits.max_compute_invocations_per_workgroup = 1024;
+    // desc.limits.max_compute_workgroup_size_x = 1024;
     let (device, queue) = adapter
     .request_device(&desc, None)
     .block_on()?;
     
     
+    // let workgroup_size2d = [32u32, 32, 1];
     let workgroup_size2d = [16u32, 16, 1];
+    // let workgroup_size1d = [1024u32, 1, 1];
     let workgroup_size1d = [256u32, 1, 1];
 
     // let n_workgroups = |dims: &[u32; 3], wgsize: &[u32; 3]| { 

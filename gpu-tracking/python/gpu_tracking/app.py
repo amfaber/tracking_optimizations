@@ -59,6 +59,7 @@ def plotter(
     minmass_snr,
     truncate_preprocessed,
     illumination_sigma,
+    illumination_correction_per_frame,
     adaptive_background,
 
     **kwargs
@@ -85,6 +86,7 @@ def plotter(
         minmass_snr = minmass_snr,
         truncate_preprocessed = truncate_preprocessed,
         illumination_sigma = illumination_sigma,
+        illumination_correction_per_frame = illumination_correction_per_frame,
         adaptive_background = adaptive_background,
     )
     command = "gpu_tracking."
@@ -202,7 +204,7 @@ def create_element(idx):
             *create_input("bg_radius", idx),
             *create_input("gap_radius", idx),
             # *create_input("truncate_preprocessed", idx),
-            dcc.Checklist(["truncate_preprocessed"], value = ["truncate_preprocessed"], id = {"type": "truncate_preprocessed", "index": idx}, style = {"display": "inline-block"}),
+            dcc.Checklist(["truncate_preprocessed", "illumination_correction_per_frame"], value = ["truncate_preprocessed"], id = {"type": "shared_toggles", "index": idx}, style = {"display": "inline-block"}),
             *create_input("illumination_sigma", idx),
             *create_input("adaptive_background", idx),
             *create_input("noise_size", idx),
@@ -348,7 +350,7 @@ def set_color_opt_visibility(color_options_toggle_value):
     State({"type": "gap_radius", "index": MATCH}, "value"),
     State({"type": "Peak SNR", "index": MATCH}, "value"),
     State({"type": "Area SNR", "index": MATCH}, "value"),
-    State({"type": "truncate_preprocessed", "index": MATCH}, "value"),
+    State({"type": "shared_toggles", "index": MATCH}, "value"),
     State({"type": "illumination_sigma", "index": MATCH}, "value"),
     State({"type": "adaptive_background", "index": MATCH}, "value"),
 )
@@ -383,7 +385,7 @@ def modify(
     gap_radius,
     snr,
     minmass_snr,
-    truncate_preprocessed,
+    shared_toggles,
     illumination_sigma,
     adaptive_background,
 
@@ -402,10 +404,12 @@ def modify(
     else:
         filter_close = "filter_close" in filter_close
 
-    if truncate_preprocessed is None:
+    if shared_toggles is None:
         truncate_preprocessed = False
+        illumination_correction_per_frame = False
     else:
-        truncate_preprocessed = "truncate_preprocessed" in truncate_preprocessed
+        truncate_preprocessed = "truncate_preprocessed" in shared_toggles
+        illumination_correction_per_frame = "illumination_correction_per_frame" in shared_toggles
     if log_spacing is None:
         log_spacing = False
     else:
@@ -439,6 +443,7 @@ def modify(
         minmass_snr,
         truncate_preprocessed,
         illumination_sigma,
+        illumination_correction_per_frame,
         adaptive_background,
 
         circle_color = circle_color["hex"],

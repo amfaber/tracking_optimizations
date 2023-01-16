@@ -90,12 +90,6 @@ fn submit_work(
     // frame_idx: usize,
     ) -> SubmissionIndex {
     
-    // let mean = frame.iter().sum::<f32>() / frame.len() as f32;
-    // let var: f32 = frame.iter().map(|datum| {(datum - mean).powi(2)}).sum::<f32>() / frame.len() as f32;
-    // let mean = frame.par_iter().sum::<f32>() / frame.len() as f32;
-    // let var: f32 = frame.par_iter().map(|datum| {(datum - mean).powi(2)}).sum::<f32>() / frame.len() as f32;
-    // let s = var.sqrt();
-    
     let common_buffers = &state.common_buffers;
 
     let mut encoder =
@@ -110,9 +104,17 @@ fn submit_work(
         &common_buffers.counter_buffer, 0, common_buffers.counter_buffer.size());
 
     if tracking_params.illumination_sigma.is_some(){
-        if !state.common_buffers.illumination_correcter.as_ref().unwrap().initialized{
-            panic!("Tried to correct illumination profile without initializing the gpu-side buffer")
+        if tracking_params.illumination_correction_per_frame{
+            encoder.copy_buffer_to_buffer(&common_buffers.frame_buffer, 0,
+                &common_buffers.illumination_correcter.as_ref().unwrap().buffer, 0, state.pic_byte_size);
+            let sigma = tracking_params.illumination_sigma.unwrap();
+            common_buffers.illumination_correcter.as_ref().unwrap().pass.execute(&mut encoder, bytemuck::cast_slice(&[sigma, 1.0]));
+            // state.common_buffers.illumination_correcter.as_mut().unwrap().initialized = true;
+            // common_buffers.illumination_correcter.as_ref().unwrap().pass.execute(&mut encoder, );
         }
+        // if !state.common_buffers.illumination_correcter.as_ref().unwrap().initialized{
+        //     panic!("Tried to correct illumination profile without initializing the gpu-side buffer")
+        // }
         state.passes["correct_illumination"][0].execute(&mut encoder, bytemuck::cast_slice(&[state.pic_size as u32]));
     }
 
@@ -540,20 +542,7 @@ fn prune_blobs_log(results: &Vec<ResultRow>, overlap_threshold: my_dtype) -> Vec
                 None => continue,
             };
             let overlap = blob_overlap(query, neighbor, distance2.sqrt());
-            // if (query.x == 125.241486) & (neighbor.x == 132.784637){
-            //     dbg!(query.r);
-            //     dbg!(neighbor.r);
-            //     dbg!(distance2.sqrt());
-            //     dbg!(overlap);
-            //     dbg!(overlap_threshold);
-            //     dbg!(overlap > overlap_threshold);
-            // }
             if overlap > overlap_threshold{
-                // if query.r > neighbor.r{
-                //     to_keep[neighbor_idx] = None
-                // } else {
-                //     to_keep[idx] = None
-                // }
                 to_keep[neighbor_idx] = None //Since the array has been sorted before calling the function we can be sure that we are setting the
                 // blob with the smallest r (with mass as tiebreaker) to None
             }
@@ -742,50 +731,19 @@ pub fn mean_from_iter<A: IntoSlice, T: Iterator<Item = Result<A>>>(mut iter: T, 
 
 pub fn setup_illumination_profile(
     mean_frame: Array2<my_dtype>,
-    // dims: &[u32; 2],
     tracking_params: &TrackingParams,
     state: &mut GpuState,
     ){
     
     let mut encoder = state.device.create_command_encoder(&Default::default());
-
-    // let mut zipiter = frames.zip(state.common_buffers.staging_buffers.iter().cycle());
-    // let (frame, staging_buffer) = zipiter.next().unwrap();
-    
     let staging_buffer = &state.common_buffers.staging_buffers[0];
     let target_buffer = &state.common_buffers.illumination_correcter.as_ref().unwrap().buffer;
     state.queue.write_buffer(staging_buffer, 0, bytemuck::cast_slice(mean_frame.into_slice()));
     encoder.copy_buffer_to_buffer(staging_buffer, 0, target_buffer, 0, state.pic_byte_size);
     let sigma = tracking_params.illumination_sigma.unwrap();
     state.common_buffers.illumination_correcter.as_ref().unwrap().pass.execute(&mut encoder, bytemuck::cast_slice(&[sigma, 1.0]));
-    // state.passes["sum_frames"][0].execute(&mut encoder, bytemuck::cast_slice(&[state.pic_size as u32]));
     state.queue.submit(Some(encoder.finish()));
     
-    // let mut total_n_frames = 1f32;
-    // for (frame, staging_buffer) in zipiter{
-    //     let mut encoder = state.device.create_command_encoder(&Default::default());
-    //     state.queue.write_buffer(staging_buffer, 0, bytemuck::cast_slice(frame.into_slice()));
-    //     encoder.copy_buffer_to_buffer(staging_buffer, 0, &state.common_buffers.frame_buffer, 0, state.pic_byte_size);
-    //     state.passes["sum_frames"][0].execute(&mut encoder, bytemuck::cast_slice(&[state.pic_size]));
-    //     state.queue.submit(Some(encoder.finish()));
-    //     state.device.poll(wgpu::Maintain::Wait);
-    //     total_n_frames += 1.0;
-    // }
-    // let mut encoder = state.device.create_command_encoder(&Default::default());
-    // let to_print = vec![
-    //      &state.common_buffers.illumination_correcter.as_ref().unwrap().buffer,
-    // ];
-    // dbg!("in here 0");
-    // fs::write("testing/mean_pic/shape0.dump", bytemuck::cast_slice(&[state.dims[0], state.dims[1], 0]));
-    // inspect_buffers(
-    //     &to_print[..],
-    //     staging_buffer,
-    //     &state.queue,
-    //     &mut encoder,
-    //     &state.device,
-    //     "testing/mean_pic",
-    // );
-    // state.queue.submit(Some(encoder.finish()));
     state.common_buffers.illumination_correcter.as_mut().unwrap().initialized = true;
 }
 
@@ -1127,7 +1085,7 @@ pub fn execute_ndarray<'a>(
 
     let mut state = gpu_setup::setup_state(&params, &dims, pos_iter.is_some())?;
     
-    if params.illumination_sigma.is_some(){
+    if params.illumination_sigma.is_some() && !params.illumination_correction_per_frame{
         let axisiter = array.axis_iter(ndarray::Axis(0)).map(|x| Ok(x));
         let mean_array = mean_from_iter(axisiter, &dims)?;
         setup_illumination_profile(mean_array, &params, &mut state);
@@ -1220,7 +1178,7 @@ pub fn execute_file<'a>(
     };
     let mut state = gpu_setup::setup_state(&params, &dims, pos_iter.is_some())?;
 
-    if params.illumination_sigma.is_some(){
+    if params.illumination_sigma.is_some() && !params.illumination_correction_per_frame{
         let (provider, dims) = path_to_iter(&path, None)?;
         // let iter = (0..)
         //     .map(|i| provider.get_frame(i))

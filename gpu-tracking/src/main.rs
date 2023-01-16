@@ -54,25 +54,25 @@ fn test_trackpy_easy() -> gpu_tracking::error::Result<()>{
     // let dims = [height, width];
     // let mut decoderiter = IterDecoder::from(decoder).take(10);
     let params = TrackingParams {
-        style: ParamStyle::Trackpy {
-            separation: 10,
-            diameter: 9,
-            maxsize: 0.0,
-            threshold: 0.0,
-            invert: false,
-            percentile: 0.,
-            topn: 0,
-            preprocess: true,
-            filter_close: true,
-        },
-        noise_size: 1.,
-        // style: ParamStyle::Log{
-        //     min_radius: 3.0,
-        //     max_radius: 25.0,
-        //     log_spacing: true,
-        //     overlap_threshold: 0.5,
-        //     n_radii: 10,
+        // style: ParamStyle::Trackpy {
+        //     separation: 10,
+        //     diameter: 9,
+        //     maxsize: 0.0,
+        //     threshold: 0.0,
+        //     invert: false,
+        //     percentile: 0.,
+        //     topn: 0,
+        //     preprocess: true,
+        //     filter_close: true,
         // },
+        noise_size: 1.,
+        style: ParamStyle::Log{
+            min_radius: 3.0,
+            max_radius: 25.0,
+            log_spacing: true,
+            overlap_threshold: 0.5,
+            n_radii: 10,
+        },
         snr: Some(1.5),
         minmass_snr: Some(0.3),
         // adaptive_background: Some(4),
@@ -83,6 +83,7 @@ fn test_trackpy_easy() -> gpu_tracking::error::Result<()>{
         
         // include_r_in_output: true,
         truncate_preprocessed: true,
+        keys: Some(vec![0, 1, 2, 3, 4, 5]),
         ..Default::default()
     };
     let now = Instant::now();
@@ -119,39 +120,6 @@ fn test_trackpy_easy() -> gpu_tracking::error::Result<()>{
 }
 
 fn main(){
-// fn main() -> gpu_tracking::error::Result<()>{
-    // let idk = std::fs::File::open(r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\testing\hard_test_data.tif").unwrap();
-    // let decoder = RefCell::new(Decoder::new(idk).unwrap());
-    // let first = decoder.get_frame(0).unwrap();
-    // let second = decoder.get_frame(1).unwrap();
-    // let total_n_frames: Result<Vec<_>, _> = (0..).map(|i| decoder.get_frame(i).map(|inner| (i, inner))).take_while(|res| !matches!(res, Err(GetFrameError::OutOfBounds))).collect();
-    // dbg!(total_n_frames);
-    // dbg!(first.len());
-    // dbg!(second.len());
-    // let now = Instant::now();
-    // let (provider, dims) = path_to_iter(r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\testing\hard_test_data.tif", None).unwrap();
-
-    // dbg!(provider.get_frame(500).is_ok());
-    // for i in (5000..30000){
-    //     let len = provider.len(Some(i));
-    //     if len != 5000{
-    //         println!("{} {}", i, len);
-    //     }
-    // }
-    // let provider = RefCell::new(Decoder::new(file).unwrap());
-    
-    // let iter = (0..)
-        // .map(|i| provider.get_frame(i))
-        // .take_while(|res| !matches!(res, Err(gpu_tracking::error::Error::FrameOOB)));
-
-    // let iter: IterDecoder<_> = Decoder::new(file).unwrap().into();
-    // let iter = provider.into_iter();
-    
-    // dbg!(iter.count());
-    // dbg!(now.elapsed().as_nanos() as f64 / 1_000_000_000.);
-    // let idk = provider.get_frame(0).unwrap();
-    // dbg!(idk.len());
-    
     dbg!(test_trackpy_easy());
 }
 

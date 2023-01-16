@@ -79,6 +79,7 @@ macro_rules! make_args {
             shift_threshold: Option<my_dtype>,
             linker_reset_points: Option<Vec<usize>>,
             keys: Option<Vec<usize>>,
+            illumination_correction_per_frame: Option<bool>,
             
             $($postargs)*
         ) -> $outtype {
@@ -105,6 +106,7 @@ macro_rules! make_args {
             let shift_threshold = shift_threshold.unwrap_or(0.6);
 
             let doughnut_correction = doughnut_correction.unwrap_or(false);
+            let illumination_correction_per_frame = illumination_correction_per_frame.unwrap_or(false);
             
             let illumination_sigma = match illumination_sigma{
                 Some(val) => Some(val),
@@ -152,6 +154,7 @@ macro_rules! make_args {
                 keys,
                 noise_size,
                 smoothing_size,
+                illumination_correction_per_frame,
             };
             $body
         }
@@ -193,6 +196,7 @@ macro_rules! make_log_args {
             shift_threshold: Option<my_dtype>,
             linker_reset_points: Option<Vec<usize>>,
             keys: Option<Vec<usize>>,
+            illumination_correction_per_frame: Option<bool>,
             
             $($postargs)*
         ) -> $outtype {
@@ -200,7 +204,7 @@ macro_rules! make_log_args {
             
             let n_radii = n_radii.unwrap_or(10);
             let log_spacing = log_spacing.unwrap_or(false);
-            let overlap_threshold = overlap_threshold.unwrap_or(1.);
+            let overlap_threshold = overlap_threshold.unwrap_or(0.);
 
             let minmass = minmass.unwrap_or(0.);
             let max_iterations = max_iterations.unwrap_or(10);
@@ -212,6 +216,7 @@ macro_rules! make_log_args {
             let noise_size = noise_size.unwrap_or(1.0);
             
             let doughnut_correction = doughnut_correction.unwrap_or(false);
+            let illumination_correction_per_frame = illumination_correction_per_frame.unwrap_or(false);
 
             let illumination_sigma = match illumination_sigma{
                 Some(val) => Some(val),
@@ -253,6 +258,7 @@ macro_rules! make_log_args {
                 keys,
                 noise_size,
                 smoothing_size,
+                illumination_correction_per_frame,
             };
             $body
         }
