@@ -1,0 +1,27 @@
+[package]
+name = "egui_demo"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[[bin]]
+name = "test_bin"
+gpu_tracking = { version = "*", path = "../"}
+path = "src/main.rs"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+
+[dependencies]
+chrono = { version = "0.4", features = ["js-sys", "wasmbind"] }
+eframe = { version = "0.20.0", default-features = false, features = ["wgpu"] }
+epaint = { version = "*" }
+egui = { version = "*" }
+bytemuck = { version = "*" }
+emath = { version = "*" }
+gpu-tracking = { version = "*", path = "../"}
+phf = { version = "0.11.1", features = ["macros"] }
+ndarray = "0.15.6"
+anyhow = "1.0.68"

@@ -2,7 +2,7 @@
 // #![allow(const_item_mutation)]
 use kd_tree::{KdPoint, KdTree, KdIndexTree};
 use std::cmp::Ordering;
-use ndarray::ArrayView2;
+use ndarray::{ArrayView2, Array2, Array, Axis, s};
 use kd_tree;
 use std::{collections::{HashMap, HashSet, VecDeque}, iter::FromIterator};
 type float = f32;
@@ -14,6 +14,7 @@ use std::panic;
 pub enum SubsetterOutput{
     Linking(Vec<[float; 2]>),
     Characterization(Vec<ResultRow>),
+    Agnostic(Array2<float>),
 }
 
 impl SubsetterOutput{
@@ -21,6 +22,7 @@ impl SubsetterOutput{
         match self{
             Self::Linking(vec) => vec.len(),
             Self::Characterization(vec) => vec.len(),
+            Self::Agnostic(array) => array.len(),
         }
     }
 }
@@ -29,6 +31,7 @@ impl SubsetterOutput{
 pub enum SubsetterType{
     Linking,
     Characterization,
+    Agnostic,
 }
 
 #[derive(Clone)]
@@ -87,6 +90,7 @@ impl<'a> Iterator for FrameSubsetter<'a>{
         let mut output = match self.ty{
             SubsetterType::Linking => SubsetterOutput::Linking(Vec::new()),
             SubsetterType::Characterization => SubsetterOutput::Characterization(Vec::new()),
+            SubsetterType::Agnostic => SubsetterOutput::Agnostic(Array::zeros((0, self.array.shape()[1]))),
         };
         // let mut output = Vec::new();
         match self.frame_col{
@@ -137,8 +141,10 @@ impl<'a> Iterator for FrameSubsetter<'a>{
                             };
                             vec.push(r_row);
                         },
+                        SubsetterOutput::Agnostic(ref mut array) => {
+                            array.append(Axis(0), self.array.slice(s![self.idx..self.idx+1, ..])).unwrap();
+                        },
                     }
-                    // output.push([self.array[[self.idx, self.positions.0]], self.array[[self.idx, self.positions.1]]]);
                     self.idx += 1;
                 }
             },
@@ -174,9 +180,10 @@ impl<'a> Iterator for FrameSubsetter<'a>{
                             }
                         }
                     },
+                    SubsetterOutput::Agnostic(ref mut array) => {
+                        *array = self.array.into_owned()
+                    }
                 }
-                // let out_vec = self.array.rows().into_iter().map(|row| [row[self.positions.0], row[self.positions.1]]).collect();
-                // let out = Some(Ok((None, out_vec)));
                 return Some(Ok((None, output)))
             }
         }

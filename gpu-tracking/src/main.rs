@@ -54,36 +54,36 @@ fn test_trackpy_easy() -> gpu_tracking::error::Result<()>{
     // let dims = [height, width];
     // let mut decoderiter = IterDecoder::from(decoder).take(10);
     let params = TrackingParams {
-        // style: ParamStyle::Trackpy {
-        //     separation: 10,
-        //     diameter: 9,
-        //     maxsize: 0.0,
-        //     threshold: 0.0,
-        //     invert: false,
-        //     percentile: 0.,
-        //     topn: 0,
-        //     preprocess: true,
-        //     filter_close: true,
-        // },
-        noise_size: 1.,
-        style: ParamStyle::Log{
-            min_radius: 3.0,
-            max_radius: 25.0,
-            log_spacing: true,
-            overlap_threshold: 0.5,
-            n_radii: 10,
+        style: ParamStyle::Trackpy {
+            separation: 10,
+            diameter: 9,
+            maxsize: 0.0,
+            threshold: 0.0,
+            invert: false,
+            percentile: 0.,
+            topn: 0,
+            preprocess: true,
+            filter_close: true,
         },
+        noise_size: 1.,
+        // style: ParamStyle::Log{
+        //     min_radius: 3.0,
+        //     max_radius: 25.0,
+        //     log_spacing: true,
+        //     overlap_threshold: 0.5,
+        //     n_radii: 10,
+        // },
         snr: Some(1.5),
         minmass_snr: Some(0.3),
         // adaptive_background: Some(4),
         characterize: true,
-        // illumination_sigma: Some(30.),
+        illumination_sigma: Some(30.),
         search_range: Some(10.),
         doughnut_correction: true,
         
         // include_r_in_output: true,
         truncate_preprocessed: true,
-        keys: Some(vec![0, 1, 2, 3, 4, 5]),
+        // keys: Some(vec![0, 1, 2, 3, 4, 5]),
         ..Default::default()
     };
     let now = Instant::now();

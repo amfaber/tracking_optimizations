@@ -25,10 +25,6 @@ pub trait FrameProvider{
     // fn into_iter(self) -> Box<dyn Iterator<Item = Result<Self::Frame, Error>>>;
 }
 
-pub trait FrameIterBoxed{
-    
-}
-
 impl<F: IntoSlice, I: Iterator<Item = Result<F, Error>>> FrameProvider for Box<dyn FrameProvider<Frame = F, FrameIter = I>>{
     type Frame = F;
     type FrameIter = I;

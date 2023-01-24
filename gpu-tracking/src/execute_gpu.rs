@@ -748,7 +748,7 @@ pub fn setup_illumination_profile(
 }
 
 
-pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F>>(
+pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F> + ?Sized>(
     frames: Box<P>,
     dims: [u32; 2],
     tracking_params: &TrackingParams,
@@ -1057,57 +1057,11 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F>>(
 }
 
 
-pub fn execute_ndarray<'a>(
-    array: &'a ArrayView3<'a, my_dtype>,
-    params: TrackingParams,
-    verbosity: u32,
-    pos_array: Option<(ArrayView2<'a, my_dtype>, bool, bool)>,
-    ) -> crate::error::Result<(Array2<my_dtype>, Vec<(&'static str, &'static str)>)> {
-    if !array.is_standard_layout(){
-        return Err(crate::error::Error::NonStandardArrayLayout)
-    }
-    let dims_usize = array.shape();
-    let dims = [dims_usize[1] as u32, dims_usize[2] as u32];
-    let pos_iter = match pos_array{
-        Some((pos_array, true, true)) => 
-            Some(FrameSubsetter::new(pos_array, Some(0), (1, 2), Some(3), SubsetterType::Characterization)),
-        
-        Some((pos_array, true, false)) => 
-            Some(FrameSubsetter::new(pos_array, Some(0), (1, 2), None, SubsetterType::Characterization)),
-        
-        Some((pos_array, false, true)) => 
-            Some(FrameSubsetter::new(pos_array, None, (0, 1), Some(2), SubsetterType::Characterization)),
-        
-        Some((pos_array, false, false)) => 
-            Some(FrameSubsetter::new(pos_array, None, (0, 1), None, SubsetterType::Characterization)),
-        None => { None }
-    };
-
-    let mut state = gpu_setup::setup_state(&params, &dims, pos_iter.is_some())?;
-    
-    if params.illumination_sigma.is_some() && !params.illumination_correction_per_frame{
-        let axisiter = array.axis_iter(ndarray::Axis(0)).map(|x| Ok(x));
-        let mean_array = mean_from_iter(axisiter, &dims)?;
-        setup_illumination_profile(mean_array, &params, &mut state);
-    }
-    // let idk = &array.view();
-    let (res, column_names) = 
-        // if debug {
-        //     sequential_execute(axisiter, &[dims[1] as u32, dims[2] as u32], params, debug, verbosity)
-        // } else {
-            execute_gpu(Box::new(array), dims.clone(), &params, verbosity, pos_iter, &mut state)?;
-        // };
-    let res_len = res.len();
-    let shape = (res_len / column_names.len(), column_names.len());
-    let res = Array2::from_shape_vec(shape, res)
-        .expect(format!("Could not convert to ndarray. Shape is ({}, {}) but length is {}", shape.0, shape.1, &res_len).as_str());
-    Ok((res, column_names))
-}
 
 pub fn path_to_iter<P: AsRef<std::path::Path>>(path: P, channel: Option<usize>)
     -> crate::error::Result<(
         Box<
-            dyn FrameProvider<Frame = Vec<f32>, FrameIter = impl Iterator<Item = Result<Vec<f32>>>> + 'static>,
+            dyn FrameProvider<Frame = Vec<f32>, FrameIter = Box<dyn Iterator<Item = Result<Vec<f32>>>>> + 'static>,
             [u32; 2]
     )> {
     let path: &Path = path.as_ref();
@@ -1153,15 +1107,12 @@ pub fn path_to_iter<P: AsRef<std::path::Path>>(path: P, channel: Option<usize>)
     Ok((iter, dims))
 }
 
-pub fn execute_file<'a>(
-    path: &String,
-    channel: Option<usize>,
+pub fn execute_provider<'a, F: IntoSlice + Send, P: FrameProvider<Frame = F> + ?Sized, G: Fn() -> Result<(Box<P>, [u32; 2])>>(
+    provider_generator: G,
     params: TrackingParams,
     verbosity: u32,
     pos_array: Option<(ArrayView2<'a, my_dtype>, bool, bool)>,
     ) -> crate::error::Result<(Array2<my_dtype>, Vec<(&'static str, &'static str)>)> {
-    let path = PathBuf::from(path);
-    let (provider, dims) = path_to_iter(&path, channel)?;
     let pos_iter = match pos_array{
         Some((pos_array, true, true)) => 
             Some(FrameSubsetter::new(pos_array, Some(0), (1, 2), Some(3), SubsetterType::Characterization)),
@@ -1176,20 +1127,21 @@ pub fn execute_file<'a>(
             Some(FrameSubsetter::new(pos_array, None, (0, 1), None, SubsetterType::Characterization)),
         None => { None }
     };
-    let mut state = gpu_setup::setup_state(&params, &dims, pos_iter.is_some())?;
 
+    let (provider, dims) = provider_generator()?;
+    let mut state = gpu_setup::setup_state(&params, &dims, pos_iter.is_some())?;
+    
     if params.illumination_sigma.is_some() && !params.illumination_correction_per_frame{
-        let (provider, dims) = path_to_iter(&path, None)?;
-        // let iter = (0..)
-        //     .map(|i| provider.get_frame(i))
-        //     .take_while(|res| !matches!(res, Err(crate::error::Error::FrameOOB)));
+        // let (provider, dims) = path_to_iter(&path, None)?;
+        let (provider, dims) = provider_generator()?;
         let iter = provider.into_iter();
-        // let iter = (0..).map(|i| provider.get_frame(i).map(|inner| (i, inner))).take_while(|res| !matches!(res, Err(crate::error::Error::FrameOutOfBounds { .. })));
         let mean_frame = mean_from_iter(iter, &dims)?;
         setup_illumination_profile(mean_frame, &params, &mut state);
     }
+
+    
     let (res, column_names) = 
-            execute_gpu(Box::new(provider), dims, &params, verbosity, pos_iter, &mut state)?;
+            execute_gpu(provider, dims, &params, verbosity, pos_iter, &mut state)?;
     let res_len = res.len();
     let shape = (res_len / column_names.len(), column_names.len());
     let res = Array2::from_shape_vec(shape, res)
@@ -1197,3 +1149,97 @@ pub fn execute_file<'a>(
     Ok((res, column_names))
 }
 
+pub fn execute_file<'a>(
+    path: &String,
+    channel: Option<usize>,
+    params: TrackingParams,
+    verbosity: u32,
+    pos_array: Option<(ArrayView2<'a, my_dtype>, bool, bool)>,
+    ) -> crate::error::Result<(Array2<my_dtype>, Vec<(&'static str, &'static str)>)> {
+    let path = PathBuf::from(path);
+    let generator = || path_to_iter(&path, channel);
+    
+    execute_provider(generator, params, verbosity, pos_array)
+    // let pos_iter = match pos_array{
+    //     Some((pos_array, true, true)) => 
+    //         Some(FrameSubsetter::new(pos_array, Some(0), (1, 2), Some(3), SubsetterType::Characterization)),
+        
+    //     Some((pos_array, true, false)) => 
+    //         Some(FrameSubsetter::new(pos_array, Some(0), (1, 2), None, SubsetterType::Characterization)),
+        
+    //     Some((pos_array, false, true)) => 
+    //         Some(FrameSubsetter::new(pos_array, None, (0, 1), Some(2), SubsetterType::Characterization)),
+        
+    //     Some((pos_array, false, false)) => 
+    //         Some(FrameSubsetter::new(pos_array, None, (0, 1), None, SubsetterType::Characterization)),
+    //     None => { None }
+    // };
+    // let mut state = gpu_setup::setup_state(&params, &dims, pos_iter.is_some())?;
+
+    // if params.illumination_sigma.is_some() && !params.illumination_correction_per_frame{
+    //     let (provider, dims) = path_to_iter(&path, None)?;
+    //     // let iter = (0..)
+    //     //     .map(|i| provider.get_frame(i))
+    //     //     .take_while(|res| !matches!(res, Err(crate::error::Error::FrameOOB)));
+    //     let iter = provider.into_iter();
+    //     // let iter = (0..).map(|i| provider.get_frame(i).map(|inner| (i, inner))).take_while(|res| !matches!(res, Err(crate::error::Error::FrameOutOfBounds { .. })));
+    //     let mean_frame = mean_from_iter(iter, &dims)?;
+    //     setup_illumination_profile(mean_frame, &params, &mut state);
+    // }
+    // let (res, column_names) = 
+    //         execute_gpu(Box::new(provider), dims, &params, verbosity, pos_iter, &mut state)?;
+    // let res_len = res.len();
+    // let shape = (res_len / column_names.len(), column_names.len());
+    // let res = Array2::from_shape_vec(shape, res)
+    //     .expect(format!("Could not convert to ndarray. Shape is ({}, {}) but length is {}", shape.0, shape.1, &res_len).as_str());
+    // Ok((res, column_names))
+}
+
+pub fn execute_ndarray<'a>(
+    array: &'a ArrayView3<'a, my_dtype>,
+    params: TrackingParams,
+    verbosity: u32,
+    pos_array: Option<(ArrayView2<'a, my_dtype>, bool, bool)>,
+    ) -> crate::error::Result<(Array2<my_dtype>, Vec<(&'static str, &'static str)>)> {
+    if !array.is_standard_layout(){
+        return Err(crate::error::Error::NonStandardArrayLayout)
+    }
+    let dims_usize = array.shape();
+    let dims = [dims_usize[1] as u32, dims_usize[2] as u32];
+    let generator = move || Ok((Box::new(array), dims));
+    execute_provider(generator, params, verbosity, pos_array)
+    // let pos_iter = match pos_array{
+    //     Some((pos_array, true, true)) => 
+    //         Some(FrameSubsetter::new(pos_array, Some(0), (1, 2), Some(3), SubsetterType::Characterization)),
+        
+    //     Some((pos_array, true, false)) => 
+    //         Some(FrameSubsetter::new(pos_array, Some(0), (1, 2), None, SubsetterType::Characterization)),
+        
+    //     Some((pos_array, false, true)) => 
+    //         Some(FrameSubsetter::new(pos_array, None, (0, 1), Some(2), SubsetterType::Characterization)),
+        
+    //     Some((pos_array, false, false)) => 
+    //         Some(FrameSubsetter::new(pos_array, None, (0, 1), None, SubsetterType::Characterization)),
+    //     None => { None }
+    // };
+
+    // let mut state = gpu_setup::setup_state(&params, &dims, pos_iter.is_some())?;
+    
+    // if params.illumination_sigma.is_some() && !params.illumination_correction_per_frame{
+    //     let axisiter = array.axis_iter(ndarray::Axis(0)).map(|x| Ok(x));
+    //     let mean_array = mean_from_iter(axisiter, &dims)?;
+    //     setup_illumination_profile(mean_array, &params, &mut state);
+    // }
+    // // let idk = &array.view();
+    // let (res, column_names) = 
+    //     // if debug {
+    //     //     sequential_execute(axisiter, &[dims[1] as u32, dims[2] as u32], params, debug, verbosity)
+    //     // } else {
+    //         execute_gpu(Box::new(array), dims.clone(), &params, verbosity, pos_iter, &mut state)?;
+    //     // };
+    // let res_len = res.len();
+    // let shape = (res_len / column_names.len(), column_names.len());
+    // let res = Array2::from_shape_vec(shape, res)
+    //     .expect(format!("Could not convert to ndarray. Shape is ({}, {}) but length is {}", shape.0, shape.1, &res_len).as_str());
+    // Ok((res, column_names))
+}
