@@ -26,7 +26,7 @@ impl ColorMap for [f32; 120]{
         let end = color_view[ind + 1];
         let mut out = [0; 4];
         for ((o, s), e) in out.iter_mut().zip(start.iter()).zip(end.iter()){
-            *o = ((s + t * (e - s)) * 255.) as u8;
+            *o = ((s + leftover * (e - s)) * 255.) as u8;
         }
         epaint::Color32::from_rgba_unmultiplied(out[0], out[1], out[2], out[3])
     }
@@ -77,14 +77,51 @@ pub struct Custom3d {
 
     line_cmap: [f32; 120],
     line_cmap_end: f32,
+
+    zoom_box_start: Option<egui::Pos2>,
+}
+
+enum FrameChange{
+    Next,
+    Previous,
+}
+
+impl FrameChange{
+    fn from_scroll(scroll: egui::Vec2) -> Option<Self>{
+        match scroll.y.partial_cmp(&0.0){
+            Some(std::cmp::Ordering::Equal) | None => {
+                None
+            },
+            Some(std::cmp::Ordering::Greater) => {
+                Some(Self::Next)
+            },
+            Some(std::cmp::Ordering::Less) => {
+                Some(Self::Previous)
+            }
+        }
+    }
+}
+
+fn normalize_rect(rect: egui::Rect) -> egui::Rect {
+    let min = egui::Pos2{
+        x: std::cmp::min_by(rect.min.x, rect.max.x, |a: &f32, b: &f32| a.partial_cmp(b).unwrap()),
+        y: std::cmp::min_by(rect.min.y, rect.max.y, |a: &f32, b: &f32| a.partial_cmp(b).unwrap()),
+    };
+    let max = egui::Pos2{
+        x: std::cmp::max_by(rect.min.x, rect.max.x, |a: &f32, b: &f32| a.partial_cmp(b).unwrap()),
+        y: std::cmp::max_by(rect.min.y, rect.max.y, |a: &f32, b: &f32| a.partial_cmp(b).unwrap()),
+    };
+    egui::Rect{min, max}
 }
 
 impl Custom3d {
     pub fn new<'a>(cc: &'a eframe::CreationContext<'a>) -> Option<Self> {
         // Get the WGPU render state from the eframe creation context. This can also be retrieved
         // from `eframe::Frame` when you don't have a `CreationContext` available.
-        let mode = DataMode::Range(0..=100);
-        let path = r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\testing\easy_test_data.tif";
+        let mode = DataMode::Range(0..=1000);
+        // let mode = DataMode::Full;
+        let path = r"../testing/easy_test_data.tif";
+        // let path = r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\testing\easy_test_data.tif";
         let generator = || gpu_tracking::execute_gpu::path_to_iter(path, None);
         let wgpu_render_state = cc.wgpu_render_state.as_ref().unwrap();
         let (provider, dims) = generator().unwrap();
@@ -128,7 +165,9 @@ impl Custom3d {
             particle_col: None,
 
             line_cmap,
-            line_cmap_end: 100.,
+            line_cmap_end: 1000.,
+
+            zoom_box_start: None,
         };
         out.recalculate();
         Some(out)
@@ -147,13 +186,17 @@ impl eframe::App for Custom3d {
                         ui.hyperlink_to("WGPU", "https://wgpu.rs");
                         ui.label(" (Portable Rust graphics API awesomeness)");
                     });
-                    ui.label("It's not a very impressive demo, but it shows you can embed 3D inside of egui.");
                     let idk = ui.button("test");
                     if idk.clicked(){
-                        self.next_frame(ui);
+                        self.update_frame(ui, FrameChange::Next);
+                        
                     }
                     egui::Frame::canvas(ui.style()).show(ui, |ui| {
-                        self.custom_painting(ui);
+                        let change = FrameChange::from_scroll(ui.ctx().input().scroll_delta);
+                        // if let Some(change) = { let change = FrameChange::from_scroll(ui.ctx().input().scroll_delta); change }{
+                        //     self.update_frame(ui, change, None)
+                        // }
+                        self.custom_painting(ui, change);
                     });
                     ui.label("Drag to rotate!");
                     // if let Some(time) = self.last_render{
@@ -238,15 +281,28 @@ impl Custom3d {
             }
         });
     }
+
+    fn resize(&mut self, ui: &mut egui::Ui, size: egui::Rect){
+        let cb = egui_wgpu::CallbackFn::new()
+            .prepare(move |_device, queue, _encoder, paint_callback_resources|{
+                let resources: &mut ColormapRenderResources = paint_callback_resources.get_mut().unwrap();
+                resources.resize(queue, &size);
+                Vec::new()
+            });
+        ui.painter().add(egui::PaintCallback{
+            rect: egui::Rect::EVERYTHING,
+            callback: Arc::new(cb),
+        });
+    }
     
-    fn next_frame(&mut self, ui: &mut egui::Ui){
-        self.frame_idx += 1;
-        // match self.mode{
-        //     DataMode::Immediate => {
+    fn update_frame(&mut self, ui: &mut egui::Ui, direction: FrameChange){
+        match direction{
+            FrameChange::Next if self.frame_idx != self.line_cmap_end as usize - 1 => self.frame_idx += 1,
+            FrameChange::Previous if self.frame_idx != 0 => self.frame_idx -= 1,
+            _ => return
+        }
+        self.resize(ui, egui::Rect::from_x_y_ranges(0.0..=0.1, 0.0..=1.0));
         self.recalculate();
-        //     },
-        //     _ => {}
-        // }
         let array = self.frame_provider.as_ref().unwrap().to_array(self.frame_idx);
 
         let cb = egui_wgpu::CallbackFn::new()
@@ -264,9 +320,14 @@ impl Custom3d {
 
     
     
-    fn custom_painting(&mut self, ui: &mut egui::Ui) {
+    fn custom_painting(&mut self, ui: &mut egui::Ui, direction: Option<FrameChange>) {
         let (rect, response) =
             ui.allocate_exact_size(egui::Vec2::splat(600.0), egui::Sense::drag());
+
+        if let Some(direction) = direction{
+            self.update_frame(ui, direction);
+        }
+        
 
         let cb = egui_wgpu::CallbackFn::new()
             .paint(move |_info, render_pass, paint_callback_resources| {
@@ -279,12 +340,13 @@ impl Custom3d {
             callback: Arc::new(cb),
         };
 
+        ui.painter().add(callback);
+
         let databounds = egui::Rect::from_x_y_ranges(
             0.0..=(self.frame_provider.as_ref().unwrap().0.1[0] - 1) as f32,
             0.0..=(self.frame_provider.as_ref().unwrap().0.1[1] - 1) as f32,
         );
         
-        ui.painter().add(callback);
         
         let circle_plotting = self.circles_to_plot.as_ref().unwrap().axis_iter(Axis(0)).map(|rrow|{
             epaint::Shape::circle_stroke(
@@ -330,6 +392,25 @@ impl Custom3d {
             
         }).flatten();
         ui.painter_at(rect).extend(line_plotting);
+
+        if let Some(pos) = response.interact_pointer_pos(){
+            if response.drag_started(){
+                self.zoom_box_start = Some(rect.clamp(pos));
+            }
+            let pos = rect.clamp(pos);
+            let mut this_rect = normalize_rect(egui::Rect::from_two_pos(self.zoom_box_start.unwrap(), pos));
+            let img_dims = self.frame_provider.as_ref().unwrap().0.1;
+            let asp = egui::Vec2{x: img_dims[0] as f32, y: img_dims[1] as f32}.normalized();
+            let extend = this_rect.max - this_rect.min;
+            let x_times = extend.x / asp.x;
+            let y_times = extend.y / asp.y;
+            let factor = std::cmp::max_by(x_times, y_times, |a, b| a.partial_cmp(b).unwrap());
+            this_rect.max = this_rect.min + factor * asp;
+            ui.painter_at(rect).rect_stroke(this_rect, 0.0, (1., epaint::Color32::from_rgb(255, 255, 255)));
+            if response.drag_released() {
+            }
+        }
+        
         // ui.painter_at(rect).circle_stroke(
         //     data_to_screen_coords_vec2([255.5, 255.5].into(), &rect, &databounds),
         //     data_radius_to_screen(256., &rect, &databounds),

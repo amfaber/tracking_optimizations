@@ -157,24 +157,27 @@ impl Vertex {
     }
 }
 
-const VERTICES: &[Vertex] = &[
-    Vertex {
-        position: [-1., 1., 0.0],
-        tex_coords: [0., 0.],
-    }, // A
-    Vertex {
-        position: [-1., -1., 0.0],
-        tex_coords: [0., 1.],
-    }, // B
-    Vertex {
-        position: [1., 1., 0.0],
-        tex_coords: [1., 0.],
-    }, // C
-    Vertex {
-        position: [1., -1., 0.0],
-        tex_coords: [1., 1.],
-    }, // D
-];
+
+fn gen_vertices(bounding: &egui::Rect) -> [Vertex; 4]{
+    [
+        Vertex {
+            position: [-1., 1., 0.0],
+            tex_coords: [bounding.min.x, bounding.min.y],
+        }, // A
+        Vertex {
+            position: [-1., -1., 0.0],
+            tex_coords: [bounding.min.x, bounding.max.y],
+        }, // B
+        Vertex {
+            position: [1., 1., 0.0],
+            tex_coords: [bounding.max.x, bounding.min.y],
+        }, // C
+        Vertex {
+            position: [1., -1., 0.0],
+            tex_coords: [bounding.max.x, bounding.max.y],
+        }, // D
+    ]
+}
 
 const INDICES: &[u16] = &[0, 1, 2, 1, 3, 2];
 
@@ -343,8 +346,8 @@ impl ColormapRenderResources {
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(VERTICES),
-            usage: wgpu::BufferUsages::VERTEX,
+            contents: bytemuck::cast_slice(&gen_vertices(&egui::Rect::from_x_y_ranges(0.0..=1.0, 0.0..=1.0))),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Index Buffer"),
@@ -370,6 +373,10 @@ impl ColormapRenderResources {
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
         render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
 	}
+
+    pub fn resize(&mut self, queue: &wgpu::Queue, bounding: &egui::Rect){
+        queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&gen_vertices(bounding)))
+    }
 
 	pub fn update_texture(&mut self, queue: &wgpu::Queue, frame: &ArrayView2<f32>){
 		let dimensions = frame.shape();
