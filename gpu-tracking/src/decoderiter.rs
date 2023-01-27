@@ -81,7 +81,19 @@ impl<R: Read + Seek + 'static> FrameProvider for RefCell<Decoder<R>>{
 
     fn len(&self, too_high: Option<usize>) -> usize{
         let mut lo = 0;
-        let mut hi = too_high.unwrap();
+        let mut hi = match too_high{
+            Some(hi) => hi,
+            None => {
+                let mut hi = 1024;
+                loop{
+                    match self.borrow_mut().seek_to_image(hi){
+                        Ok(_) => hi = hi * 2,
+                        Err(_) => break,
+                    }
+                }
+                hi
+            }
+        };
         let mut mid = (hi - lo) / 2;
         while mid != lo{
             match self.borrow_mut().seek_to_image(mid){

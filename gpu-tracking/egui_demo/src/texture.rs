@@ -27,10 +27,11 @@ impl Texture {
         queue: &wgpu::Queue,
         img: &ArrayView2<f32>,
         label: Option<&str>,
+        cmap: [f32; 120],
     ) -> Result<Self> {
         let rgba = img.as_slice().unwrap();
         let dimensions = img.shape();
-        let dimensions = (dimensions[0] as u32, dimensions[1] as u32);
+        let dimensions = (dimensions[1] as u32, dimensions[0] as u32);
 
         let size = wgpu::Extent3d {
             width: dimensions.0,
@@ -74,11 +75,10 @@ impl Texture {
             ..Default::default()
         });
 
-        let cpu_cmap = MAPS["viridis"];
         let cmap = device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
             label: None,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            contents: bytemuck::cast_slice(&cpu_cmap),
+            contents: bytemuck::cast_slice(&cmap),
         });
 
         let img_min = img.iter().fold(f32::INFINITY, |acc, ele| {
@@ -197,7 +197,7 @@ pub struct ColormapRenderResources {
 }
 
 impl ColormapRenderResources {
-    pub fn new(wgpu_render_state: &RenderState, frame_view: &ArrayView2<f32>) -> Self {
+    pub fn new(wgpu_render_state: &RenderState, frame_view: &ArrayView2<f32>, cmap: [f32; 120]) -> Self {
         // let diffuse_bytes = include_bytes!("happy-tree.png");
         // let frame = provider.get_frame(0).unwrap();
         // let frame = Array::from_shape_vec([dims[0] as usize, dims[1] as usize], frame).unwrap();
@@ -208,7 +208,7 @@ impl ColormapRenderResources {
         let queue = wgpu_render_state.queue.clone();
         
         let diffuse_texture =
-            texture::Texture::from_image(&device, &queue, frame_view, None).unwrap();
+            texture::Texture::from_image(&device, &queue, frame_view, None, cmap).unwrap();
 
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -286,7 +286,8 @@ impl ColormapRenderResources {
             label: Some("diffuse_bind_group"),
         });
 
-        let shader_str = std::fs::read_to_string("src/shader.wgsl").unwrap();
+        // let shader_str = std::fs::read_to_string("src/shader.wgsl").unwrap();
+        let shader_str = include_str!("shader.wgsl");
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
             source: wgpu::ShaderSource::Wgsl(shader_str.into()),
@@ -364,6 +365,10 @@ impl ColormapRenderResources {
             diffuse_texture,
             diffuse_bind_group,
         }
+    }
+
+    pub fn set_cmap(&mut self, queue: &wgpu::Queue, cmap_name: &str){
+        queue.write_buffer(&self.diffuse_texture.cmap, 0, bytemuck::cast_slice(&MAPS[cmap_name]))
     }
 
 	pub fn paint<'rp>(&'rp self, render_pass: &mut wgpu::RenderPass<'rp>){

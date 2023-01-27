@@ -766,7 +766,6 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F> + ?Sized>(
     let (inp_sender,
         inp_receiver) = std::sync::mpsc::channel();
     let mut inp_sender = Some(inp_sender);
-        // inp_receiver) = std::sync::mpsc::channel::<channel_type>();
     
     let (frame_sender,
         frame_receiver) = std::sync::mpsc::channel::<Option<P::Frame>>();
@@ -1150,13 +1149,13 @@ pub fn execute_provider<'a, F: IntoSlice + Send, P: FrameProvider<Frame = F> + ?
 }
 
 pub fn execute_file<'a>(
-    path: &String,
+    path: impl Into<PathBuf>,
     channel: Option<usize>,
     params: TrackingParams,
     verbosity: u32,
     pos_array: Option<(ArrayView2<'a, my_dtype>, bool, bool)>,
     ) -> crate::error::Result<(Array2<my_dtype>, Vec<(&'static str, &'static str)>)> {
-    let path = PathBuf::from(path);
+    let path = Into::<PathBuf>::into(path);
     let generator = || path_to_iter(&path, channel);
     
     execute_provider(generator, params, verbosity, pos_array)

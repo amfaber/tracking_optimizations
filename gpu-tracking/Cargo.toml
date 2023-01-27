@@ -1,3 +1,6 @@
+[workspace]
+members = ["egui_demo"]
+
 [package]
 edition = "2021"
 name = "gpu-tracking"
