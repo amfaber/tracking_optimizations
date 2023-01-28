@@ -1006,7 +1006,9 @@ impl Custom3d {
             ui.horizontal(|ui|{
                 let browse_clicked = ui.button("Browse").clicked();
                 if browse_clicked{
-                    self.path = rfd::FileDialog::new().add_filter("Support video formats", &["tif", "tiff", "vsi", "ets"]).pick_file();
+                    self.path = rfd::FileDialog::new()
+                        .set_directory(std::env::current_dir().unwrap())
+                        .add_filter("Support video formats", &["tif", "tiff", "vsi", "ets"]).pick_file();
                     if let Some(ref path) = self.path{
                         self.input_state.path = path.clone().into_os_string().into_string().unwrap(); 
                     }
