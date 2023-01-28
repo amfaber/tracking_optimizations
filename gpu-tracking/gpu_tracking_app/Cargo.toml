@@ -1,5 +1,5 @@
 [package]
-name = "egui_demo"
+name = "gpu_tracking_app"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,7 +7,6 @@ edition = "2021"
 
 [[bin]]
 name = "test_bin"
-# gpu_tracking = { version = "*", path = "../"}
 path = "src/main.rs"
 
 [lib]
@@ -15,13 +14,13 @@ crate-type = ["cdylib", "rlib"]
 
 
 [dependencies]
-chrono = { version = "0.4", features = ["js-sys", "wasmbind"] }
+# chrono = { version = "0.4", features = ["js-sys", "wasmbind"] }
 eframe = { version = "0.20.0", default-features = false, features = ["wgpu"] }
 epaint = { version = "*" }
 egui = { version = "*" }
 bytemuck = { version = "*" }
 emath = { version = "*" }
-gpu-tracking = { version = "*", path = "../"}
+gpu_tracking = { version = "*", path = "../"}
 phf = { version = "0.11.1", features = ["macros"] }
 ndarray = "0.15.6"
 anyhow = "1.0.68"
@@ -30,3 +29,6 @@ ordered-float = "*"
 uuid = { version = "1.2.2", features = ["v4"] }
 winit = "0.27.5"
 thiserror = "1.0.38"
+rfd = "0.10.0"
+ndarray-csv = "0.5.1"
+csv = "1.1.6"

@@ -4,7 +4,7 @@ use eframe::egui_wgpu::RenderState;
 use eframe::wgpu;
 use ndarray::ArrayView2;
 use anyhow::*;
-use crate::colormaps::MAPS;
+// use crate::colormaps::MAPS;
 use wgpu::util::DeviceExt;
 
 use std::iter;
@@ -12,6 +12,8 @@ use std::iter;
 use ndarray::Array;
 use crate::colormaps;
 use crate::texture;
+// use bytemuck::Pod;
+
 
 pub struct Texture {
     pub texture: eframe::wgpu::Texture,
@@ -367,8 +369,8 @@ impl ColormapRenderResources {
         }
     }
 
-    pub fn set_cmap(&mut self, queue: &wgpu::Queue, cmap_name: &str){
-        queue.write_buffer(&self.diffuse_texture.cmap, 0, bytemuck::cast_slice(&MAPS[cmap_name]))
+    pub fn set_cmap(&mut self, queue: &wgpu::Queue, cmap: &[f32; 120]){
+        queue.write_buffer(&self.diffuse_texture.cmap, 0, bytemuck::cast_slice(cmap))
     }
 
 	pub fn paint<'rp>(&'rp self, render_pass: &mut wgpu::RenderPass<'rp>){

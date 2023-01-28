@@ -1,26 +1,29 @@
 use std::{fs::File, path::PathBuf};
 
-use crate::{my_dtype, linking::SubsetterType};
 use ndarray::Array;
 use pyo3::{prelude::*, types::PyDict};
-// #[cfg(feature = "python")]
 use numpy::{IntoPyArray, PyReadonlyArray3, PyReadonlyArray2, PyArray2, PyArray1, PyArray3};
-use crate::{execute_gpu::{execute_ndarray, execute_file, path_to_iter, mean_from_iter}, decoderiter::MinimalETSParser, gpu_setup::{TrackingParams, ParamStyle}, linking, error::Error};
+use ::gpu_tracking::{my_dtype, linking::SubsetterType, execute_gpu::{execute_ndarray, execute_file, path_to_iter, mean_from_iter}, decoderiter::MinimalETSParser, gpu_setup::{TrackingParams, ParamStyle}, linking, error::Error};
+use gpu_tracking_app;
 
-impl std::convert::From::<Error> for PyErr{
-	fn from(err: Error) -> PyErr{
-		match err{
+trait ToPyErr{
+    fn pyerr(self) -> PyErr;
+}
+
+impl ToPyErr for Error{
+	fn pyerr(self) -> PyErr{
+		match self{
 			Error::GpuAdapterError | Error::GpuDeviceError(_)  => {
-				pyo3::exceptions::PyConnectionError::new_err(err.to_string())
+				pyo3::exceptions::PyConnectionError::new_err(self.to_string())
 			},
 
             Error::ThreadError => {
-				pyo3::exceptions::PyBaseException::new_err(err.to_string())
+				pyo3::exceptions::PyBaseException::new_err(self.to_string())
             },
 			
             Error::InvalidFileName { .. } |
 			Error::FileNotFound{ .. } => {
-				pyo3::exceptions::PyFileNotFoundError::new_err(err.to_string())
+				pyo3::exceptions::PyFileNotFoundError::new_err(self.to_string())
             },
 
             Error::DimensionMismatch{ .. } |
@@ -35,12 +38,14 @@ impl std::convert::From::<Error> for PyErr{
             Error::FrameOOB |
             Error::CastError
              => {
-				pyo3::exceptions::PyValueError::new_err(err.to_string())
+				pyo3::exceptions::PyValueError::new_err(self.to_string())
 			},
 			
 		}
 	}
 }
+
+
 
 macro_rules! make_args {
     (
@@ -293,7 +298,7 @@ make_args!(
     }
     ) -> PyResult<(&'py PyArray2<my_dtype>, Py<PyAny>)> => params{
         let array = pyarr.as_array();
-        let (res, columns) = execute_ndarray(&array, params, 0, None)?;
+        let (res, columns) = execute_ndarray(&array, params, 0, None).map_err(|err| err.pyerr())?;
         Ok((res.into_pyarray(py), columns.into_py(py)))
     }
 );
@@ -311,7 +316,7 @@ make_args!(
         ) -> PyResult<(&'py PyArray2<my_dtype>, Py<PyAny>)> => params {
 
         let (res, columns) = execute_file(
-            &filename, channel, params, 0, None)?;
+            &filename, channel, params, 0, None).map_err(|err| err.pyerr())?;
         Ok((res.into_pyarray(py), columns.into_py(py)))
     }
 );
@@ -339,7 +344,7 @@ make_args!(
         }
         
         let inp = Some((points_to_characterize.as_array(), points_has_frames, points_has_r));
-        let (res, columns) = execute_ndarray(&array, params, 0, inp)?;
+        let (res, columns) = execute_ndarray(&array, params, 0, inp).map_err(|err| err.pyerr())?;
         Ok((res.into_pyarray(py), columns.into_py(py)))
     }
 );
@@ -367,7 +372,7 @@ make_args!(
             *filter_close = false;
         }
         
-        let (res, columns) = execute_file(&filename, channel, params, 0, inp)?;
+        let (res, columns) = execute_file(&filename, channel, params, 0, inp).map_err(|err| err.pyerr())?;
         Ok((res.into_pyarray(py), columns.into_py(py)))
     }
 );
@@ -382,7 +387,7 @@ make_log_args!(
     }
     ) -> PyResult<(&'py PyArray2<my_dtype>, Py<PyAny>)> => params{
     let array = pyarr.as_array();
-    let (res, columns) = execute_ndarray(&array, params, 0, None)?;
+    let (res, columns) = execute_ndarray(&array, params, 0, None).map_err(|err| err.pyerr())?;
     Ok((res.into_pyarray(py), columns.into_py(py)))
 }
 );
@@ -399,7 +404,7 @@ make_log_args!(
         ) -> PyResult<(&'py PyArray2<my_dtype>, Py<PyAny>)> => params {
 
         let (res, columns) = execute_file(
-            &filename, channel, params, 0, None)?;
+            &filename, channel, params, 0, None).map_err(|err| err.pyerr())?;
         Ok((res.into_pyarray(py), columns.into_py(py)))
     }
 );
@@ -424,7 +429,7 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
     #[pyo3(name = "load")]
     fn load<'py>(py: Python<'py>, path: &str, keys: Option<Vec<usize>>, channel: Option<usize>) -> PyResult<&'py PyArray3<my_dtype>>{
         let path = PathBuf::from(path);
-        let (provider, dims) = path_to_iter(&path, channel)?;
+        let (provider, dims) = path_to_iter(&path, channel).map_err(|err| err.pyerr())?;
         let mut output = Vec::new();
         let mut n_frames = 0;
         match keys{
@@ -432,7 +437,7 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
                 if keys.iter().enumerate().all(|(idx, &key)| idx == key){
                     let image_iter = provider.into_iter().take(keys.len());
                     for image in image_iter{
-                        let image = image?;
+                        let image = image.map_err(|err| err.pyerr())?;
                         output.extend(image.into_iter());
                         n_frames += 1;
                     }
@@ -444,7 +449,7 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
                                     Error::FrameOOB => Error::FrameOutOfBounds { vid_len: provider.len(Some(key)), problem_idx: key },
                                     _ => err,
                                 }
-                            })?;
+                            }).map_err(|err| err.pyerr())?;
                         output.extend(image.into_iter());
                         n_frames += 1;
                     }
@@ -452,7 +457,7 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
             },
             None => {
                 for image in provider.into_iter(){
-                    let image = image?;
+                    let image = image.map_err(|err| err.pyerr())?;
                     output.extend(image.into_iter());
                     n_frames += 1;
                 }
@@ -472,17 +477,7 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         let array = pyarr.as_array();
         let frame_iter = linking::FrameSubsetter::new(array, Some(0), (1, 2), None, SubsetterType::Linking)
             .into_linking_iter();
-        // let frame_iter = frame_iter.map(|subsetter_element|{
-        //     let out = subsetter_element.map(|(frame, subset_outputter)| {
-        //         let vec = match subset_outputter{
-        //             SubsetterOutput::Linking(vec) => vec,
-        //             _ => unreachable!()
-        //         };
-        //         (frame, vec)
-        //     });
-        //     out
-        // });
-        let res = linking::linker_all(frame_iter, search_range, memory)?;
+        let res = linking::linker_all(frame_iter, search_range, memory).map_err(|err| err.pyerr())?;
         Ok(res.into_pyarray(py))
     }
 
@@ -496,17 +491,15 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
             .into_linking_iter();
         let frame_iter2 = linking::FrameSubsetter::new(array2, Some(0), (1, 2), None, SubsetterType::Linking)
             .into_linking_iter();
-        let (res1, res2) = linking::connect_all(frame_iter1, frame_iter2, search_range)?;
+        let (res1, res2) = linking::connect_all(frame_iter1, frame_iter2, search_range).map_err(|err| err.pyerr())?;
         Ok((res1.into_pyarray(py), res2.into_pyarray(py)))
     }
 
     #[pyfn(m)]
     #[pyo3(name = "parse_ets")]
     fn parse_ets<'py>(py: Python<'py>, path: &str) -> &'py PyDict{
-        // HashMap<usize, &'py PyArray3<u16>>
         let mut file = File::open(path).unwrap();
         let parser = MinimalETSParser::new(&mut file).unwrap();
-        // let mut n_frames = vec![0];
         let output = PyDict::new(py);
         for channel in parser.offsets.keys(){
             let iter = parser.iterate_channel(file.try_clone().unwrap(), *channel);
@@ -530,7 +523,7 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         let n_frames = keys.len();
         let mut vec = Vec::with_capacity(n_frames * parser.dims.iter().product::<usize>());
         for key in keys{
-            iter.seek(key)?;
+            iter.seek(key).map_err(|err| err.pyerr())?;
             vec.extend(iter.next().unwrap().into_iter().flatten());
         }
         let array = Array::from_shape_vec((n_frames, parser.dims[1], parser.dims[0]), vec).unwrap();
@@ -542,30 +535,29 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
     #[pyo3(name = "mean_from_disk")]
     fn mean_from_disk<'py>(py: Python<'py>, path: &str, channel: Option<usize>) -> PyResult<&'py PyArray2<f32>>{
         let path = PathBuf::from(path);
-        let (provider, dims) = path_to_iter(&path, channel)?;
-        // let iter = (0..)
-        //     .map(|i| provider.get_frame(i))
-        //     .take_while(|res| !matches!(res, Err(crate::error::Error::FrameOOB)));
+        let (provider, dims) = path_to_iter(&path, channel).map_err(|err| err.pyerr())?;
         let iter = provider.into_iter();
-        let mean_arr = mean_from_iter(iter, &dims)?;
-        // let idk = provider.get_frame(0);
-        // let mut n_frames = 0;
-        // let mut mean_vec = iter.fold(vec![0f32; (dims[0] * dims[1]) as usize], |mut acc, ele|{
-        //     for (a, e) in acc.iter_mut().zip(ele.iter()){
-        //         *a += e
-        //     }
-        //     n_frames += 1;
-        //     acc
-        // });
-        // let n_frames = n_frames as f32;
-        // for e in mean_vec.iter_mut(){
-        //     *e /= n_frames;
-        // }
-        // let mean_arr = Array::from_shape_vec((dims[0] as usize, dims[1] as usize), mean_vec).unwrap();
-        
+        let mean_arr = mean_from_iter(iter, &dims).map_err(|err| err.pyerr())?;
         Ok(mean_arr.into_pyarray(py))
     }
     
+    #[pyfn(m)]
+    #[pyo3(name = "my_app")]
+    fn app<'py>(_py: Python<'py>){
+        let options = eframe::NativeOptions {
+            drag_and_drop_support: true,
+
+            initial_window_size: Some([1200., 800.].into()),
+            renderer: eframe::Renderer::Wgpu,
+
+            ..Default::default()
+        };
+        eframe::run_native(
+            "egui demo app",
+            options,
+            Box::new(|cc| Box::new(gpu_tracking_app::custom3d_wgpu::AppWrapper::new(cc).unwrap())),
+        )
+    }
     
     Ok(())
 }

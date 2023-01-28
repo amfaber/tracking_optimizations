@@ -1,0 +1,28 @@
+[package]
+name = "gpu_tracking_python"
+version = "1.0.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+gpu_tracking = { path = ".."}
+gpu_tracking_app = { path = "../gpu_tracking_app" }
+ndarray = "0.15.6"
+eframe = { version = "0.20.0", default-features = false, features = ["wgpu"] }
+
+
+[dependencies.pyo3]
+features = ["extension-module", "abi3-py37"]
+optional = false
+version = "0.17.3"
+
+[dependencies.numpy]
+optional = false
+version = "0.17.2"
+
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+name = "gpu_tracking"
+

@@ -1,9 +1,9 @@
 [workspace]
-members = ["egui_demo"]
+members = ["gpu_tracking_app", "gpu_tracking_python"]
 
 [package]
 edition = "2021"
-name = "gpu-tracking"
+name = "gpu_tracking"
 version = "0.6.0"
 [[bin]]
 name = "tracking"
@@ -40,17 +40,17 @@ regex = "1.7.1"
 features = ["derive"]
 version = "4.0.6"
 
-[dependencies.numpy]
-optional = false
-version = "0.17.2"
+# [dependencies.numpy]
+# optional = false
+# version = "0.17.2"
 
-[dependencies.pyo3]
-features = ["extension-module", "abi3-py37"]
-optional = false
-version = "0.17.3"
+# [dependencies.pyo3]
+# features = ["extension-module", "abi3-py37"]
+# optional = false
+# version = "0.17.3"
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+# crate-type = ["cdylib", "rlib"]
 name = "gpu_tracking"
 
 [profile.release]

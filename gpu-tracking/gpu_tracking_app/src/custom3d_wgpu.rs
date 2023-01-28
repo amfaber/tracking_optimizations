@@ -15,38 +15,10 @@ use kd_tree;
 use std::fmt::Write;
 use uuid::Uuid;
 use anyhow;
-// use ordered_float::OrderedFloat;
+use rfd;
+use ndarray_csv;
+use csv;
 
-trait PanicGet{
-    type Output;
-    fn t(self) -> Self::Output;
-    fn r(&self) -> &Self::Output;
-}
-
-impl<T> PanicGet for Option<T>{
-    type Output = T;
-
-    fn t(self) -> Self::Output{
-        self.unwrap()
-    }
-
-    fn r(&self) -> &Self::Output{
-        self.as_ref().unwrap()
-    }
-}
-
-
-impl<T, E: std::fmt::Debug> PanicGet for Result<T, E>{
-    type Output = T;
-
-    fn t(self) -> Self::Output{
-        self.unwrap()
-    }
-
-    fn r(&self) -> &Self::Output{
-        self.as_ref().unwrap()
-    }
-}
 
 trait ColorMap{
     fn call(&self, t: f32) -> epaint::Color32;
@@ -138,7 +110,8 @@ impl eframe::App for AppWrapper{
                     let mut adds = Vec::new();
                     let mut removes = Vec::new();
                     for (i, (app, open)) in self.apps.iter_mut().zip(self.opens.iter_mut()).enumerate(){
-                        egui::containers::Window::new(format!("{}", app.uuid.as_u128()))
+                        egui::containers::Window::new("")
+                            .id(egui::Id::new(app.uuid.as_u128()))
                             .title_bar(true)
                             .open(open)
                             .show(ui.ctx(), |ui|{
@@ -148,6 +121,15 @@ impl eframe::App for AppWrapper{
                                     if response.clicked(){
                                         adds.push((i, app.uuid));
                                     }
+                                    if ui.button("Copy python command").clicked(){
+                                        ui.output().copied_text = app.input_state.to_py_command();
+                                    }
+                                    if ui.button("Output data to csv").clicked() | app.save_pending{
+                                        app.output_csv();
+                                    }
+                                    ui.add(egui::widgets::TextEdit::singleline(&mut app.input_state.output_path)
+                                        .code_editor()
+                                        .hint_text("Save file path (must be .csv)"));
                                 });
                             });
                     }
@@ -184,7 +166,7 @@ pub struct Custom3d {
 	frame_provider: Option<ProviderDimension>,
     vid_len: Option<usize>,
     frame_idx: usize,
-    last_render: Option<std::time::Instant>,
+    // last_render: Option<std::time::Instant>,
     // gpu_tracking_state: gpu_tracking::gpu_setup::GpuState,
     results: Option<Array2<f32>>,
     result_names: Option<Vec<(&'static str, &'static str)>>,
@@ -192,6 +174,8 @@ pub struct Custom3d {
     tracking_params: gpu_tracking::gpu_setup::TrackingParams,
     mode: DataMode,
     path: Option<PathBuf>,
+    output_path: PathBuf,
+    save_pending: bool,
     particle_hash: Option<HashMap<usize, Vec<(usize, [f32; 2])>>>,
     circle_kdtree: Option<kd_tree::KdTree<([f32; 2], usize)>>,
 
@@ -201,8 +185,9 @@ pub struct Custom3d {
     frame_col: Option<usize>,
     particle_col: Option<usize>,
 
-    image_cmap: [f32; 120],
-    line_cmap: [f32; 120],
+    circle_color: egui::Color32,
+    image_cmap: colormaps::KnownMaps,
+    line_cmap: colormaps::KnownMaps,
     line_cmap_bounds: RangeInclusive<f32>,
     // line_cmap_end: f32,
 
@@ -235,7 +220,6 @@ impl Playback{
                 ui.ctx().request_repaint();
                 
                 if last_advance.elapsed().as_micros() as f32 / 1_000_000. > 1./(*fps){
-                    // dbg!(1_000_000. / last_advance.elapsed().as_micros() as f32);
                     *last_advance = std::time::Instant::now();
                     true
                 } else {
@@ -257,7 +241,7 @@ impl Clone for Custom3d{
         
         let params = self.tracking_params.clone();
         
-        let line_cmap = self.line_cmap;
+        let line_cmap = self.line_cmap.clone();
 
         let texture_zoom_level = self.texture_zoom_level;
 
@@ -282,7 +266,7 @@ impl Clone for Custom3d{
         let input_state = self.input_state.clone();
         
         let frame_idx = self.frame_idx;
-        let image_cmap = self.image_cmap;
+        let image_cmap = self.image_cmap.clone();
 
         let frame_provider = self.path.as_ref().map(|path| ProviderDimension(path_to_iter(path, None).unwrap()));
         let vid_len = self.vid_len.clone();
@@ -290,19 +274,24 @@ impl Clone for Custom3d{
         let needs_update = self.needs_update.clone();
 
         let playback = self.playback.clone();
+
+        let circle_color = self.circle_color.clone();
+        let output_path = self.output_path.clone();
         
         let out = Self{
             
             frame_provider,
             vid_len,
             frame_idx,
-            last_render: None,
+            // last_render: None,
             results: self.results.clone(),
             result_names: self.result_names.clone(),
             circles_to_plot: self.circles_to_plot.clone(),
             tracking_params: params,
             mode,
             path: self.path.clone(),
+            output_path,
+            save_pending: self.save_pending.clone(),
             particle_hash: self.particle_hash.clone(),
             circle_kdtree: self.circle_kdtree.clone(),
 
@@ -312,6 +301,7 @@ impl Clone for Custom3d{
             frame_col: self.frame_col.clone(),
             particle_col: self.particle_col.clone(),
 
+            circle_color,
             image_cmap,
             line_cmap,
             line_cmap_bounds: self.line_cmap_bounds.clone(),
@@ -345,6 +335,7 @@ enum Style{
 #[derive(Clone)]
 struct InputState{
     path: String,
+    output_path: String,
     frame_idx: String,
     datamode: DataMode,
     range_start: String,
@@ -353,6 +344,7 @@ struct InputState{
 
     style: Style,
     all_options: bool,
+    color_options: bool,
     
     // Trackpy
     diameter: String,
@@ -386,6 +378,7 @@ impl Default for InputState{
     fn default() -> Self{
         Self{
             path: String::new(),
+            output_path: String::new(),
             frame_idx: "0".to_string(),
             datamode: DataMode::Immediate,
             range_start: "0".to_string(),
@@ -394,6 +387,7 @@ impl Default for InputState{
 
             style: Style::Trackpy,
             all_options: false,
+            color_options: false,
 
             diameter: "9".to_string(),
             separation: "10".to_string(),
@@ -417,7 +411,7 @@ impl Default for InputState{
             adaptive_background: String::new(),
             shift_threshold: "0.6".to_string(),
             noise_size: "1.0".to_string(),
-            smoothing_size: "9".to_string(),
+            smoothing_size: String::new(),
             illumination_correction_per_frame: false,
         }
     }
@@ -450,7 +444,7 @@ impl InputState{
         let smoothing_size = self.smoothing_size.parse::<u32>().ok();
         let illumination_correction_per_frame = self.illumination_correction_per_frame;
 
-        let (style, include_r_in_output, smoothing_size_default) = match self.style{
+        let (style, include_r_in_output, _smoothing_size_default) = match self.style{
             Style::Trackpy => {
                 let diameter = diameter.unwrap_or(9);
                 (ParamStyle::Trackpy{
@@ -483,13 +477,13 @@ impl InputState{
             max_iterations: max_iterations.unwrap_or(10),
             characterize,
             search_range,
-            memory: Some(memory.unwrap_or(10)),
+            memory,
             doughnut_correction,
             bg_radius: None,
             gap_radius: None,
-            snr: Some(snr.unwrap_or(1.5)),
-            minmass_snr: Some(minmass_snr.unwrap_or(0.3)),
-            truncate_preprocessed: false,
+            snr,
+            minmass_snr,
+            truncate_preprocessed: true,
             illumination_sigma,
             adaptive_background,
             include_r_in_output,
@@ -497,9 +491,48 @@ impl InputState{
             linker_reset_points: None,
             keys: None,
             noise_size: noise_size.unwrap_or(1.0),
-            smoothing_size: Some(smoothing_size.unwrap_or(smoothing_size_default)),
+            // smoothing_size: Some(smoothing_size.unwrap_or(smoothing_size_default)),
+            smoothing_size,
             illumination_correction_per_frame,
         }
+    }
+
+    fn to_py_command(&self) -> String{
+        let mut output = "gpu_tracking.".to_string();
+        match self.style{
+            Style::Trackpy => {
+                output.push_str("batch(\n\t");
+                self.diameter.parse::<u32>().ok().map(|val| write!(output, "{},\n\t", val));
+                self.separation.parse::<u32>().ok().map(|val| write!(output, "separation = {},\n\t", val));
+                if !self.filter_close { write!(output, "filter_close = False,\n\t").unwrap() };
+            },
+            Style::Log => {
+                output.push_str("LoG(\n\t");
+                self.min_radius.parse::<f32>().ok().map(|val| write!(output, "{},\n\t", val));
+                self.max_radius.parse::<f32>().ok().map(|val| write!(output, "{},\n\t", val));
+                self.n_radii.parse::<usize>().ok().map(|val| write!(output, "n_radii = {},\n\t", val));
+                if self.log_spacing { write!(output, "log_spacing = True,\n\t").unwrap() };
+                self.overlap_threshold.parse::<f32>().ok().map(|val| write!(output, "overlap_threshold = {},\n\t", val));
+            },
+        };
+        
+        self.minmass.parse::<f32>().ok().map(|val| write!(output, "minmass = {},\n\t", val));
+        self.max_iterations.parse::<u32>().ok().map(|val| if val != 10 {write!(output, "max_iterations = {},\n\t", val).unwrap()});
+        self.search_range.parse::<f32>().ok().map(|val| write!(output, "search_range = {},\n\t", val));
+        self.memory.parse::<usize>().ok().map(|val| write!(output, "memory = {},\n\t", val));
+        self.snr.parse::<f32>().ok().map(|val| write!(output, "snr = {},\n\t", val));
+        self.minmass_snr.parse::<f32>().ok().map(|val| write!(output, "minmass_snr = {},\n\t", val));
+        self.illumination_sigma.parse::<f32>().ok().map(|val| write!(output, "illumination_sigma = {},\n\t", val));
+        self.adaptive_background.parse::<usize>().ok().map(|val| write!(output, "adaptive_background = {},\n\t", val));
+        self.shift_threshold.parse::<f32>().ok().map(|val| write!(output, "shift_threshold = {},\n\t", val));
+        self.noise_size.parse::<f32>().ok().map(|val| write!(output, "noise_size = {},\n\t", val));
+        self.smoothing_size.parse::<u32>().ok().map(|val| write!(output, "smoothing_size = {},\n\t", val));
+        if self.characterize { write!(output, "characterize = True,\n\t").unwrap() };
+        if self.doughnut_correction { write!(output, "doughnut_correction = True,\n\t").unwrap() };
+        if self.illumination_correction_per_frame { write!(output, "illumination_correction_per_frame = True,\n\t").unwrap() };
+        output.pop();
+        output.push(')');
+        output
     }
 }
 
@@ -534,12 +567,15 @@ fn normalize_rect(rect: egui::Rect) -> egui::Rect {
     let max = egui::Pos2{
         x: std::cmp::max_by(rect.min.x, rect.max.x, |a: &f32, b: &f32| a.partial_cmp(b).unwrap()),
         y: std::cmp::max_by(rect.min.y, rect.max.y, |a: &f32, b: &f32| a.partial_cmp(b).unwrap()),
-    };
+        };
     egui::Rect{min, max}
 }
 
 impl Custom3d {
     pub fn setup_gpu_after_clone(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame){
+        if self.frame_provider.is_none(){
+            return
+        }
         let wgpu_render_state = frame.wgpu_render_state().unwrap();
         self.create_gpu_resource(wgpu_render_state);
         self.update_frame(ui, FrameChange::Resubmit);
@@ -550,7 +586,7 @@ impl Custom3d {
         let provider = self.frame_provider.as_ref().unwrap();
         let frame = provider.to_array(self.frame_idx)?;
         let frame_view = frame.view();
-        let resources = ColormapRenderResources::new(wgpu_render_state, &frame_view, self.image_cmap);
+        let resources = ColormapRenderResources::new(wgpu_render_state, &frame_view, self.image_cmap.get_map());
         wgpu_render_state
             .renderer
             .write()
@@ -611,11 +647,8 @@ impl Custom3d {
         
         let uuid = Uuid::new_v4();
         
-        let mut params = gpu_tracking::gpu_setup::TrackingParams::default();
-        params.snr = Some(1.3);
-        params.search_range = Some(10.);
         
-        let line_cmap = colormaps::MAPS["inferno"];
+        let line_cmap = colormaps::KnownMaps::inferno;
 
         let texture_zoom_level = zero_one_rect();
 
@@ -639,28 +672,33 @@ impl Custom3d {
         
         // let settings_visibility = SettingsVisibility::default();
         let input_state = InputState::default();
+        let params = input_state.to_trackingparams();
         
         let frame_idx = 0;
-        let image_cmap = colormaps::MAPS["viridis"];
+        let image_cmap = colormaps::KnownMaps::viridis;
         
         let needs_update = NeedsUpdate::default();
 
-        let line_cmap_bounds = 0.0..=999.0;
+        let line_cmap_bounds = 0.0..=1.0;
 
         let playback = Playback::Off;
+
+        let circle_color = egui::Color32::from_rgb(255, 255, 255);
         
         let out = Self{
             
             frame_provider: None,
             vid_len: None,
             frame_idx,
-            last_render: None,
+            // last_render: None,
             results: None,
             result_names: None,
             circles_to_plot: None,
             tracking_params: params,
             mode,
             path: None,
+            output_path: PathBuf::from(""),
+            save_pending: false,
             particle_hash: None,
             circle_kdtree: None,
 
@@ -670,6 +708,7 @@ impl Custom3d {
             frame_col: None,
             particle_col: None,
 
+            circle_color,
             image_cmap,
             line_cmap,
             line_cmap_bounds,
@@ -900,6 +939,55 @@ impl Custom3d {
         }
     }
 
+    fn output_csv(&mut self){
+        let mut succeeded = false;
+        match self.result_status{
+            ResultStatus::Processing | ResultStatus::TooOld => {
+                self.save_pending = true;
+                return
+            },
+            ResultStatus::Valid => {
+                self.save_pending = false;
+            }
+        }
+        match self.results{
+            Some(ref results) => {
+                let pathbuf = PathBuf::from(&self.input_state.output_path);
+                let pathbuf = if let Some("csv") = pathbuf.extension().map(|osstr| osstr.to_str().unwrap_or("")){
+                    pathbuf
+                } else {
+                    let dialog = rfd::FileDialog::new()
+                        .add_filter("csv", &["csv"])
+                        .set_directory(std::env::current_dir().unwrap())
+                        .save_file();
+                    if let Some(path) = dialog{
+                        path
+                    } else {
+                        PathBuf::from("")
+                    }
+                };
+
+                self.input_state.output_path = pathbuf.clone().into_os_string().into_string().unwrap();
+                let writer = csv::Writer::from_path(pathbuf);
+            
+                if let Ok(mut writer) = writer{
+                    let header = self.result_names.as_ref().unwrap().iter().map(|(name, _ty)|{
+                        name
+                    });
+                    writer.write_record(header).unwrap();
+                    for row in results.axis_iter(Axis(0)){
+                        writer.write_record(row.iter().map(|num| num.to_string())).unwrap();
+                    }
+                    succeeded = true;
+                }
+            },
+            None => self.input_state.output_path = "No results to save".to_string()
+        }
+        if !succeeded{
+            self.input_state.output_path = "Save failed".to_string();
+        }
+    }
+
     fn update_state(&mut self, ui: &mut egui::Ui){
         if self.needs_update.datamode{
             self.update_datamode(ui);
@@ -915,21 +1003,28 @@ impl Custom3d {
 
     fn get_input(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame){
         ui.vertical(|ui|{
-            let textedit = egui::widgets::TextEdit::singleline(&mut self.input_state.path)
-                .code_editor()
-                .desired_width(600.0)
-                .hint_text("Video file path");
-            let response = ui.add(textedit);
-            if response.changed(){
-                let wgpu_render_state = frame.wgpu_render_state().unwrap();
-                self.update_state(ui);
-                match self.setup_new_path(wgpu_render_state){
-                    Ok(_) => {},
-                    Err(_) => self.path = None,
-                };
-            }
-
-            let submit_click = ui.add_enabled(self.path.is_some() & self.needs_update.any(), egui::widgets::Button::new("Submit")).clicked();
+            ui.horizontal(|ui|{
+                let browse_clicked = ui.button("Browse").clicked();
+                if browse_clicked{
+                    self.path = rfd::FileDialog::new().add_filter("Support video formats", &["tif", "tiff", "vsi", "ets"]).pick_file();
+                    if let Some(ref path) = self.path{
+                        self.input_state.path = path.clone().into_os_string().into_string().unwrap(); 
+                    }
+                }
+                let textedit = egui::widgets::TextEdit::singleline(&mut self.input_state.path)
+                    .code_editor()
+                    .desired_width(f32::INFINITY)
+                    .hint_text("Video file path");
+                let response = ui.add(textedit);
+                if response.changed() | browse_clicked{
+                    let wgpu_render_state = frame.wgpu_render_state().unwrap();
+                    self.update_state(ui);
+                    match self.setup_new_path(wgpu_render_state){
+                        Ok(_) => {},
+                        Err(_) => self.path = None,
+                    };
+                }
+            });
             ui.horizontal(|ui|{
                 match self.playback{
                     Playback::FPS(_) => {
@@ -995,6 +1090,44 @@ impl Custom3d {
             
             
             self.tracking_input(ui);
+            
+            let mut submit_click = false;
+            ui.horizontal(|ui| {
+                submit_click = ui.add_enabled(self.path.is_some() & self.needs_update.any(), egui::widgets::Button::new("Submit")).clicked();
+                let response = ui.button("🏠🔍");
+                if response.clicked() && self.path.is_some(){
+                    self.reset_zoom(ui);
+                }
+                // ui.add_space(300.);
+                // ui.with_layout(egui::Layout)
+                if ui.add(egui::SelectableLabel::new(self.input_state.color_options, "Color Options")).clicked(){
+                    self.input_state.color_options = !self.input_state.color_options;
+                }
+            });
+            if self.input_state.color_options{
+                ui.horizontal(|ui|{
+                    ui.label("Circle color:");
+                    ui.color_edit_button_srgba(&mut self.circle_color);
+
+                    ui.label("Image colormap:");
+                    egui::ComboBox::from_id_source(self.uuid.as_u128() + 1).selected_text(self.image_cmap.get_name())
+                        .show_ui(ui, |ui|{ 
+                            if colormap_dropdown(ui, &mut self.image_cmap){
+                                self.set_image_cmap(ui)
+                            };
+                        }
+                    );
+
+                    ui.label("Tracks colormap:");
+                    egui::ComboBox::from_id_source(self.uuid.as_u128() + 2).selected_text(self.line_cmap.get_name())
+                        .show_ui(ui, |ui|{ 
+                            if colormap_dropdown(ui, &mut self.line_cmap){
+                                self.set_image_cmap(ui)
+                            };
+                        }
+                    );
+                });
+            }
             
             if submit_click | ui.ctx().input().key_down(egui::Key::Enter){
                 self.update_state(ui);
@@ -1180,31 +1313,28 @@ impl Custom3d {
         }
     }
 
-    fn show(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame){
-        let response = ui.button("🏠🔍");
-        if response.clicked(){
-            let dims = egui::Vec2{
-                x: self.frame_provider.as_ref().unwrap().0.1[1] as f32,
-                y: self.frame_provider.as_ref().unwrap().0.1[0] as f32,
-            };
-            self.cur_asp = dims / dims.max_elem();
-            let databounds = egui::Rect{
-                min: egui::Pos2::ZERO,
-                max: egui::Pos2{
-                    x: dims.y - 1.0,
-                    y: dims.x - 1.0,
-                }
-            };
-            self.resize(ui, zero_one_rect(), databounds);
-        }
+    fn reset_zoom(&mut self, ui: &mut egui::Ui){
+        let dims = egui::Vec2{
+            x: self.frame_provider.as_ref().unwrap().0.1[1] as f32,
+            y: self.frame_provider.as_ref().unwrap().0.1[0] as f32,
+        };
+        self.cur_asp = dims / dims.max_elem();
+        let databounds = egui::Rect{
+            min: egui::Pos2::ZERO,
+            max: egui::Pos2{
+                x: dims.y - 1.0,
+                y: dims.x - 1.0,
+            }
+        };
+        self.resize(ui, zero_one_rect(), databounds);
+    }
 
-        
+    fn show(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame){
         egui::Frame::canvas(ui.style()).show(ui, |ui| {
             let change = FrameChange::from_scroll(ui.ctx().input().scroll_delta);
             self.custom_painting(ui, change);
         });
 
-        self.last_render = Some(std::time::Instant::now());
     }
 
     fn recalculate(&mut self) -> anyhow::Result<()>{
@@ -1251,6 +1381,22 @@ impl Custom3d {
                 let resources: &mut HashMap<Uuid, ColormapRenderResources> = paint_callback_resources.get_mut().unwrap();
                 let resources = resources.get_mut(&uuid).unwrap();
                 resources.resize(queue, &size);
+                Vec::new()
+            });
+        ui.painter().add(egui::PaintCallback{
+            rect: egui::Rect::EVERYTHING,
+            callback: Arc::new(cb),
+        });
+    }
+
+    fn set_image_cmap(&mut self, ui: &mut egui::Ui){
+        let uuid = self.uuid;
+        let cmap = self.image_cmap.get_map();
+        let cb = egui_wgpu::CallbackFn::new()
+            .prepare(move |_device, queue, _encoder, paint_callback_resources|{
+                let resources: &mut HashMap<Uuid, ColormapRenderResources> = paint_callback_resources.get_mut().unwrap();
+                let resources = resources.get_mut(&uuid).unwrap();
+                resources.set_cmap(queue, &cmap);
                 Vec::new()
             });
         ui.painter().add(egui::PaintCallback{
@@ -1320,7 +1466,7 @@ impl Custom3d {
                     let r = self.point_radius(rrow);
                     data_radius_to_screen(r, &rect, &self.databounds.as_ref().unwrap())
                 },
-                (1., epaint::Color32::from_rgb(255, 255, 255))
+                (1., self.circle_color)
             )
         });
         ui.painter_at(rect).extend(circle_plotting);
@@ -1328,6 +1474,7 @@ impl Custom3d {
 
         match self.particle_hash{
             Some(ref particle_hash) => {
+                let cmap = self.line_cmap.get_map();
                 let line_plotting = self.circles_to_plot.as_ref().unwrap().axis_iter(Axis(0)).map(|rrow|{
                     let particle = rrow[self.particle_col.unwrap()];
                     let particle_vec = &particle_hash[&(particle as usize)];
@@ -1339,7 +1486,7 @@ impl Custom3d {
                             Some(epaint::Shape::line_segment([
                                 data_to_screen_coords_vec2(start.1.into(), &rect, &self.databounds.as_ref().unwrap()),
                                 data_to_screen_coords_vec2(end.1.into(), &rect, &self.databounds.as_ref().unwrap()),
-                            ], (1., self.line_cmap.call(t))))
+                            ], (1., cmap.call(t))))
                         } else {
                             None
                         }
@@ -1443,26 +1590,33 @@ impl Custom3d {
         ui.painter().add(callback);
         
         if let Some(pos) = response.interact_pointer_pos(){
-            if response.drag_started(){
+            let input = ui.ctx().input();
+            let primary_clicked = input.pointer.primary_clicked();
+            drop(input);
+            if response.drag_started() && primary_clicked{
                 self.zoom_box_start = Some(rect.clamp(pos));
             }
-            let pos = rect.clamp(pos);
-            let this_rect = normalize_rect(egui::Rect::from_two_pos(self.zoom_box_start.unwrap(), pos));
-            ui.painter_at(rect).rect_stroke(this_rect, 0.0, (1., epaint::Color32::from_rgb(255, 255, 255)));
-            if response.drag_released() {
-                self.cur_asp = this_rect.max - this_rect.min;
-                if self.cur_asp.x == 0.0{
-                    self.cur_asp.x = 1.0;
-                }
-                if self.cur_asp.y == 0.0{
-                    self.cur_asp.y = 1.0;
-                }
-                self.cur_asp = self.cur_asp / self.cur_asp.max_elem();
+            
+            if let Some(start) = self.zoom_box_start{
+                let pos = rect.clamp(pos);
+                let this_rect = normalize_rect(egui::Rect::from_two_pos(start, pos));
+                ui.painter_at(rect).rect_stroke(this_rect, 0.0, (1., self.circle_color));
+                if response.drag_released() {
+                    let this_asp = this_rect.max - this_rect.min;
+                    if this_asp.x != 0.0 && this_asp.y != 0.0{
+                        self.cur_asp = this_asp / this_asp.max_elem();
 
-                let t = inverse_lerp_rect(&rect, &this_rect);
-                let texture_zoom_level = lerp_rect(&self.texture_zoom_level, &t);
-                let databounds = lerp_rect(&self.databounds.as_ref().unwrap(), &t);
-                self.resize(ui, texture_zoom_level, databounds);
+                        let t = inverse_lerp_rect(&rect, &this_rect);
+                        let texture_zoom_level = lerp_rect(&self.texture_zoom_level, &t);
+                        let databounds = lerp_rect(&self.databounds.as_ref().unwrap(), &t);
+                        self.resize(ui, texture_zoom_level, databounds);
+                        self.zoom_box_start = None;
+                    }
+                }
+            } else {
+                if response.drag_released(){
+                    self.reset_zoom(ui)
+                }
             }
         }
 
@@ -1550,8 +1704,93 @@ fn data_to_screen_coords_vec2(vec2: egui::Vec2, rect: &egui::Rect, databounds: &
 
 fn data_radius_to_screen(radius: f32, rect: &egui::Rect, databounds: &egui::Rect) -> f32 {
     let t = radius / (databounds.max.x - databounds.min.x);
-    // dbg!(t);
     t * (rect.max.x - rect.min.x) 
 }
 
-
+fn colormap_dropdown(ui: &mut egui::Ui, input: &mut colormaps::KnownMaps) -> bool{
+    let mut clicked = false;
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Accent, colormaps::KnownMaps::Accent.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Blues, colormaps::KnownMaps::Blues.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::BrBG, colormaps::KnownMaps::BrBG.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::BuGn, colormaps::KnownMaps::BuGn.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::BuPu, colormaps::KnownMaps::BuPu.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::CMRmap, colormaps::KnownMaps::CMRmap.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Dark2, colormaps::KnownMaps::Dark2.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::GnBu, colormaps::KnownMaps::GnBu.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Greens, colormaps::KnownMaps::Greens.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Greys, colormaps::KnownMaps::Greys.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::OrRd, colormaps::KnownMaps::OrRd.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Oranges, colormaps::KnownMaps::Oranges.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::PRGn, colormaps::KnownMaps::PRGn.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Paired, colormaps::KnownMaps::Paired.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Pastel1, colormaps::KnownMaps::Pastel1.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Pastel2, colormaps::KnownMaps::Pastel2.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::PiYG, colormaps::KnownMaps::PiYG.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::PuBu, colormaps::KnownMaps::PuBu.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::PuBuGn, colormaps::KnownMaps::PuBuGn.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::PuOr, colormaps::KnownMaps::PuOr.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::PuRd, colormaps::KnownMaps::PuRd.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Purples, colormaps::KnownMaps::Purples.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::RdBu, colormaps::KnownMaps::RdBu.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::RdGy, colormaps::KnownMaps::RdGy.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::RdPu, colormaps::KnownMaps::RdPu.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::RdYlBu, colormaps::KnownMaps::RdYlBu.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::RdYlGn, colormaps::KnownMaps::RdYlGn.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Reds, colormaps::KnownMaps::Reds.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Set1, colormaps::KnownMaps::Set1.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Set2, colormaps::KnownMaps::Set2.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Set3, colormaps::KnownMaps::Set3.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Spectral, colormaps::KnownMaps::Spectral.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Wistia, colormaps::KnownMaps::Wistia.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::YlGn, colormaps::KnownMaps::YlGn.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::YlGnBu, colormaps::KnownMaps::YlGnBu.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::YlOrBr, colormaps::KnownMaps::YlOrBr.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::YlOrRd, colormaps::KnownMaps::YlOrRd.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::afmhot, colormaps::KnownMaps::afmhot.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::autumn, colormaps::KnownMaps::autumn.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::binary, colormaps::KnownMaps::binary.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::bone, colormaps::KnownMaps::bone.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::brg, colormaps::KnownMaps::brg.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::bwr, colormaps::KnownMaps::bwr.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::cividis, colormaps::KnownMaps::cividis.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::cool, colormaps::KnownMaps::cool.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::coolwarm, colormaps::KnownMaps::coolwarm.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::copper, colormaps::KnownMaps::copper.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::cubehelix, colormaps::KnownMaps::cubehelix.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::flag, colormaps::KnownMaps::flag.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::gist_earth, colormaps::KnownMaps::gist_earth.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::gist_gray, colormaps::KnownMaps::gist_gray.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::gist_heat, colormaps::KnownMaps::gist_heat.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::gist_ncar, colormaps::KnownMaps::gist_ncar.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::gist_rainbow, colormaps::KnownMaps::gist_rainbow.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::gist_stern, colormaps::KnownMaps::gist_stern.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::gist_yarg, colormaps::KnownMaps::gist_yarg.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::gnuplot, colormaps::KnownMaps::gnuplot.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::gnuplot2, colormaps::KnownMaps::gnuplot2.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::gray, colormaps::KnownMaps::gray.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::hot, colormaps::KnownMaps::hot.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::hsv, colormaps::KnownMaps::hsv.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::inferno, colormaps::KnownMaps::inferno.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::jet, colormaps::KnownMaps::jet.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::magma, colormaps::KnownMaps::magma.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::nipy_spectral, colormaps::KnownMaps::nipy_spectral.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::ocean, colormaps::KnownMaps::ocean.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::pink, colormaps::KnownMaps::pink.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::plasma, colormaps::KnownMaps::plasma.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::prism, colormaps::KnownMaps::prism.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::rainbow, colormaps::KnownMaps::rainbow.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::seismic, colormaps::KnownMaps::seismic.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::spring, colormaps::KnownMaps::spring.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::summer, colormaps::KnownMaps::summer.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::tab10, colormaps::KnownMaps::tab10.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::tab20, colormaps::KnownMaps::tab20.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::tab20b, colormaps::KnownMaps::tab20b.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::tab20c, colormaps::KnownMaps::tab20c.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::terrain, colormaps::KnownMaps::terrain.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::turbo, colormaps::KnownMaps::turbo.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::twilight, colormaps::KnownMaps::twilight.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::twilight_shifted, colormaps::KnownMaps::twilight_shifted.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::viridis, colormaps::KnownMaps::viridis.get_name()).clicked();
+	clicked |= ui.selectable_value(input, colormaps::KnownMaps::winter, colormaps::KnownMaps::winter.get_name()).clicked();
+    clicked
+}
