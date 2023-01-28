@@ -157,6 +157,7 @@ impl eframe::App for AppWrapper{
 struct RecalculateJob{
     path: PathBuf,
     tracking_params: TrackingParams,
+    channel: Option<usize>,
     result_sender: Sender<anyhow::Result<RecalculateResult>>,
 }
 
@@ -174,6 +175,7 @@ pub struct Custom3d {
     tracking_params: gpu_tracking::gpu_setup::TrackingParams,
     mode: DataMode,
     path: Option<PathBuf>,
+    channel: Option<usize>,
     output_path: PathBuf,
     save_pending: bool,
     particle_hash: Option<HashMap<usize, Vec<(usize, [f32; 2])>>>,
@@ -243,6 +245,7 @@ impl Clone for Custom3d{
         
         let line_cmap = self.line_cmap.clone();
 
+
         let texture_zoom_level = self.texture_zoom_level;
 
         let (job_sender, job_receiver) = std::sync::mpsc::channel();
@@ -250,11 +253,11 @@ impl Clone for Custom3d{
         std::thread::spawn(move ||{
             loop{
                 match job_receiver.recv(){
-                    Ok(RecalculateJob { path, tracking_params, result_sender }) => {
+                    Ok(RecalculateJob { path, channel, tracking_params, result_sender }) => {
                         // let generator = || gpu_tracking::execute_gpu::path_to_iter(&path, None);
                         // let result = RecalculateResult::from(gpu_tracking::execute_gpu::execute_provider(generator, tracking_params.clone(), 0, None).unwrap());
                         let result = RecalculateResult::from(
-                            gpu_tracking::execute_gpu::execute_file(&path, None, tracking_params.clone(), 0, None).into()
+                            gpu_tracking::execute_gpu::execute_file(&path, channel, tracking_params.clone(), 0, None).into()
                         );
                         result_sender.send(result).expect("Main thread lost");
                     },
@@ -290,6 +293,7 @@ impl Clone for Custom3d{
             tracking_params: params,
             mode,
             path: self.path.clone(),
+            channel: self.channel.clone(),
             output_path,
             save_pending: self.save_pending.clone(),
             particle_hash: self.particle_hash.clone(),
@@ -335,6 +339,7 @@ enum Style{
 #[derive(Clone)]
 struct InputState{
     path: String,
+    channel: String,
     output_path: String,
     frame_idx: String,
     datamode: DataMode,
@@ -378,6 +383,7 @@ impl Default for InputState{
     fn default() -> Self{
         Self{
             path: String::new(),
+            channel: String::new(),
             output_path: String::new(),
             frame_idx: "0".to_string(),
             datamode: DataMode::Immediate,
@@ -515,6 +521,7 @@ impl InputState{
                 self.overlap_threshold.parse::<f32>().ok().map(|val| write!(output, "overlap_threshold = {},\n\t", val));
             },
         };
+        self.channel.parse::<usize>().ok().map(|val| write!(output, "channel = {},\n\t", val));
         
         self.minmass.parse::<f32>().ok().map(|val| write!(output, "minmass = {},\n\t", val));
         self.max_iterations.parse::<u32>().ok().map(|val| if val != 10 {write!(output, "max_iterations = {},\n\t", val).unwrap()});
@@ -598,7 +605,8 @@ impl Custom3d {
     }
 
     pub fn setup_new_path(&mut self, wgpu_render_state: &egui_wgpu::RenderState) -> anyhow::Result<()>{
-        let (provider, dims) = match path_to_iter(&self.input_state.path, None){
+        self.channel = self.input_state.channel.parse::<usize>().ok();
+        let (provider, dims) = match path_to_iter(&self.input_state.path, self.channel){
             Ok(res) => {
                 self.path = Some(self.input_state.path.clone().into());
                 res
@@ -657,11 +665,11 @@ impl Custom3d {
         std::thread::spawn(move ||{
             loop{
                 match job_receiver.recv(){
-                    Ok(RecalculateJob { path, tracking_params, result_sender }) => {
+                    Ok(RecalculateJob { path, channel, tracking_params, result_sender }) => {
                         // let generator = || gpu_tracking::execute_gpu::path_to_iter(&path, None);
                         // let result = RecalculateResult::from(gpu_tracking::execute_gpu::execute_provider(generator, tracking_params.clone(), 0, None).unwrap());
                         let result = RecalculateResult::from(
-                            gpu_tracking::execute_gpu::execute_file(&path, None, tracking_params.clone(), 0, None).into()
+                            gpu_tracking::execute_gpu::execute_file(&path, channel, tracking_params.clone(), 0, None).into()
                         );
                         result_sender.send(result).expect("Main thread lost");
                     },
@@ -686,7 +694,7 @@ impl Custom3d {
         let circle_color = egui::Color32::from_rgb(255, 255, 255);
         
         let out = Self{
-            
+            channel: None,
             frame_provider: None,
             vid_len: None,
             frame_idx,
@@ -847,6 +855,9 @@ impl Custom3d {
         }) {
             self.circles_to_plot = circles_to_plot;
             self.circle_kdtree = circle_kdtree;
+        } else {
+            self.circles_to_plot = None;
+            self.circle_kdtree = None;
         }
     }
     
@@ -861,6 +872,7 @@ impl Custom3d {
         self.frame_col = result.frame_col;
         self.particle_col = result.particle_col;
         self.result_status = ResultStatus::Valid;
+        // dbg!(&self.results);
         self.update_circles_and_lines();
         Ok(())
     }
@@ -1015,10 +1027,15 @@ impl Custom3d {
                 }
                 let textedit = egui::widgets::TextEdit::singleline(&mut self.input_state.path)
                     .code_editor()
-                    .desired_width(f32::INFINITY)
+                    // .desired_width(f32::INFINITY)
                     .hint_text("Video file path");
-                let response = ui.add(textedit);
-                if response.changed() | browse_clicked{
+                let path_changed = ui.add(textedit).changed();
+                
+                let textedit = egui::widgets::TextEdit::singleline(&mut self.input_state.channel)
+                    .hint_text("vsi/ets channel");
+                let channel_changed = ui.add(textedit).changed();
+                
+                if path_changed | browse_clicked | channel_changed{
                     let wgpu_render_state = frame.wgpu_render_state().unwrap();
                     self.update_state(ui);
                     match self.setup_new_path(wgpu_render_state){
@@ -1361,10 +1378,12 @@ impl Custom3d {
         }
         let tracking_params = self.tracking_params.clone();
         let path = self.path.as_ref().cloned().unwrap();
+        let channel = self.channel.clone();
         let (result_sender, result_receiver) =  std::sync::mpsc::channel();
         self.result_receiver = Some(result_receiver);
         self.job_sender.send(RecalculateJob{
             path,
+            channel,
             result_sender,
             tracking_params
         }).expect("Thread lost");
@@ -1461,53 +1480,55 @@ impl Custom3d {
 
     
     fn result_dependent_plotting(&mut self, ui: &mut egui::Ui, rect: egui::Rect, response: egui::Response){
-        let circle_plotting = self.circles_to_plot.as_ref().unwrap().axis_iter(Axis(0)).map(|rrow|{
-            epaint::Shape::circle_stroke(
-                data_to_screen_coords_vec2([rrow[self.x_col.unwrap()], rrow[self.y_col.unwrap()]].into(), &rect, &self.databounds.as_ref().unwrap()),
-                {
-                    let r = self.point_radius(rrow);
-                    data_radius_to_screen(r, &rect, &self.databounds.as_ref().unwrap())
-                },
-                (1., self.circle_color)
-            )
-        });
-        ui.painter_at(rect).extend(circle_plotting);
-
-
-        match self.particle_hash{
-            Some(ref particle_hash) => {
-                let cmap = self.line_cmap.get_map();
-                let line_plotting = self.circles_to_plot.as_ref().unwrap().axis_iter(Axis(0)).map(|rrow|{
-                    let particle = rrow[self.particle_col.unwrap()];
-                    let particle_vec = &particle_hash[&(particle as usize)];
-                    particle_vec.windows(2).flat_map(|window|{
-                        let start = window[0];
-                        let end = window[1];
-                        if end.0 <= self.frame_idx{
-                            let t = inverse_lerp(start.0 as f32, *self.line_cmap_bounds.start(), *self.line_cmap_bounds.end());
-                            Some(epaint::Shape::line_segment([
-                                data_to_screen_coords_vec2(start.1.into(), &rect, &self.databounds.as_ref().unwrap()),
-                                data_to_screen_coords_vec2(end.1.into(), &rect, &self.databounds.as_ref().unwrap()),
-                            ], (1., cmap.call(t))))
-                        } else {
-                            None
-                        }
-                    })
-        
-                }).flatten();
-                ui.painter_at(rect).extend(line_plotting);
-            }
-            None => {}
+        if let Some(ref circles_to_plot) = self.circles_to_plot{
+            let circle_plotting = circles_to_plot.axis_iter(Axis(0)).map(|rrow|{
+                epaint::Shape::circle_stroke(
+                    data_to_screen_coords_vec2([rrow[self.x_col.unwrap()], rrow[self.y_col.unwrap()]].into(), &rect, &self.databounds.as_ref().unwrap()),
+                    {
+                        let r = self.point_radius(rrow);
+                        data_radius_to_screen(r, &rect, &self.databounds.as_ref().unwrap())
+                    },
+                    (1., self.circle_color)
+                )
+            });
+            ui.painter_at(rect).extend(circle_plotting);
         }
 
-        if let Some(hover) = response.hover_pos(){
+
+        if let (Some(ref particle_hash), Some(circles_to_plot), Some(particle_col)) =
+            (&self.particle_hash, &self.circles_to_plot, &self.particle_col){
+            let cmap = self.line_cmap.get_map();
+            let line_plotting = circles_to_plot.axis_iter(Axis(0)).map(|rrow|{
+                let particle = rrow[*particle_col];
+                let particle_vec = &particle_hash[&(particle as usize)];
+                particle_vec.windows(2).flat_map(|window|{
+                    let start = window[0];
+                    let end = window[1];
+                    if end.0 <= self.frame_idx{
+                        let t = inverse_lerp(start.0 as f32, *self.line_cmap_bounds.start(), *self.line_cmap_bounds.end());
+                        Some(epaint::Shape::line_segment([
+                            data_to_screen_coords_vec2(start.1.into(), &rect, &self.databounds.as_ref().unwrap()),
+                            data_to_screen_coords_vec2(end.1.into(), &rect, &self.databounds.as_ref().unwrap()),
+                        ], (1., cmap.call(t))))
+                    } else {
+                        None
+                    }
+                })
+    
+            }).flatten();
+            ui.painter_at(rect).extend(line_plotting);
+            // }
+            // _ => {}
+        }
+
+        if let (Some(hover), Some(tree)) = (response.hover_pos(), &self.circle_kdtree){
 
             let hover_data = [
-                lerp(inverse_lerp(hover.y, rect.min.y, rect.max.y), self.databounds.as_ref().unwrap().min.y, self.databounds.as_ref().unwrap().max.y),
-                lerp(inverse_lerp(hover.x, rect.min.x, rect.max.x), self.databounds.as_ref().unwrap().min.x, self.databounds.as_ref().unwrap().max.x),
+                lerp(inverse_lerp(hover.y, rect.min.y, rect.max.y), self.databounds.as_ref().unwrap().min.x, self.databounds.as_ref().unwrap().max.x),
+                lerp(inverse_lerp(hover.x, rect.min.x, rect.max.x), self.databounds.as_ref().unwrap().min.y, self.databounds.as_ref().unwrap().max.y),
             ];
             
-            let nearest = self.circle_kdtree.as_ref().unwrap().nearest(&hover_data);
+            let nearest = tree.nearest(&hover_data);
             if let Some(nearest) = nearest{
                 let mut cutoff = 0.02 * (self.databounds.as_ref().unwrap().max.x - self.databounds.as_ref().unwrap().min.x);
                 let row = self.circles_to_plot.as_ref().unwrap().index_axis(Axis(0), nearest.item.1);
@@ -1530,8 +1551,8 @@ impl Custom3d {
                     );
                     
                     let mut screen_pos = egui::Pos2{
-                        x: 10. + lerp(inverse_lerp(nearest.item.0[1], self.databounds.as_ref().unwrap().min.x, self.databounds.as_ref().unwrap().max.x), rect.min.x, rect.max.x),
-                        y: lerp(inverse_lerp(nearest.item.0[0], self.databounds.as_ref().unwrap().min.y, self.databounds.as_ref().unwrap().max.y), rect.min.y, rect.max.y)
+                        x: 10. + lerp(inverse_lerp(nearest.item.0[1], self.databounds.as_ref().unwrap().min.y, self.databounds.as_ref().unwrap().max.y), rect.min.x, rect.max.x),
+                        y: lerp(inverse_lerp(nearest.item.0[0], self.databounds.as_ref().unwrap().min.x, self.databounds.as_ref().unwrap().max.x), rect.min.y, rect.max.y)
                         - (label.rect.max.y - label.rect.min.y) * 0.5,
                     };
                     let expansion = 4.0;
@@ -1610,6 +1631,10 @@ impl Custom3d {
 
                         let t = inverse_lerp_rect(&rect, &this_rect);
                         let texture_zoom_level = lerp_rect(&self.texture_zoom_level, &t);
+                        let t = egui::Rect{
+                            min: egui::Pos2{ x: t.min.y, y: t.min.x },
+                            max: egui::Pos2{ x: t.max.y, y: t.max.x },
+                        };
                         let databounds = lerp_rect(&self.databounds.as_ref().unwrap(), &t);
                         self.resize(ui, texture_zoom_level, databounds);
                         self.zoom_box_start = None;
@@ -1700,12 +1725,13 @@ fn zero_one_rect() -> egui::Rect{
 }
 
 fn data_to_screen_coords_vec2(vec2: egui::Vec2, rect: &egui::Rect, databounds: &egui::Rect) -> egui::Pos2 {
-    let t = egui::Vec2::new(inverse_lerp(vec2.x, databounds.min.x, databounds.max.x), inverse_lerp(vec2.y, databounds.min.y, databounds.max.y));
+    let t = egui::Vec2::new(inverse_lerp(vec2.x, databounds.min.y, databounds.max.y),
+        inverse_lerp(vec2.y, databounds.min.x, databounds.max.x));
     rect.lerp(t)
 }
 
 fn data_radius_to_screen(radius: f32, rect: &egui::Rect, databounds: &egui::Rect) -> f32 {
-    let t = radius / (databounds.max.x - databounds.min.x);
+    let t = radius / (databounds.max.y - databounds.min.y);
     t * (rect.max.x - rect.min.x) 
 }
 

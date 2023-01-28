@@ -36,6 +36,7 @@ impl ToPyErr for Error{
             Error::NoExtensionError{ .. } |
             Error::ReadError |
             Error::FrameOOB |
+            Error::ChannelNotFound |
             Error::CastError
              => {
 				pyo3::exceptions::PyValueError::new_err(self.to_string())
@@ -497,12 +498,12 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
 
     #[pyfn(m)]
     #[pyo3(name = "parse_ets")]
-    fn parse_ets<'py>(py: Python<'py>, path: &str) -> &'py PyDict{
+    fn parse_ets<'py>(py: Python<'py>, path: &str) -> PyResult<&'py PyDict>{
         let mut file = File::open(path).unwrap();
         let parser = MinimalETSParser::new(&mut file).unwrap();
         let output = PyDict::new(py);
         for channel in parser.offsets.keys(){
-            let iter = parser.iterate_channel(file.try_clone().unwrap(), *channel);
+            let iter = parser.iterate_channel(file.try_clone().unwrap(), *channel).map_err(|err| err.pyerr())?;
             let n_frames = iter.len();
             let mut vec = Vec::with_capacity(n_frames * parser.dims.iter().product::<usize>());
             vec.extend(iter.flatten().flatten());
@@ -510,7 +511,7 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
             let array = array.into_pyarray(py);
             output.set_item(*channel, array).unwrap();
         }
-        output
+        Ok(output)
     }
 
     #[pyfn(m)]
@@ -519,7 +520,7 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
         let mut file = File::open(path).unwrap();
         let parser = MinimalETSParser::new(&mut file).unwrap();
         let channel = channel.unwrap_or(0);
-        let mut iter = parser.iterate_channel(file.try_clone().unwrap(), channel);
+        let mut iter = parser.iterate_channel(file.try_clone().unwrap(), channel).map_err(|err| err.pyerr())?;
         let n_frames = keys.len();
         let mut vec = Vec::with_capacity(n_frames * parser.dims.iter().product::<usize>());
         for key in keys{

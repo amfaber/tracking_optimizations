@@ -1079,7 +1079,7 @@ pub fn path_to_iter<P: AsRef<std::path::Path>>(path: P, channel: Option<usize>)
             let mut file = File::open(path).map_err(|ioerr| crate::error::Error::FileNotFound { source: ioerr, filename: path.to_path_buf() })?;
             let parser = decoderiter::MinimalETSParser::new(&mut file).unwrap();
             let dims = [parser.dims[1] as u32, parser.dims[0] as u32];
-            let provider = RefCell::new(parser.iterate_channel(file, channel.unwrap_or(0)));
+            let provider = RefCell::new(parser.iterate_channel(file, channel.unwrap_or(0))?);
             (Box::new(provider), dims)
         },
         "vsi" => {
@@ -1098,7 +1098,7 @@ pub fn path_to_iter<P: AsRef<std::path::Path>>(path: P, channel: Option<usize>)
             let mut file = File::open(ets_path).map_err(|ioerr| crate::error::Error::FileNotFound { source: ioerr, filename: path.to_path_buf() })?;
             let parser = decoderiter::MinimalETSParser::new(&mut file).unwrap();
             let dims = [parser.dims[1] as u32, parser.dims[0] as u32];
-            let provider = RefCell::new(parser.iterate_channel(file, channel.unwrap_or(0)));
+            let provider = RefCell::new(parser.iterate_channel(file, channel.unwrap_or(0))?);
             (Box::new(provider), dims)
         }
         _ => Err(crate::error::Error::UnsupportedFileformat { extension: ext.to_str().unwrap().to_string() })?,

@@ -362,16 +362,16 @@ impl MinimalETSParser{
     //     Ok(u32::from_le_bytes(buf.try_into().unwrap()))
     // }
 
-    pub fn iterate_channel<R: Read + Seek>(&self, reader: R, channel: usize) -> ETSIterator<R>{
+    pub fn iterate_channel<R: Read + Seek>(&self, reader: R, channel: usize) -> crate::error::Result<ETSIterator<R>>{
         let read_size = self.dims[0] * self.dims[1] * self.data_type.size();
-        let offsets = self.offsets.get(&channel).unwrap().clone();
-        ETSIterator{
+        let offsets = self.offsets.get(&channel).ok_or(crate::error::Error::ChannelNotFound)?.clone();
+        Ok(ETSIterator{
             reader,
             // parser: self.reader,
             current: 0,
             offsets,
             read_size,
-        }
+        })
     }
 }
 

@@ -78,7 +78,10 @@ accepted dimensions: (Nx2) or (Nx3). received: {:?}", dims)]
 	#[error("filename is not valid utf-8")]
 	InvalidFileName{
 		filename: PathBuf,
-	}
+	},
+
+	#[error("the requested channel wasn't found in the file")]
+	ChannelNotFound,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

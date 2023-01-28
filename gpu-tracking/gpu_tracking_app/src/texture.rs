@@ -389,8 +389,8 @@ impl ColormapRenderResources {
 		let dimensions = frame.shape();
 		
         let size = wgpu::Extent3d {
-            width: dimensions[0] as u32,
-            height: dimensions[1] as u32,
+            width: dimensions[1] as u32,
+            height: dimensions[0] as u32,
             depth_or_array_layers: 1,
         };
 
@@ -437,8 +437,8 @@ impl ColormapRenderResources {
             bytemuck::cast_slice(frame.as_slice().unwrap()),
             wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: NonZeroU32::new(4 * dimensions[0] as u32),
-                rows_per_image: NonZeroU32::new(dimensions[1] as u32),
+                bytes_per_row: NonZeroU32::new(4 * dimensions[1] as u32),
+                rows_per_image: NonZeroU32::new(dimensions[0] as u32),
             },
             size,
         );
