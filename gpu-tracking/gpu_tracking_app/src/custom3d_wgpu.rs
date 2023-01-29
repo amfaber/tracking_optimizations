@@ -1,8 +1,8 @@
-use std::{num::NonZeroU64, sync::{Arc, mpsc::{Receiver, Sender}}, collections::HashMap, path::PathBuf, ops::RangeInclusive};
+use std::{num::NonZeroU64, sync::{Arc, mpsc::{Receiver, Sender}}, collections::HashMap, path::PathBuf, ops::RangeInclusive, rc::{Rc, Weak}, cell::RefCell};
 
 use eframe::{
     egui_wgpu::{self, wgpu},
-    wgpu::util::DeviceExt,
+    // wgpu::util::DeviceExt,
 };
 use egui::{self, TextStyle, Widget};
 use epaint;
@@ -16,8 +16,11 @@ use std::fmt::Write;
 use uuid::Uuid;
 use anyhow;
 use rfd;
-use ndarray_csv;
+use strum::IntoEnumIterator;
 use csv;
+use ndarray_csv::Array2Reader;
+// use ndarray_stats::histogram::{HistogramExt, strategies::Auto, Bins, Edges, Grid, GridBuilder};
+// use ordered_float;
 
 
 trait ColorMap{
@@ -26,6 +29,7 @@ trait ColorMap{
 
 impl ColorMap for [f32; 120]{
     fn call(&self, t: f32) -> epaint::Color32{
+        let t = t.clamp(0.0, 1.0);
         let t29 = t * 29.;
         let ind = t29 as usize;
         let leftover = t29 - ind as f32;
@@ -81,15 +85,14 @@ impl DataMode{
 }
 
 pub struct AppWrapper{
-    apps: Vec<Custom3d>,
+    apps: Vec<Rc<RefCell<Custom3d>>>,
     opens: Vec<bool>,
 }
 
 impl AppWrapper{
     pub fn new<'a>(cc: &'a eframe::CreationContext<'a>) -> Option<Self> {
-        // let wgpu_render_state = cc.wgpu_render_state.as_ref()?;
         let apps = vec![
-            Custom3d::new()?,
+            Rc::new(RefCell::new(Custom3d::new()?)),
         ];
         let opens = vec![true];
         Some(Self{apps, opens})
@@ -104,22 +107,28 @@ impl eframe::App for AppWrapper{
                 .show(ui, |ui| {
                     let response = ui.button("New");
                     if response.clicked(){
-                        self.apps.push(Custom3d::new().unwrap());
+                        self.apps.push(Rc::new(RefCell::new(Custom3d::new().unwrap())));
                         self.opens.push(true);
                     }
                     let mut adds = Vec::new();
                     let mut removes = Vec::new();
                     for (i, (app, open)) in self.apps.iter_mut().zip(self.opens.iter_mut()).enumerate(){
+                        // app.borrow_mut()
+                        let mut app = app.borrow_mut();
                         egui::containers::Window::new("")
                             .id(egui::Id::new(app.uuid.as_u128()))
                             .title_bar(true)
                             .open(open)
                             .show(ui.ctx(), |ui|{
-                                app.get_input(ui, frame);
+                                app.entry_point(ui, frame);
                                 ui.horizontal(|ui| {
                                     let response = ui.button("Clone");
-                                    if response.clicked(){
+                                    if response.clicked() && matches!(app.result_status, ResultStatus::Valid | ResultStatus::Static){
                                         adds.push((i, app.uuid));
+                                    }
+                                    if response.secondary_clicked(){
+                                        app.other_apps.clear();
+                                        app.update_circles();
                                     }
                                     if ui.button("Copy python command").clicked(){
                                         ui.output().copied_text = app.input_state.to_py_command();
@@ -132,6 +141,7 @@ impl eframe::App for AppWrapper{
                                         .hint_text("Save file path (must be .csv)"));
                                 });
                             });
+                        // drop(app);
                     }
                     for (i, open) in self.opens.iter().enumerate(){
                         if !*open{
@@ -139,9 +149,13 @@ impl eframe::App for AppWrapper{
                         }
                     }
                     for (i, uuid) in adds{
-                        let app = self.apps.iter().find(|app| app.uuid == uuid).unwrap();
-                        let mut new_app = app.clone();
-                        new_app.setup_gpu_after_clone(ui, frame);
+                        let app = self.apps.iter().find(|app| app.borrow().uuid == uuid).unwrap();
+                        let new_app = Rc::new(RefCell::new(app.borrow().clone()));
+                        let mut new_app_mut = new_app.borrow_mut();
+                        // let new_app_mut = Rc::get_mut(&mut new_app).unwrap();
+                        new_app_mut.setup_gpu_after_clone(ui, frame);
+                        new_app_mut.other_apps.push(Rc::downgrade(app));
+                        drop(new_app_mut);
                         self.apps.insert(i + 1, new_app);
                         self.opens.insert(i + 1, true);
                     }
@@ -162,16 +176,18 @@ struct RecalculateJob{
 }
 
 pub struct Custom3d {
-    // input_path: String,
-    
+    plot_radius_fallback: f32,
+    static_dataset: bool,
+    recently_updated: bool,
 	frame_provider: Option<ProviderDimension>,
     vid_len: Option<usize>,
     frame_idx: usize,
+    other_apps: Vec<Weak<RefCell<Custom3d>>>,
     // last_render: Option<std::time::Instant>,
     // gpu_tracking_state: gpu_tracking::gpu_setup::GpuState,
     results: Option<Array2<f32>>,
-    result_names: Option<Vec<(&'static str, &'static str)>>,
-    circles_to_plot: Option<Array2<f32>>,
+    result_names: Option<Vec<(String, String)>>,
+    circles_to_plot: Vec<(Array2<f32>, Option<Weak<RefCell<Custom3d>>>)>,
     tracking_params: gpu_tracking::gpu_setup::TrackingParams,
     mode: DataMode,
     path: Option<PathBuf>,
@@ -179,7 +195,7 @@ pub struct Custom3d {
     output_path: PathBuf,
     save_pending: bool,
     particle_hash: Option<HashMap<usize, Vec<(usize, [f32; 2])>>>,
-    circle_kdtree: Option<kd_tree::KdTree<([f32; 2], usize)>>,
+    circle_kdtree: Option<kd_tree::KdTree<([f32; 2], (usize, usize))>>,
 
     r_col: Option<usize>,
     x_col: Option<usize>,
@@ -190,7 +206,7 @@ pub struct Custom3d {
     circle_color: egui::Color32,
     image_cmap: colormaps::KnownMaps,
     line_cmap: colormaps::KnownMaps,
-    line_cmap_bounds: RangeInclusive<f32>,
+    line_cmap_bounds: Option<RangeInclusive<f32>>,
     // line_cmap_end: f32,
 
     zoom_box_start: Option<egui::Pos2>,
@@ -254,8 +270,6 @@ impl Clone for Custom3d{
             loop{
                 match job_receiver.recv(){
                     Ok(RecalculateJob { path, channel, tracking_params, result_sender }) => {
-                        // let generator = || gpu_tracking::execute_gpu::path_to_iter(&path, None);
-                        // let result = RecalculateResult::from(gpu_tracking::execute_gpu::execute_provider(generator, tracking_params.clone(), 0, None).unwrap());
                         let result = RecalculateResult::from(
                             gpu_tracking::execute_gpu::execute_file(&path, channel, tracking_params.clone(), 0, None).into()
                         );
@@ -270,8 +284,14 @@ impl Clone for Custom3d{
         
         let frame_idx = self.frame_idx;
         let image_cmap = self.image_cmap.clone();
-
-        let frame_provider = self.path.as_ref().map(|path| ProviderDimension(path_to_iter(path, None).unwrap()));
+        
+        let channel = self.channel.clone();
+        let frame_provider = self.path.as_ref().and_then(|path| {
+            match path_to_iter(path, channel){
+                Ok(res) => Some(ProviderDimension(res)),
+                Err(_) => None
+            }
+        });
         let vid_len = self.vid_len.clone();
 
         let needs_update = self.needs_update.clone();
@@ -280,9 +300,16 @@ impl Clone for Custom3d{
 
         let circle_color = self.circle_color.clone();
         let output_path = self.output_path.clone();
+        let other_apps = self.other_apps.clone();
+        // other_apps.push(Rc::downgrade(&Rc::new(self)));
+
+        // dbg!(&self.result_status);
         
-        let out = Self{
-            
+        let mut out = Self{
+            plot_radius_fallback: self.plot_radius_fallback.clone(),
+            static_dataset: self.static_dataset.clone(),
+            recently_updated: self.recently_updated.clone(),
+            other_apps,
             frame_provider,
             vid_len,
             frame_idx,
@@ -293,7 +320,7 @@ impl Clone for Custom3d{
             tracking_params: params,
             mode,
             path: self.path.clone(),
-            channel: self.channel.clone(),
+            channel,
             output_path,
             save_pending: self.save_pending.clone(),
             particle_hash: self.particle_hash.clone(),
@@ -350,6 +377,8 @@ struct InputState{
     style: Style,
     all_options: bool,
     color_options: bool,
+
+    plot_radius_fallback: String,
     
     // Trackpy
     diameter: String,
@@ -394,6 +423,8 @@ impl Default for InputState{
             style: Style::Trackpy,
             all_options: false,
             color_options: false,
+
+            plot_radius_fallback: "4.5".to_string(),
 
             diameter: "9".to_string(),
             separation: "10".to_string(),
@@ -604,20 +635,61 @@ impl Custom3d {
         Ok(())
     }
 
+    fn load_csv(&mut self) -> anyhow::Result<()>{
+        let mut reader = csv::Reader::from_path(&self.input_state.path)?;
+        let header = reader.headers()?;
+        let header: Vec<_> = header.iter().map(|field_name|{
+            (field_name.to_string(), "float".to_string())
+        }).collect();
+        let results = reader.deserialize_array2_dynamic::<f32>()?;
+        self.result_names = Some(header);
+        self.results = Some(results);
+        self.path = Some(self.input_state.path.clone().into());
+        // self.tracking_params.style = gpu_tracking::gpu_setup::ParamStyle::Log{
+        //     min_radius: 4.5,
+        //     max_radius: 0.0,
+        //     n_radii: 10,
+            
+        // };
+        self.result_status = ResultStatus::Static;
+        Ok(())
+    }
+    
     pub fn setup_new_path(&mut self, wgpu_render_state: &egui_wgpu::RenderState) -> anyhow::Result<()>{
         self.channel = self.input_state.channel.parse::<usize>().ok();
         let (provider, dims) = match path_to_iter(&self.input_state.path, self.channel){
             Ok(res) => {
                 self.path = Some(self.input_state.path.clone().into());
+                self.static_dataset = false;
                 res
             },
-            Err(e) => {
-                self.path = None;
-                return Err(e.into())
+            Err(_) => {
+                // self.path = None;
+                self.frame_provider = None;
+                match self.load_csv(){
+                    Ok(()) => {
+                        self.static_dataset = true;
+                        return Ok(())
+                    },
+                    Err(e) => {
+                        self.static_dataset = false;
+                        return Err(e)
+                    }
+                };
+                // self.static_dataset = true;
+                // return Ok(())
             }
         };
         let provider_dimension = ProviderDimension((provider, dims));
         self.vid_len = Some(provider_dimension.len());
+        self.line_cmap_bounds = match self.mode{
+            DataMode::Range(ref range) => {
+                Some(*range.start() as f32..=(*range.end() as f32))
+            },
+            _ => {
+                Some(0.0..=((self.vid_len.unwrap() - 1) as f32))
+            }
+        };
         self.frame_provider = Some(provider_dimension);
         
         self.frame_idx = 0;
@@ -687,13 +759,17 @@ impl Custom3d {
         
         let needs_update = NeedsUpdate::default();
 
-        let line_cmap_bounds = 0.0..=1.0;
+        let line_cmap_bounds = None;
 
         let playback = Playback::Off;
 
         let circle_color = egui::Color32::from_rgb(255, 255, 255);
         
         let out = Self{
+            plot_radius_fallback: 4.5,
+            static_dataset: false,
+            recently_updated: false,
+            other_apps: Vec::new(),
             channel: None,
             frame_provider: None,
             vid_len: None,
@@ -701,7 +777,7 @@ impl Custom3d {
             // last_render: None,
             results: None,
             result_names: None,
-            circles_to_plot: None,
+            circles_to_plot: Vec::new(),
             tracking_params: params,
             mode,
             path: None,
@@ -760,6 +836,7 @@ enum ResultStatus{
     Valid,
     Processing,
     TooOld,
+    Static,
 }
 
 struct RecalculateResult{
@@ -805,13 +882,92 @@ impl RecalculateResult{
 
 impl Custom3d {
 
-    fn update_circles_and_lines(&mut self){
-        if self.results.is_none() | matches!(self.result_status, ResultStatus::Processing){
-            return
+    fn results_to_circles_to_plot(&self, frame: usize) -> Option<Array2<f32>>{
+        match self.result_status{
+            ResultStatus::Processing | ResultStatus::TooOld => {
+                return None
+            }
+            ResultStatus::Static | ResultStatus::Valid => ()
         }
-        match (&self.particle_hash, &self.mode, self.particle_col){
-            (_, DataMode::Immediate, _) => {}
-            (None, _, Some(particle_col)) => {
+        if self.results.is_none(){
+            return None
+        }
+        let mut subsetter = gpu_tracking::linking::FrameSubsetter::new(
+            self.results.as_ref().unwrap().view(),
+            Some(0),
+            (1, 2),
+            None,
+            gpu_tracking::linking::SubsetterType::Agnostic,
+        );
+        
+        subsetter.find_map(|ele| {
+            match ele{
+                Ok((Some(i), gpu_tracking::linking::SubsetterOutput::Agnostic(res))) if i == frame => {
+                    Some(res)
+                },
+                _ => None
+            }
+        })
+    }
+
+    fn update_circles(&mut self){
+        // if self.results.is_none() | matches!(self.result_status, ResultStatus::Processing){
+        //     return
+        // }
+
+        self.circles_to_plot.clear();
+        if let Some(circles) = self.results_to_circles_to_plot(self.frame_idx){
+            self.circles_to_plot.push((circles, None))
+        }
+
+        for owner in self.other_apps.iter(){
+            if let Some(alive_owner) = owner.upgrade(){
+                if let Some(circles) = alive_owner.borrow().results_to_circles_to_plot(self.frame_idx){
+                    self.circles_to_plot.push((circles, Some(Weak::clone(owner))));
+                }
+            }
+        }
+        
+        
+        let kdtree = kd_tree::KdTree::build_by_ordered_float(self.circles_to_plot.iter().enumerate().flat_map(|(idx, (array, _owner))| {
+            let y_col = self.y_col.clone().unwrap();
+            let x_col = self.x_col.clone().unwrap();
+            array.axis_iter(Axis(0)).enumerate().map(move |(i, row)| {
+                ([row[y_col], row[x_col]], (idx, i))
+            })
+        }).collect());
+        
+        if !kdtree.is_empty(){
+            self.circle_kdtree = Some(kdtree);
+        } else {
+            self.circle_kdtree = None;
+        }
+    }
+    
+    fn update_from_recalculate(&mut self, result: anyhow::Result<RecalculateResult>) -> anyhow::Result<()>{
+        let result = result?;
+        let result_names: Vec<_> = result.result_names.into_iter().map(|(s1, s2)| (s1.to_string(), s2.to_string())).collect();
+        self.result_receiver = None;
+        self.results = Some(result.results);
+        self.result_names = Some(result_names);
+        self.r_col = result.r_col;
+        self.x_col = result.x_col;
+        self.y_col = result.y_col;
+        self.frame_col = result.frame_col;
+        self.particle_col = result.particle_col;
+        self.result_status = ResultStatus::Valid;
+        self.recently_updated = true;
+        self.update_lines();
+        self.update_circles();
+        Ok(())
+    }
+
+    fn update_lines(&mut self){
+        match (&self.mode, self.particle_col){
+            (DataMode::Immediate, _) | (_, None) => {
+                self.particle_hash = None;
+            },
+            (_, Some(particle_col)) => {
                 self.particle_hash = Some(HashMap::new());
                 for row in self.results.as_ref().unwrap().axis_iter(Axis(0)){
                     let part_id = row[particle_col];
@@ -831,53 +987,11 @@ impl Custom3d {
                 // });
                 
             }
-            _ => {}
         }
-        
-        let mut subsetter = gpu_tracking::linking::FrameSubsetter::new(
-            self.results.as_ref().unwrap().view(),
-            Some(0),
-            (1, 2),
-            None,
-            gpu_tracking::linking::SubsetterType::Agnostic,
-        );
-
-        if let Some((circles_to_plot, circle_kdtree)) = subsetter.find_map(|ele| {
-            match ele{
-                Ok((Some(i), gpu_tracking::linking::SubsetterOutput::Agnostic(res))) if i == self.frame_idx => {
-                    let kdtree = kd_tree::KdTree::build_by_ordered_float(res.axis_iter(Axis(0)).enumerate().map(|(i, row)| {
-                        ([row[self.y_col.unwrap()], row[self.x_col.unwrap()]], i)
-                    }).collect());
-                    Some((Some(res), Some(kdtree)))
-                },
-                _ => None
-            }
-        }) {
-            self.circles_to_plot = circles_to_plot;
-            self.circle_kdtree = circle_kdtree;
-        } else {
-            self.circles_to_plot = None;
-            self.circle_kdtree = None;
-        }
-    }
-    
-    fn update_from_recalculate(&mut self, result: anyhow::Result<RecalculateResult>) -> anyhow::Result<()>{
-        let result = result?;
-        self.result_receiver = None;
-        self.results = Some(result.results);
-        self.result_names = Some(result.result_names);
-        self.r_col = result.r_col;
-        self.x_col = result.x_col;
-        self.y_col = result.y_col;
-        self.frame_col = result.frame_col;
-        self.particle_col = result.particle_col;
-        self.result_status = ResultStatus::Valid;
-        // dbg!(&self.results);
-        self.update_circles_and_lines();
-        Ok(())
     }
 
     fn poll_result(&mut self) -> anyhow::Result<()>{
+        self.recently_updated = false;
         match self.result_receiver.as_ref(){
             Some(recv) => {
                 match recv.try_recv(){
@@ -890,7 +1004,7 @@ impl Custom3d {
                                 self.result_receiver = None;
                                 self.recalculate()?;
                             },
-                            ResultStatus::Valid => unreachable!(),
+                            ResultStatus::Valid | ResultStatus::Static => unreachable!(),
                         }
                         
                     },
@@ -917,7 +1031,7 @@ impl Custom3d {
             let end = &self.input_state.range_end;
             match &self.input_state.datamode{
                 DataMode::Immediate | DataMode::Full | DataMode::Off if self.mode != self.input_state.datamode => {
-                    self.line_cmap_bounds = 0.0..=(self.vid_len.unwrap() as f32);
+                    self.line_cmap_bounds = Some(0.0..=((self.vid_len.unwrap() - 1) as f32));
                     self.mode = self.input_state.datamode.clone()
                 },
                 DataMode::Range(_) => {
@@ -936,7 +1050,7 @@ impl Custom3d {
                         return Ok(())
                     }
                     self.mode = DataMode::Range(start..=end);
-                    self.line_cmap_bounds = (start as f32)..=(end as f32);
+                    self.line_cmap_bounds = Some((start as f32)..=(end as f32));
                     self.update_frame(ui, FrameChange::Resubmit);
                 },
                 _ => {
@@ -958,7 +1072,7 @@ impl Custom3d {
                 self.save_pending = true;
                 return
             },
-            ResultStatus::Valid => {
+            ResultStatus::Valid | ResultStatus::Static => {
                 self.save_pending = false;
             }
         }
@@ -1013,152 +1127,180 @@ impl Custom3d {
         self.needs_update = NeedsUpdate::default();
     }
 
-    fn get_input(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame){
-        ui.vertical(|ui|{
-            ui.horizontal(|ui|{
-                let browse_clicked = ui.button("Browse").clicked();
-                if browse_clicked{
-                    self.path = rfd::FileDialog::new()
-                        .set_directory(std::env::current_dir().unwrap())
-                        .add_filter("Support video formats", &["tif", "tiff", "vsi", "ets"]).pick_file();
-                    if let Some(ref path) = self.path{
-                        self.input_state.path = path.clone().into_os_string().into_string().unwrap(); 
-                    }
+    fn entry_point(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame){
+        ui.horizontal(|ui|{
+            let browse_clicked = ui.button("Browse").clicked();
+            if browse_clicked{
+                self.path = rfd::FileDialog::new()
+                    .set_directory(std::env::current_dir().unwrap())
+                    .add_filter("Supported video formats", &["tif", "tiff", "vsi", "ets"])
+                    .add_filter("CSV dataset", &["csv"])
+                    .pick_file();
+                if let Some(ref path) = self.path{
+                    self.input_state.path = path.clone().into_os_string().into_string().unwrap(); 
                 }
-                let textedit = egui::widgets::TextEdit::singleline(&mut self.input_state.path)
-                    .code_editor()
-                    // .desired_width(f32::INFINITY)
-                    .hint_text("Video file path");
-                let path_changed = ui.add(textedit).changed();
-                
+            }
+            let textedit = egui::widgets::TextEdit::singleline(&mut self.input_state.path)
+                .code_editor()
+                // .desired_width(f32::INFINITY)
+                .hint_text("Video file path");
+            let path_changed = ui.add(textedit).changed();
+            
+            let channel_changed = if !self.static_dataset{
                 let textedit = egui::widgets::TextEdit::singleline(&mut self.input_state.channel)
                     .hint_text("vsi/ets channel");
-                let channel_changed = ui.add(textedit).changed();
-                
-                if path_changed | browse_clicked | channel_changed{
-                    let wgpu_render_state = frame.wgpu_render_state().unwrap();
-                    self.update_state(ui);
-                    match self.setup_new_path(wgpu_render_state){
-                        Ok(_) => {},
-                        Err(_) => self.path = None,
-                    };
-                }
-            });
-            ui.horizontal(|ui|{
-                match self.playback{
-                    Playback::FPS(_) => {
-                        if ui.button("Pause").clicked(){
-                            self.playback = Playback::Off
-                        };
-                    },
-                    Playback::Off => {
-                        if ui.button("Play").clicked(){
-                            let fps = match self.input_state.fps.parse::<f32>(){
-                                Ok(fps) => fps,
-                                Err(_) => 30.,
-                            };
-                            self.playback = Playback::FPS((fps, std::time::Instant::now()))
-                        };
-                    },
-                }
-                let fps_changed = ui.add(egui::widgets::TextEdit::singleline(
-                    &mut self.input_state.fps
-                ).desired_width(30.)).changed();
-                
-                if fps_changed & matches!(self.playback, Playback::FPS(_)){
-                    let fps = match self.input_state.fps.parse::<f32>(){
-                        Ok(fps) => fps,
-                        Err(_) => 30.,
-                    };
-                    self.playback = Playback::FPS((fps, std::time::Instant::now()))
-                };
-                ui.label("fps")
-            });
-            ui.horizontal(|ui|{
-                let mut changed = false;
-                changed |= ui.selectable_value(&mut self.input_state.datamode, DataMode::Off, "Off").clicked();
-                changed |= ui.selectable_value(&mut self.input_state.datamode, DataMode::Immediate, "One").clicked();
-                changed |= ui.selectable_value(&mut self.input_state.datamode, DataMode::Full, "All").clicked();
-                changed |= ui.selectable_value(&mut self.input_state.datamode, DataMode::Range(0..=1), "Range").clicked();
-                
-                ui.label("Showing frame:");
-                let frame_changed = ui.add(egui::widgets::TextEdit::singleline(
-                    &mut self.input_state.frame_idx
-                ).desired_width(30.)).changed();
-                
-                if frame_changed{
-                    self.update_frame(ui, FrameChange::Input);
-                }
-                
-                if self.input_state.datamode == DataMode::Range(0..=1){
-                    ui.label("in range");
-                    changed |= ui.add(egui::widgets::TextEdit::singleline(
-                        &mut self.input_state.range_start
-                    ).desired_width(30.)).changed();
-                    ui.label("to");
-                    changed |= ui.add(egui::widgets::TextEdit::singleline(
-                        &mut self.input_state.range_end
-                    ).desired_width(30.)).changed();
-                }
-                
-                if changed{
-                    self.needs_update.datamode = true;
-                }
-                
-            });
+                ui.add(textedit).changed()
+            } else {
+                false
+            };
             
-            
-            self.tracking_input(ui);
-            
-            let mut submit_click = false;
-            ui.horizontal(|ui| {
-                submit_click = ui.add_enabled(self.path.is_some() & self.needs_update.any(), egui::widgets::Button::new("Submit")).clicked();
-                let response = ui.button("🏠🔍");
-                if response.clicked() && self.path.is_some(){
-                    self.reset_zoom(ui);
-                }
-                // ui.add_space(300.);
-                // ui.with_layout(egui::Layout)
-                if ui.add(egui::SelectableLabel::new(self.input_state.color_options, "Color Options")).clicked(){
-                    self.input_state.color_options = !self.input_state.color_options;
-                }
-            });
-            if self.input_state.color_options{
-                ui.horizontal(|ui|{
-                    ui.label("Circle color:");
-                    ui.color_edit_button_srgba(&mut self.circle_color);
-
-                    ui.label("Image colormap:");
-                    egui::ComboBox::from_id_source(self.uuid.as_u128() + 1).selected_text(self.image_cmap.get_name())
-                        .show_ui(ui, |ui|{ 
-                            if colormap_dropdown(ui, &mut self.image_cmap){
-                                self.set_image_cmap(ui)
-                            };
-                        }
-                    );
-
-                    ui.label("Tracks colormap:");
-                    egui::ComboBox::from_id_source(self.uuid.as_u128() + 2).selected_text(self.line_cmap.get_name())
-                        .show_ui(ui, |ui|{ 
-                            if colormap_dropdown(ui, &mut self.line_cmap){
-                                self.set_image_cmap(ui)
-                            };
-                        }
-                    );
-                });
-            }
-            
-            if submit_click | ui.ctx().input().key_down(egui::Key::Enter){
+            if path_changed | browse_clicked | channel_changed{
+                let wgpu_render_state = frame.wgpu_render_state().unwrap();
                 self.update_state(ui);
-            }
-
-            
-            
-            match self.path{
-                Some(_) => self.show(ui, frame),
-                None => {},
+                match self.setup_new_path(wgpu_render_state){
+                    Ok(_) => {},
+                    Err(_) => self.path = None,
+                };
             }
         });
+        if !self.static_dataset{
+            self.get_input(ui, frame);
+        } else {
+            self.color_options(ui);
+            ui.horizontal(|ui|{
+                ui.label("Plot diameter");
+                let changed = ui.add(egui::widgets::TextEdit::singleline(
+                    &mut self.input_state.plot_radius_fallback
+                ).desired_width(25.)).changed();
+                if changed{
+                    match self.input_state.plot_radius_fallback.parse::<f32>(){
+                        Ok(radius) => self.plot_radius_fallback = radius,
+                        Err(_) => ()
+                    }
+                }
+            });
+        }
+    }
+
+    fn color_options(&mut self, ui: &mut egui::Ui){
+        ui.horizontal(|ui|{
+            ui.label("Circle color:");
+            ui.color_edit_button_srgba(&mut self.circle_color);
+
+            ui.label("Image colormap:");
+            egui::ComboBox::from_id_source(self.uuid.as_u128() + 1).selected_text(self.image_cmap.get_name())
+                .show_ui(ui, |ui|{ 
+                    if colormap_dropdown(ui, &mut self.image_cmap){
+                        self.set_image_cmap(ui)
+                    };
+                }
+            );
+
+            ui.label("Tracks colormap:");
+            egui::ComboBox::from_id_source(self.uuid.as_u128() + 2).selected_text(self.line_cmap.get_name())
+                .show_ui(ui, |ui|{ 
+                    if colormap_dropdown(ui, &mut self.line_cmap){
+                        self.set_image_cmap(ui)
+                    };
+                }
+            );
+        });
+    }
+    
+    fn get_input(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame){
+        // ui.vertical(|ui|{
+        ui.horizontal(|ui|{
+            match self.playback{
+                Playback::FPS(_) => {
+                    if ui.button("Pause").clicked(){
+                        self.playback = Playback::Off
+                    };
+                },
+                Playback::Off => {
+                    if ui.button("Play").clicked(){
+                        let fps = match self.input_state.fps.parse::<f32>(){
+                            Ok(fps) => fps,
+                            Err(_) => 30.,
+                        };
+                        self.playback = Playback::FPS((fps, std::time::Instant::now()))
+                    };
+                },
+            }
+            let fps_changed = ui.add(egui::widgets::TextEdit::singleline(
+                &mut self.input_state.fps
+            ).desired_width(30.)).changed();
+            
+            if fps_changed & matches!(self.playback, Playback::FPS(_)){
+                let fps = match self.input_state.fps.parse::<f32>(){
+                    Ok(fps) => fps,
+                    Err(_) => 30.,
+                };
+                self.playback = Playback::FPS((fps, std::time::Instant::now()))
+            };
+            ui.label("fps")
+        });
+        ui.horizontal(|ui|{
+            let mut changed = false;
+            changed |= ui.selectable_value(&mut self.input_state.datamode, DataMode::Off, "Off").clicked();
+            changed |= ui.selectable_value(&mut self.input_state.datamode, DataMode::Immediate, "One").clicked();
+            changed |= ui.selectable_value(&mut self.input_state.datamode, DataMode::Full, "All").clicked();
+            changed |= ui.selectable_value(&mut self.input_state.datamode, DataMode::Range(0..=1), "Range").clicked();
+            
+            ui.label("Showing frame:");
+            let frame_changed = ui.add(egui::widgets::TextEdit::singleline(
+                &mut self.input_state.frame_idx
+            ).desired_width(30.)).changed();
+            
+            if frame_changed{
+                self.update_frame(ui, FrameChange::Input);
+            }
+            
+            if self.input_state.datamode == DataMode::Range(0..=1){
+                ui.label("in range");
+                changed |= ui.add(egui::widgets::TextEdit::singleline(
+                    &mut self.input_state.range_start
+                ).desired_width(30.)).changed();
+                ui.label("to");
+                changed |= ui.add(egui::widgets::TextEdit::singleline(
+                    &mut self.input_state.range_end
+                ).desired_width(30.)).changed();
+            }
+            
+            if changed{
+                self.needs_update.datamode = true;
+            }
+            
+        });
+        
+        
+        self.tracking_input(ui);
+        
+        let mut submit_click = false;
+        ui.horizontal(|ui| {
+            submit_click = ui.add_enabled(self.frame_provider.is_some() & self.needs_update.any(), egui::widgets::Button::new("Submit")).clicked();
+            let response = ui.button("🏠🔍");
+            if response.clicked() && self.frame_provider.is_some(){
+                self.reset_zoom(ui);
+            }
+            if ui.add(egui::SelectableLabel::new(self.input_state.color_options, "Color Options")).clicked(){
+                self.input_state.color_options = !self.input_state.color_options;
+            }
+        });
+        if self.input_state.color_options{
+            self.color_options(ui);
+        }
+        
+        if submit_click | ui.ctx().input().key_down(egui::Key::Enter){
+            self.update_state(ui);
+        }
+
+        
+        
+        match self.frame_provider{
+            Some(_) => self.show(ui, frame),
+            None => {},
+        }
+        // });
     }
 
     fn tracking_input(&mut self, ui: &mut egui::Ui){
@@ -1349,11 +1491,15 @@ impl Custom3d {
     }
 
     fn show(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame){
-        egui::Frame::canvas(ui.style()).show(ui, |ui| {
-            let change = FrameChange::from_scroll(ui.ctx().input().scroll_delta);
-            self.custom_painting(ui, change);
+        ui.horizontal(|ui|{
+            egui::Frame::canvas(ui.style()).show(ui, |ui| {
+                let change = FrameChange::from_scroll(ui.ctx().input().scroll_delta);
+                self.custom_painting(ui, change);
+            });
+            // egui::widgets::plot::Plot::new("test").show(ui, |ui| {
+                
+            // });
         });
-
     }
 
     fn recalculate(&mut self) -> anyhow::Result<()>{
@@ -1372,10 +1518,18 @@ impl Custom3d {
                 self.tracking_params.keys = None;
             }
         }
+        if self.static_dataset{
+            match self.mode{
+                DataMode::Off => {},
+                _ => self.result_status = ResultStatus::Static,
+            }
+            return Ok(())
+        }
         if self.result_receiver.is_some(){
             self.result_status = ResultStatus::TooOld;
             return Err(StillWaitingError.into())
         }
+        
         let tracking_params = self.tracking_params.clone();
         let path = self.path.as_ref().cloned().unwrap();
         let channel = self.channel.clone();
@@ -1390,6 +1544,7 @@ impl Custom3d {
 
         self.result_status = ResultStatus::Processing;
         self.particle_hash = None;
+        self.particle_col = None;
         Ok(())
     }
 
@@ -1427,6 +1582,9 @@ impl Custom3d {
     }
     
     fn update_frame(&mut self, ui: &mut egui::Ui, direction: FrameChange) -> anyhow::Result<()>{
+        if self.frame_provider.is_none(){
+            return Ok(())
+        }
         let new_index = match direction{
             FrameChange::Next => self.frame_idx + 1,
             FrameChange::Previous => {
@@ -1455,9 +1613,12 @@ impl Custom3d {
         match self.mode{
             DataMode::Immediate => {
                 self.recalculate();
+                if !self.other_apps.is_empty(){
+                    self.update_circles();
+                }
             },
             _ => {
-                self.update_circles_and_lines();
+                self.update_circles();
             },
         }
         
@@ -1478,51 +1639,69 @@ impl Custom3d {
         Ok(())
     }
 
+
+    unsafe fn get_owner(&self, owner: &Option<Weak<RefCell<Self>>>) -> Option<&Self>{
+        match owner{
+            Some(inner) => {
+                let owner = unsafe { inner.upgrade().map(|inner| &*(&*inner.borrow() as *const Custom3d)) };
+                owner
+            },
+            None => Some(self),
+        }
+    }
     
-    fn result_dependent_plotting(&mut self, ui: &mut egui::Ui, rect: egui::Rect, response: egui::Response){
-        if let Some(ref circles_to_plot) = self.circles_to_plot{
-            let circle_plotting = circles_to_plot.axis_iter(Axis(0)).map(|rrow|{
-                epaint::Shape::circle_stroke(
-                    data_to_screen_coords_vec2([rrow[self.x_col.unwrap()], rrow[self.y_col.unwrap()]].into(), &rect, &self.databounds.as_ref().unwrap()),
-                    {
-                        let r = self.point_radius(rrow);
-                        data_radius_to_screen(r, &rect, &self.databounds.as_ref().unwrap())
-                    },
-                    (1., self.circle_color)
-                )
-            });
-            ui.painter_at(rect).extend(circle_plotting);
+    fn result_dependent_plotting(&mut self, ui: &mut egui::Ui, rect: egui::Rect, hover_pos: Option<egui::Pos2>){
+        // let 
+        for (circles_to_plot, owner) in self.circles_to_plot.iter(){
+            let owner = unsafe{ self.get_owner(owner) };
+            let owner = owner.map(|inner| (inner, inner.result_status.clone()));
+            if let Some((owner, ResultStatus::Valid | ResultStatus::Static)) = owner{
+                // if owner.recently_updated{
+                //     self.update_circles();
+                // }
+                let circle_plotting = circles_to_plot.axis_iter(Axis(0)).map(|rrow|{
+                    epaint::Shape::circle_stroke(
+                        data_to_screen_coords_vec2([rrow[owner.x_col.unwrap()], rrow[owner.y_col.unwrap()]].into(), &rect, &self.databounds.as_ref().unwrap()),
+                        {
+                            let r = owner.point_radius(rrow);
+                            data_radius_to_screen(r, &rect, &self.databounds.as_ref().unwrap())
+                        },
+                        (1., owner.circle_color)
+                    )
+                });
+                ui.painter_at(rect).extend(circle_plotting);
+
+
+                if let (Some(ref particle_hash), Some(particle_col)) =
+                    (&owner.particle_hash, &owner.particle_col){
+                    let cmap = owner.line_cmap.get_map();
+                    let line_plotting = circles_to_plot.axis_iter(Axis(0)).map(|rrow|{
+                        let particle = rrow[*particle_col];
+                        let particle_vec = &particle_hash[&(particle as usize)];
+                        particle_vec.windows(2).flat_map(|window|{
+                            let start = window[0];
+                            let end = window[1];
+                            let bounds = self.line_cmap_bounds.as_ref().unwrap();
+                            if end.0 <= self.frame_idx{
+                                let t = inverse_lerp(start.0 as f32, *bounds.start(), *bounds.end());
+                                Some(epaint::Shape::line_segment([
+                                    data_to_screen_coords_vec2(start.1.into(), &rect, &self.databounds.as_ref().unwrap()),
+                                    data_to_screen_coords_vec2(end.1.into(), &rect, &self.databounds.as_ref().unwrap()),
+                                ], (1., cmap.call(t))))
+                            } else {
+                                None
+                            }
+                        })
+
+                    }).flatten();
+                    ui.painter_at(rect).extend(line_plotting);
+                }
+
+            }
+            
         }
 
-
-        if let (Some(ref particle_hash), Some(circles_to_plot), Some(particle_col)) =
-            (&self.particle_hash, &self.circles_to_plot, &self.particle_col){
-            let cmap = self.line_cmap.get_map();
-            let line_plotting = circles_to_plot.axis_iter(Axis(0)).map(|rrow|{
-                let particle = rrow[*particle_col];
-                let particle_vec = &particle_hash[&(particle as usize)];
-                particle_vec.windows(2).flat_map(|window|{
-                    let start = window[0];
-                    let end = window[1];
-                    if end.0 <= self.frame_idx{
-                        let t = inverse_lerp(start.0 as f32, *self.line_cmap_bounds.start(), *self.line_cmap_bounds.end());
-                        Some(epaint::Shape::line_segment([
-                            data_to_screen_coords_vec2(start.1.into(), &rect, &self.databounds.as_ref().unwrap()),
-                            data_to_screen_coords_vec2(end.1.into(), &rect, &self.databounds.as_ref().unwrap()),
-                        ], (1., cmap.call(t))))
-                    } else {
-                        None
-                    }
-                })
-    
-            }).flatten();
-            ui.painter_at(rect).extend(line_plotting);
-            // }
-            // _ => {}
-        }
-
-        if let (Some(hover), Some(tree)) = (response.hover_pos(), &self.circle_kdtree){
-
+        if let (Some(hover), Some(tree)) = (hover_pos, &self.circle_kdtree){
             let hover_data = [
                 lerp(inverse_lerp(hover.y, rect.min.y, rect.max.y), self.databounds.as_ref().unwrap().min.x, self.databounds.as_ref().unwrap().max.x),
                 lerp(inverse_lerp(hover.x, rect.min.x, rect.max.x), self.databounds.as_ref().unwrap().min.y, self.databounds.as_ref().unwrap().max.y),
@@ -1531,50 +1710,53 @@ impl Custom3d {
             let nearest = tree.nearest(&hover_data);
             if let Some(nearest) = nearest{
                 let mut cutoff = 0.02 * (self.databounds.as_ref().unwrap().max.x - self.databounds.as_ref().unwrap().min.x);
-                let row = self.circles_to_plot.as_ref().unwrap().index_axis(Axis(0), nearest.item.1);
-                let point_radius = self.point_radius(row);
-                cutoff = std::cmp::max_by(point_radius, cutoff, |a, b| a.partial_cmp(b).unwrap()).powi(2);
-                if nearest.squared_distance < cutoff{
-                    let mut label_text = String::new();
-                    let iter = self.result_names.as_ref().unwrap().iter().enumerate();
-                    for (i, (value_name, _)) in iter{
-                        if value_name != &"frame"{
-                            write!(label_text, "{value_name}: {}\n", row[i]).unwrap();
+                let row = self.circles_to_plot[nearest.item.1.0].0.index_axis(Axis(0), nearest.item.1.1);
+                let owner = unsafe{ self.get_owner(&self.circles_to_plot[nearest.item.1.0].1) };
+                if let Some(owner) = owner{
+                    let point_radius = owner.point_radius(row);
+                    cutoff = std::cmp::max_by(point_radius, cutoff, |a, b| a.partial_cmp(b).unwrap()).powi(2);
+                    if nearest.squared_distance < cutoff{
+                        let mut label_text = String::new();
+                        let iter = owner.result_names.as_ref().unwrap().iter().enumerate();
+                        for (i, (value_name, _)) in iter{
+                            if value_name != &"frame"{
+                                write!(label_text, "{value_name}: {}\n", row[i]).unwrap();
+                            }
                         }
-                    }
-                    label_text.pop();
-                    let label = epaint::text::Fonts::layout_no_wrap(
-                        &*ui.fonts(),
-                        label_text,
-                        TextStyle::Body.resolve(ui.style()),
-                        egui::Color32::from_rgb(0, 0, 0),
-                    );
-                    
-                    let mut screen_pos = egui::Pos2{
-                        x: 10. + lerp(inverse_lerp(nearest.item.0[1], self.databounds.as_ref().unwrap().min.y, self.databounds.as_ref().unwrap().max.y), rect.min.x, rect.max.x),
-                        y: lerp(inverse_lerp(nearest.item.0[0], self.databounds.as_ref().unwrap().min.x, self.databounds.as_ref().unwrap().max.x), rect.min.y, rect.max.y)
-                        - (label.rect.max.y - label.rect.min.y) * 0.5,
-                    };
-                    let expansion = 4.0;
-                    let mut screen_rect = label.rect.translate(screen_pos.to_vec2()).expand(expansion);
-                    screen_pos = screen_pos + egui::Vec2{x: 0.0, y: 
-                        float_max(rect.min.y - screen_rect.min.y + 1.0, 0.0) 
-                    };
-                    
-                    screen_pos = screen_pos + egui::Vec2{x: 0.0, y: 
-                        float_min(rect.max.y - screen_rect.max.y - 1.0, 0.0) 
-                    };
-                    screen_rect = label.rect.translate(screen_pos.to_vec2()).expand(expansion);
-                    if !rect.contains_rect(screen_rect){
-                        screen_pos = screen_pos + egui::Vec2{ x: -20.0 - screen_rect.width() + 2.0 * expansion, y: 0.0};
+                        label_text.pop();
+                        let label = epaint::text::Fonts::layout_no_wrap(
+                            &*ui.fonts(),
+                            label_text,
+                            TextStyle::Body.resolve(ui.style()),
+                            egui::Color32::from_rgb(0, 0, 0),
+                        );
+                
+                        let mut screen_pos = egui::Pos2{
+                            x: 10. + lerp(inverse_lerp(nearest.item.0[1], self.databounds.as_ref().unwrap().min.y, self.databounds.as_ref().unwrap().max.y), rect.min.x, rect.max.x),
+                            y: lerp(inverse_lerp(nearest.item.0[0], self.databounds.as_ref().unwrap().min.x, self.databounds.as_ref().unwrap().max.x), rect.min.y, rect.max.y)
+                            - (label.rect.max.y - label.rect.min.y) * 0.5,
+                        };
+                        let expansion = 4.0;
+                        let mut screen_rect = label.rect.translate(screen_pos.to_vec2()).expand(expansion);
+                        screen_pos = screen_pos + egui::Vec2{x: 0.0, y: 
+                            float_max(rect.min.y - screen_rect.min.y + 1.0, 0.0) 
+                        };
+                
+                        screen_pos = screen_pos + egui::Vec2{x: 0.0, y: 
+                            float_min(rect.max.y - screen_rect.max.y - 1.0, 0.0) 
+                        };
                         screen_rect = label.rect.translate(screen_pos.to_vec2()).expand(expansion);
+                        if !rect.contains_rect(screen_rect){
+                            screen_pos = screen_pos + egui::Vec2{ x: -20.0 - screen_rect.width() + 2.0 * expansion, y: 0.0};
+                            screen_rect = label.rect.translate(screen_pos.to_vec2()).expand(expansion);
+                        }
+                        ui.painter_at(rect).add(
+                            epaint::Shape::rect_filled(
+                                screen_rect, 2., epaint::Color32::from_rgba_unmultiplied(255, 255, 255, 50)
+                            )
+                        );
+                        ui.painter_at(rect).add(epaint::Shape::galley(screen_pos, label));
                     }
-                    ui.painter_at(rect).add(
-                        epaint::Shape::rect_filled(
-                            screen_rect, 2., epaint::Color32::from_rgba_unmultiplied(255, 255, 255, 50)
-                        )
-                    );
-                    ui.painter_at(rect).add(epaint::Shape::galley(screen_pos, label));
                 }
             }
         }
@@ -1585,7 +1767,19 @@ impl Custom3d {
         let (rect, response) =
             ui.allocate_exact_size(size, egui::Sense::drag());
         
-        self.poll_result();
+        if self.poll_result().is_err(){
+            return
+        }
+
+        let mut need_to_update_cirles = false;
+        for other in self.other_apps.iter(){
+            if let Some(alive_other) = other.upgrade(){
+                need_to_update_cirles |= alive_other.borrow().recently_updated;
+            }
+        }
+        if need_to_update_cirles{
+            self.update_circles()
+        }
         
         if let (Some(direction), true) = (direction, response.hovered()){
             self.update_frame(ui, direction);
@@ -1647,9 +1841,10 @@ impl Custom3d {
             }
         }
 
+        self.result_dependent_plotting(ui, rect, response.hover_pos());
+        
         match self.result_status{
-            ResultStatus::Valid => {
-                self.result_dependent_plotting(ui, rect, response);
+            ResultStatus::Valid | ResultStatus::Static => {
             },
             ResultStatus::Processing => {
                 match self.mode{
@@ -1674,11 +1869,17 @@ impl Custom3d {
                arrayrow[r_col] 
             },
             None => {
-                match self.tracking_params.style{
-                    gpu_tracking::gpu_setup::ParamStyle::Trackpy {diameter, .. } => {
-                        diameter as f32 / 2.0
+                if self.static_dataset{
+                    self.plot_radius_fallback
+                } else {
+                    match self.tracking_params.style{
+                        gpu_tracking::gpu_setup::ParamStyle::Trackpy {diameter, .. } => {
+                            diameter as f32 / 2.0
+                        }
+                        gpu_tracking::gpu_setup::ParamStyle::Log { min_radius, .. } => {
+                            min_radius
+                        }
                     }
-                    _ => panic!("we shouldn't get here")
                 }
             }
         };
@@ -1716,10 +1917,6 @@ fn lerp_rect(outer: &egui::Rect, t: &egui::Rect) -> egui::Rect{
     }
 }
 
-// fn remap_rect(from: &egui::Rect, to: &egui::Rect) -> egui::Rect{
-//     lerp_rect(to, &inverse_lerp_rect(to, from))
-// }
-
 fn zero_one_rect() -> egui::Rect{
     egui::Rect::from_x_y_ranges(0.0..=1.0, 0.0..=1.0)
 }
@@ -1734,91 +1931,11 @@ fn data_radius_to_screen(radius: f32, rect: &egui::Rect, databounds: &egui::Rect
     let t = radius / (databounds.max.y - databounds.min.y);
     t * (rect.max.x - rect.min.x) 
 }
-
 fn colormap_dropdown(ui: &mut egui::Ui, input: &mut colormaps::KnownMaps) -> bool{
+    let cmapiter = colormaps::KnownMaps::iter();
     let mut clicked = false;
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Accent, colormaps::KnownMaps::Accent.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Blues, colormaps::KnownMaps::Blues.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::BrBG, colormaps::KnownMaps::BrBG.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::BuGn, colormaps::KnownMaps::BuGn.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::BuPu, colormaps::KnownMaps::BuPu.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::CMRmap, colormaps::KnownMaps::CMRmap.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Dark2, colormaps::KnownMaps::Dark2.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::GnBu, colormaps::KnownMaps::GnBu.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Greens, colormaps::KnownMaps::Greens.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Greys, colormaps::KnownMaps::Greys.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::OrRd, colormaps::KnownMaps::OrRd.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Oranges, colormaps::KnownMaps::Oranges.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::PRGn, colormaps::KnownMaps::PRGn.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Paired, colormaps::KnownMaps::Paired.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Pastel1, colormaps::KnownMaps::Pastel1.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Pastel2, colormaps::KnownMaps::Pastel2.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::PiYG, colormaps::KnownMaps::PiYG.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::PuBu, colormaps::KnownMaps::PuBu.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::PuBuGn, colormaps::KnownMaps::PuBuGn.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::PuOr, colormaps::KnownMaps::PuOr.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::PuRd, colormaps::KnownMaps::PuRd.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Purples, colormaps::KnownMaps::Purples.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::RdBu, colormaps::KnownMaps::RdBu.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::RdGy, colormaps::KnownMaps::RdGy.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::RdPu, colormaps::KnownMaps::RdPu.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::RdYlBu, colormaps::KnownMaps::RdYlBu.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::RdYlGn, colormaps::KnownMaps::RdYlGn.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Reds, colormaps::KnownMaps::Reds.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Set1, colormaps::KnownMaps::Set1.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Set2, colormaps::KnownMaps::Set2.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Set3, colormaps::KnownMaps::Set3.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Spectral, colormaps::KnownMaps::Spectral.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::Wistia, colormaps::KnownMaps::Wistia.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::YlGn, colormaps::KnownMaps::YlGn.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::YlGnBu, colormaps::KnownMaps::YlGnBu.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::YlOrBr, colormaps::KnownMaps::YlOrBr.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::YlOrRd, colormaps::KnownMaps::YlOrRd.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::afmhot, colormaps::KnownMaps::afmhot.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::autumn, colormaps::KnownMaps::autumn.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::binary, colormaps::KnownMaps::binary.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::bone, colormaps::KnownMaps::bone.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::brg, colormaps::KnownMaps::brg.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::bwr, colormaps::KnownMaps::bwr.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::cividis, colormaps::KnownMaps::cividis.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::cool, colormaps::KnownMaps::cool.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::coolwarm, colormaps::KnownMaps::coolwarm.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::copper, colormaps::KnownMaps::copper.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::cubehelix, colormaps::KnownMaps::cubehelix.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::flag, colormaps::KnownMaps::flag.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::gist_earth, colormaps::KnownMaps::gist_earth.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::gist_gray, colormaps::KnownMaps::gist_gray.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::gist_heat, colormaps::KnownMaps::gist_heat.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::gist_ncar, colormaps::KnownMaps::gist_ncar.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::gist_rainbow, colormaps::KnownMaps::gist_rainbow.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::gist_stern, colormaps::KnownMaps::gist_stern.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::gist_yarg, colormaps::KnownMaps::gist_yarg.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::gnuplot, colormaps::KnownMaps::gnuplot.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::gnuplot2, colormaps::KnownMaps::gnuplot2.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::gray, colormaps::KnownMaps::gray.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::hot, colormaps::KnownMaps::hot.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::hsv, colormaps::KnownMaps::hsv.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::inferno, colormaps::KnownMaps::inferno.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::jet, colormaps::KnownMaps::jet.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::magma, colormaps::KnownMaps::magma.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::nipy_spectral, colormaps::KnownMaps::nipy_spectral.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::ocean, colormaps::KnownMaps::ocean.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::pink, colormaps::KnownMaps::pink.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::plasma, colormaps::KnownMaps::plasma.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::prism, colormaps::KnownMaps::prism.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::rainbow, colormaps::KnownMaps::rainbow.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::seismic, colormaps::KnownMaps::seismic.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::spring, colormaps::KnownMaps::spring.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::summer, colormaps::KnownMaps::summer.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::tab10, colormaps::KnownMaps::tab10.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::tab20, colormaps::KnownMaps::tab20.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::tab20b, colormaps::KnownMaps::tab20b.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::tab20c, colormaps::KnownMaps::tab20c.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::terrain, colormaps::KnownMaps::terrain.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::turbo, colormaps::KnownMaps::turbo.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::twilight, colormaps::KnownMaps::twilight.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::twilight_shifted, colormaps::KnownMaps::twilight_shifted.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::viridis, colormaps::KnownMaps::viridis.get_name()).clicked();
-	clicked |= ui.selectable_value(input, colormaps::KnownMaps::winter, colormaps::KnownMaps::winter.get_name()).clicked();
+    for cmap in cmapiter{
+        clicked |= ui.selectable_value(input, cmap, cmap.get_name()).clicked();
+    };
     clicked
 }

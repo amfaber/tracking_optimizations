@@ -27,14 +27,15 @@ def cmap_to_str(cmap, levels = 30, indent_level = 0, nested = NESTED):
 all_maps = {map.name: map for ele in dir(cm) if isinstance((map:=getattr(cm, ele)), colors.Colormap) and not ele.endswith("_r")}
 with open("src/colormaps.rs", "w") as file:
 	# file.write("use phf::phf_map;\n\n")
-	file.write("#![allow(non_camel_case_types)]\n\n")
+	file.write("#![allow(non_camel_case_types)]\n")
+	file.write("use strum::EnumIter;\n")
 	file.write(f"pub const LEVEL_COUNT: usize = {LEVELS};\n\n")
 	if NESTED:
 		shape = "[[f32; 4]; LEVEL_COUNT]"
 	else:
 		shape = f"[f32; {int(LEVELS*4)}]"
 	# file.write(f"pub const MAPS: phf::Map<&'static str, {shape}> = " + "phf_map! {")
-	file.write("#[derive(Clone, PartialEq)]\n")
+	file.write("#[derive(Clone, PartialEq, EnumIter, Debug, Copy)]\n")
 	file.write("pub enum KnownMaps{\n\t")
 	tmp = ""
 	for name, map in all_maps.items():

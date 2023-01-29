@@ -1,8 +1,8 @@
 #![allow(non_camel_case_types)]
-
+use strum::EnumIter;
 pub const LEVEL_COUNT: usize = 30;
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, EnumIter, Debug, Copy)]
 pub enum KnownMaps{
 	Accent,
 	Blues,
