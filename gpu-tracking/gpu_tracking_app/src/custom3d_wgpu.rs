@@ -642,15 +642,24 @@ impl Custom3d {
             (field_name.to_string(), "float".to_string())
         }).collect();
         let results = reader.deserialize_array2_dynamic::<f32>()?;
+        self.r_col = header.iter().position(|element|{
+            element.0 == "r"
+        });
+        self.x_col = header.iter().position(|element|{
+            element.0 == "x"
+        });
+        self.y_col = header.iter().position(|element|{
+            element.0 == "y"
+        });
+        self.frame_col = header.iter().position(|element|{
+            element.0 == "frame"
+        });
+        self.particle_col = header.iter().position(|element|{
+            element.0 == "particle"
+        });
         self.result_names = Some(header);
         self.results = Some(results);
         self.path = Some(self.input_state.path.clone().into());
-        // self.tracking_params.style = gpu_tracking::gpu_setup::ParamStyle::Log{
-        //     min_radius: 4.5,
-        //     max_radius: 0.0,
-        //     n_radii: 10,
-            
-        // };
         self.result_status = ResultStatus::Static;
         Ok(())
     }
