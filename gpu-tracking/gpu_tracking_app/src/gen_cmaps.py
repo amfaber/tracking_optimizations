@@ -24,7 +24,7 @@ def cmap_to_str(cmap, levels = 30, indent_level = 0, nested = NESTED):
 	return out
 
 
-all_maps = {map.name: map for ele in dir(cm) if isinstance((map:=getattr(cm, ele)), colors.Colormap) and not ele.endswith("_r")}
+all_maps = {map.name: map for ele in dir(cm) if isinstance((map:=getattr(cm, ele)), colors.Colormap)}
 with open("src/colormaps.rs", "w") as file:
 	# file.write("use phf::phf_map;\n\n")
 	file.write("#![allow(non_camel_case_types)]\n")

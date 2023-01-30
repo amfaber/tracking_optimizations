@@ -1,4 +1,4 @@
-use std::{num::NonZeroU32, mem, sync::Arc};
+use std::{num::NonZeroU32, mem};
 
 use eframe::egui_wgpu::RenderState;
 use eframe::wgpu;
@@ -7,10 +7,6 @@ use anyhow::*;
 // use crate::colormaps::MAPS;
 use wgpu::util::DeviceExt;
 
-use std::iter;
-
-use ndarray::Array;
-use crate::colormaps;
 use crate::texture;
 // use bytemuck::Pod;
 

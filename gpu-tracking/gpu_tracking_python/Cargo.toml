@@ -10,6 +10,7 @@ gpu_tracking = { path = ".."}
 gpu_tracking_app = { path = "../gpu_tracking_app" }
 ndarray = "0.15.6"
 eframe = { version = "0.20.0", default-features = false, features = ["wgpu"] }
+ctrlc = "3.2.4"
 
 
 [dependencies.pyo3]

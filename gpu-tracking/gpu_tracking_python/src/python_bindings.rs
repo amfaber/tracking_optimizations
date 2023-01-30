@@ -5,6 +5,7 @@ use pyo3::{prelude::*, types::PyDict};
 use numpy::{IntoPyArray, PyReadonlyArray3, PyReadonlyArray2, PyArray2, PyArray1, PyArray3};
 use ::gpu_tracking::{my_dtype, linking::SubsetterType, execute_gpu::{execute_ndarray, execute_file, path_to_iter, mean_from_iter}, decoderiter::MinimalETSParser, gpu_setup::{TrackingParams, ParamStyle}, linking, error::Error};
 use gpu_tracking_app;
+// use ctrlc;
 
 trait ToPyErr{
     fn pyerr(self) -> PyErr;
@@ -13,6 +14,10 @@ trait ToPyErr{
 impl ToPyErr for Error{
 	fn pyerr(self) -> PyErr{
 		match self{
+            Error::KeyboardInterrupt => {
+                pyo3::exceptions::PyKeyboardInterrupt::new_err(self.to_string())
+            },
+            
 			Error::GpuAdapterError | Error::GpuDeviceError(_)  => {
 				pyo3::exceptions::PyConnectionError::new_err(self.to_string())
 			},
@@ -37,7 +42,8 @@ impl ToPyErr for Error{
             Error::ReadError |
             Error::FrameOOB |
             Error::ChannelNotFound |
-            Error::CastError
+            Error::CastError | 
+            Error::TooDenseToLink
              => {
 				pyo3::exceptions::PyValueError::new_err(self.to_string())
 			},
@@ -413,7 +419,6 @@ make_log_args!(
 
 #[pymodule]
 fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
-
     m.add_function(wrap_pyfunction!(batch_rust, m)?)?;
 
     m.add_function(wrap_pyfunction!(batch_file_rust, m)?)?;

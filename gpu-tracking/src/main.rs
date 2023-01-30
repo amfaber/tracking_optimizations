@@ -40,7 +40,7 @@ fn test_trackpy_easy() -> gpu_tracking::error::Result<()>{
     let args: Args = Args::parse();
     let now_top = Instant::now();
     dbg!(std::env::current_dir());
-    let path = args.input.unwrap_or("testing/easy_test_data.tif".to_string());
+    let path = args.input.unwrap_or("testing/frank_freeze/frame_t_0.ets".to_string());
     // let path = args.input.unwrap_or(r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\testing\marcus_blobs\big_blobs.tif".to_string());
     // let path = args.input.unwrap_or(r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\testing\kdtree_panic\emily_she_kdtree_panic.tif".to_string());
     // let path = args.input.unwrap_or(r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\tiff_vsi\vsi dummy\_Process_9747_\stack1\frame_t_0.ets".to_string());
@@ -73,12 +73,12 @@ fn test_trackpy_easy() -> gpu_tracking::error::Result<()>{
         //     overlap_threshold: 0.5,
         //     n_radii: 10,
         // },
-        snr: Some(1.5),
-        minmass_snr: Some(0.3),
+        snr: Some(0.5),
+        // minmass_snr: Some(0.3),
         // adaptive_background: Some(4),
         characterize: true,
         illumination_sigma: Some(30.),
-        search_range: Some(10.),
+        search_range: Some(15.),
         doughnut_correction: true,
         
         // include_r_in_output: true,
@@ -103,7 +103,7 @@ fn test_trackpy_easy() -> gpu_tracking::error::Result<()>{
     // let inp = Some(FrameSubsetter::new(tmp, Some(0), (1, 2), Some(3), gpu_tracking::linking::SubsetterType::Characterization::Characterization));
     let (results, column_names) = execute_gpu::execute_file(
         &path,
-        Some(1),
+        None,
         params,
         1,
         // Some((points.view(), true, true)),
@@ -120,7 +120,7 @@ fn test_trackpy_easy() -> gpu_tracking::error::Result<()>{
 }
 
 fn main(){
-    dbg!(test_trackpy_easy());
+    dbg!(test_trackpy_easy().unwrap());
 }
 
 

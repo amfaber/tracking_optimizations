@@ -45,9 +45,6 @@ pub enum Error{
 	
 	#[error("unexpected threading error. this will require some more debugging.")]
 	ThreadError,
-	// ThreadError{
-	// 	source: Box<dyn std::error::Error + Send>,
-	// },
 	
 	#[error("the passed array is not in standard memory layout. perhaps it is a view of a larger array?")]
 	NonStandardArrayLayout,
@@ -82,6 +79,13 @@ accepted dimensions: (Nx2) or (Nx3). received: {:?}", dims)]
 
 	#[error("the requested channel wasn't found in the file")]
 	ChannelNotFound,
+
+	#[error("computational load during linking is abnormally high. try setting a smaller
+ search range or track with settings that give fewer detections.")]
+	TooDenseToLink,
+
+	#[error("Keyboard Interrupt")]
+	KeyboardInterrupt,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

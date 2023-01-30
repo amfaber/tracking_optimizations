@@ -1,10 +1,7 @@
-use std::{num::NonZeroU64, sync::{Arc, mpsc::{Receiver, Sender}}, collections::HashMap, path::PathBuf, ops::RangeInclusive, rc::{Rc, Weak}, cell::RefCell};
+use std::{sync::{Arc, mpsc::{Receiver, Sender}}, collections::HashMap, path::PathBuf, ops::RangeInclusive, rc::{Rc, Weak}, cell::RefCell};
 
-use eframe::{
-    egui_wgpu::{self, wgpu},
-    // wgpu::util::DeviceExt,
-};
-use egui::{self, TextStyle, Widget};
+use eframe::egui_wgpu;
+use egui::{self, TextStyle};
 use epaint;
 use bytemuck;
 use thiserror::Error;
@@ -22,6 +19,7 @@ use ndarray_csv::Array2Reader;
 // use ndarray_stats::histogram::{HistogramExt, strategies::Auto, Bins, Edges, Grid, GridBuilder};
 // use ordered_float;
 
+fn ignore_result<R>(_res: R){}
 
 trait ColorMap{
     fn call(&self, t: f32) -> epaint::Color32;
@@ -59,9 +57,9 @@ impl ProviderDimension{
         let frame = Array::from_shape_vec([dims[0] as usize, dims[1] as usize], frame).unwrap();
         Ok(frame)
     }
-    fn dims(&self) -> &[u32; 2]{
-        &self.0.1
-    }
+    // fn dims(&self) -> &[u32; 2]{
+    //     &self.0.1
+    // }
     fn len(&self) -> usize{
         self.0.0.len(None)
     }
@@ -76,12 +74,12 @@ enum DataMode{
 }
 
 impl DataMode{
-    fn get_range(&self) -> &RangeInclusive<usize>{
-        match self{
-            Self::Range(range) => range,
-            _ => panic!("Tried to get range where there is none"),
-        }
-    }
+    // fn get_range(&self) -> &RangeInclusive<usize>{
+    //     match self{
+    //         Self::Range(range) => range,
+    //         _ => panic!("Tried to get range where there is none"),
+    //     }
+    // }
 }
 
 pub struct AppWrapper{
@@ -90,7 +88,7 @@ pub struct AppWrapper{
 }
 
 impl AppWrapper{
-    pub fn new<'a>(cc: &'a eframe::CreationContext<'a>) -> Option<Self> {
+    pub fn new<'a>(_cc: &'a eframe::CreationContext<'a>) -> Option<Self> {
         let apps = vec![
             Rc::new(RefCell::new(Custom3d::new()?)),
         ];
@@ -305,7 +303,7 @@ impl Clone for Custom3d{
 
         // dbg!(&self.result_status);
         
-        let mut out = Self{
+        let out = Self{
             plot_radius_fallback: self.plot_radius_fallback.clone(),
             static_dataset: self.static_dataset.clone(),
             recently_updated: self.recently_updated.clone(),
@@ -615,8 +613,8 @@ impl Custom3d {
             return
         }
         let wgpu_render_state = frame.wgpu_render_state().unwrap();
-        self.create_gpu_resource(wgpu_render_state);
-        self.update_frame(ui, FrameChange::Resubmit);
+        ignore_result(self.create_gpu_resource(wgpu_render_state));
+        ignore_result(self.update_frame(ui, FrameChange::Resubmit));
         self.resize(ui, self.texture_zoom_level, self.databounds.unwrap());
     }
 
@@ -721,7 +719,7 @@ impl Custom3d {
         self.result_status = ResultStatus::Processing;
         self.particle_hash = None;
         self.input_state.frame_idx = self.frame_idx.to_string();
-        self.recalculate();
+        ignore_result(self.recalculate());
         Ok(())
     }
     
@@ -1060,13 +1058,13 @@ impl Custom3d {
                     }
                     self.mode = DataMode::Range(start..=end);
                     self.line_cmap_bounds = Some((start as f32)..=(end as f32));
-                    self.update_frame(ui, FrameChange::Resubmit);
+                    ignore_result(self.update_frame(ui, FrameChange::Resubmit));
                 },
                 _ => {
                     return Ok(())
                 }
             };
-            self.recalculate();
+            ignore_result(self.recalculate());
             Ok(())
         }();
         if try_block.is_err(){
@@ -1130,7 +1128,7 @@ impl Custom3d {
 
         if self.needs_update.params{
             self.tracking_params = self.input_state.to_trackingparams();
-            self.recalculate();
+            ignore_result(self.recalculate());
         }
 
         self.needs_update = NeedsUpdate::default();
@@ -1261,7 +1259,7 @@ impl Custom3d {
             ).desired_width(30.)).changed();
             
             if frame_changed{
-                self.update_frame(ui, FrameChange::Input);
+                ignore_result(self.update_frame(ui, FrameChange::Input));
             }
             
             if self.input_state.datamode == DataMode::Range(0..=1){
@@ -1621,7 +1619,7 @@ impl Custom3d {
         let array = self.frame_provider.as_ref().unwrap().to_array(self.frame_idx)?;
         match self.mode{
             DataMode::Immediate => {
-                self.recalculate();
+                ignore_result(self.recalculate());
                 if !self.other_apps.is_empty(){
                     self.update_circles();
                 }
@@ -1684,18 +1682,21 @@ impl Custom3d {
                 if let (Some(ref particle_hash), Some(particle_col)) =
                     (&owner.particle_hash, &owner.particle_col){
                     let cmap = owner.line_cmap.get_map();
+                    let databounds = self.databounds.clone().unwrap();
+                    let frame_idx = self.frame_idx;
                     let line_plotting = circles_to_plot.axis_iter(Axis(0)).map(|rrow|{
                         let particle = rrow[*particle_col];
                         let particle_vec = &particle_hash[&(particle as usize)];
-                        particle_vec.windows(2).flat_map(|window|{
+                        let local_bounds = (particle_vec[0].0 as f32)..=(particle_vec[particle_vec.len()-2].0 as f32);
+                        let bounds = self.line_cmap_bounds.clone().unwrap_or(local_bounds);
+                        particle_vec.windows(2).flat_map(move |window|{
                             let start = window[0];
                             let end = window[1];
-                            let bounds = self.line_cmap_bounds.as_ref().unwrap();
-                            if end.0 <= self.frame_idx{
-                                let t = inverse_lerp(start.0 as f32, *bounds.start(), *bounds.end());
+                            if end.0 <= frame_idx{
+                                let t = inverse_lerp(start.0 as f32, bounds.start().clone(), bounds.end().clone());
                                 Some(epaint::Shape::line_segment([
-                                    data_to_screen_coords_vec2(start.1.into(), &rect, &self.databounds.as_ref().unwrap()),
-                                    data_to_screen_coords_vec2(end.1.into(), &rect, &self.databounds.as_ref().unwrap()),
+                                    data_to_screen_coords_vec2(start.1.into(), &rect, &databounds),
+                                    data_to_screen_coords_vec2(end.1.into(), &rect, &databounds),
                                 ], (1., cmap.call(t))))
                             } else {
                                 None
@@ -1791,11 +1792,11 @@ impl Custom3d {
         }
         
         if let (Some(direction), true) = (direction, response.hovered()){
-            self.update_frame(ui, direction);
+            ignore_result(self.update_frame(ui, direction));
         }
 
         if self.playback.should_frame_advance(ui){
-            self.update_frame(ui, FrameChange::Next);
+           ignore_result(self.update_frame(ui, FrameChange::Next));
             // ui.ctx().request_repaint();
         }
         

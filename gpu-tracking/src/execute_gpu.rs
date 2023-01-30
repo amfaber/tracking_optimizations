@@ -6,13 +6,13 @@ use ndarray::{Array, Array2, ArrayView3, ArrayView, ArrayView2};
 use num_traits::Pow;
 use pollster::FutureExt;
 use tiff::decoder::Decoder;
-use std::{collections::{VecDeque, HashMap}, time::Instant, sync::mpsc::Sender, path::{Path, PathBuf}, fs::File, f32::consts::PI, cell::RefCell, thread::Scope, rc::Rc};
+use std::{collections::{VecDeque, HashMap}, time::Instant, sync::mpsc::Sender, path::{Path, PathBuf}, fs::File, f32::consts::PI, cell::RefCell, thread::{Scope, ScopedJoinHandle}, rc::Rc};
 use wgpu::{Buffer, SubmissionIndex};
 use crate::{kernels, into_slice::IntoSlice,
     gpu_setup::{
     self, GpuState, ParamStyle, TrackingParams, GpuStateFlavor
 }, linking::{
-    Linker, FrameSubsetter, ReturnDistance2, SubsetterOutput, SubsetterType,
+    Linker, FrameSubsetter, ReturnDistance2, SubsetterOutput, SubsetterType, DurationBookkeep,
 }, decoderiter::{
     self, FrameProvider,
 }, utils::{
@@ -27,6 +27,7 @@ type output_type = Vec<inner_output>;
 // type channel_type = Option<(Vec<ResultRow>, usize, Option<Vec<my_dtype>>, Option<f32>)>;
 type channel_type = Option<(Vec<ResultRow>, usize, Option<Vec<my_dtype>>)>;
 
+type ThreadHandle<'a> = ScopedJoinHandle<'a, Result<(Vec<f32>, Option<Vec<DurationBookkeep>>)>>;
 
 
 #[derive(Clone, Copy, Debug, Zeroable, Pod, Default)]
@@ -80,23 +81,29 @@ impl KdPoint for ResultRow{
 }
 
 
-fn submit_work(
-    frame: &[my_dtype],
+fn submit_work<'a, F: IntoSlice>(
+    frame: F,
     staging_buffer: &wgpu::Buffer,
     state: &GpuState,
     tracking_params: &TrackingParams,
     // debug: bool,
     positions: Option<SubsetterOutput>,
     // frame_idx: usize,
-    ) -> SubmissionIndex {
-    
+    frame_sender: &Option<Sender<F>>,
+    mut thread_handle: ScopedJoinHandle<'a, Result<(Vec<f32>, Option<Vec<DurationBookkeep>>)>>
+    ) -> Result<(SubmissionIndex, ThreadHandle<'a>)> {
+    let frame_slice = frame.into_slice();
     let common_buffers = &state.common_buffers;
 
     let mut encoder =
     state.device.create_command_encoder(&Default::default());
-    state.queue.write_buffer(staging_buffer, 0, bytemuck::cast_slice(frame));
+    state.queue.write_buffer(staging_buffer, 0, bytemuck::cast_slice(frame_slice));
     state.queue.write_buffer(staging_buffer, state.pic_byte_size, bytemuck::cast_slice(&[state.pic_size as u32]));
 
+    // thread_handle = thread_handle_error(sender.send(frame), thread_handle)?;
+    if let Some(sender) = frame_sender{
+        thread_handle = handle_thread_error(sender.send(frame), thread_handle)?;
+    }
     
     encoder.copy_buffer_to_buffer(staging_buffer, 0,
         &common_buffers.frame_buffer, 0, state.pic_byte_size);
@@ -339,13 +346,13 @@ fn submit_work(
     encoder.clear_buffer(&common_buffers.particles_buffer, 0, None);
     encoder.clear_buffer(&common_buffers.particles_buffer2, 0, None);
     state.queue.submit(Some(encoder.finish()));
-    index
+    Ok((index, thread_handle))
 }
 
 
 
 
-fn get_work(
+fn get_work<'a>(
     finished_staging_buffer: &Buffer,
     state: &GpuState,
     // tracking_params: &TrackingParams,
@@ -353,10 +360,11 @@ fn get_work(
     wait_gpu_time: &mut Option<f64>,
     frame_index: usize,
     // debug: bool,
-    job_sender: Option<&Sender<channel_type>>,
+    job_sender: &Sender<channel_type>,
+    thread_handle: ScopedJoinHandle<'a, Result<(Vec<f32>, Option<Vec<DurationBookkeep>>)>>,
     // circle_inds: &Vec<[i32; 2]>,
     // dims: &[u32; 2],
-    ) -> Option<(Vec<ResultRow>, usize)> {
+    ) -> Result<ScopedJoinHandle<'a, Result<(Vec<f32>, Option<Vec<DurationBookkeep>>)>>> {
     // println!("getting frame: {}", frame_index);
     let buffer_slice = finished_staging_buffer.slice(..);
     let (sender, receiver) = 
@@ -377,15 +385,19 @@ fn get_work(
     drop(data);
     finished_staging_buffer.unmap();
 
-    let out = match job_sender{
-        Some(job_sender) => {
-            job_sender.send(Some((results, frame_index, neighborhoods))).unwrap();
-            None
-        },
-        None => Some((results, frame_index)),
-    };
+    handle_thread_error(job_sender.send(Some((results, frame_index, neighborhoods))), thread_handle)
+}
 
-    out
+fn handle_thread_error<'a, E, T>(send_res: std::result::Result<(), E>, thread_handle: ScopedJoinHandle<'a, Result<T>>) -> Result<ScopedJoinHandle<'a, Result<T>>>{
+    match send_res{
+        Ok(()) => return Ok(thread_handle),
+        Err(_) => {
+            match thread_handle.join(){
+                Ok(Ok(_)) | Err(_) => return Err(Error::ThreadError),
+                Ok(Err(e)) => return Err(e),
+            }
+        }
+    }
 }
 
 pub fn column_names(params: &TrackingParams) -> (Vec<(&'static str, &'static str)>, Option<usize>){
@@ -566,7 +578,7 @@ fn post_process<A: IntoSlice>(
     frame: Option<A>,
     dims: [u32; 2],
     tracking_params: &TrackingParams,
-    ) -> () {
+    ) -> Result<()> {
     
     let relevant_points = match tracking_params.style{
         ParamStyle::Trackpy{filter_close, separation, ..} => {
@@ -691,7 +703,10 @@ fn post_process<A: IntoSlice>(
             linker.reset()
         }
     }
-    let part_ids = linker.map(|linker| linker.advance(&relevant_points));
+    let part_ids = match linker{
+        Some(linker) => Some(linker.advance(&relevant_points)?),
+        None => None,
+    };
     
     for (idx, row) in relevant_points.iter().enumerate(){
         output.push(frame_index as my_dtype);
@@ -703,6 +718,7 @@ fn post_process<A: IntoSlice>(
         });
         part_ids.as_ref().map(|part_ids| output.push(part_ids[idx] as my_dtype));
     }
+    Ok(())
 }
 
 pub fn mean_from_iter<A: IntoSlice, T: Iterator<Item = Result<A>>>(mut iter: T, dims: &[u32; 2]) -> crate::error::Result<Array2<my_dtype>>{
@@ -765,20 +781,26 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F> + ?Sized>(
 
     let (inp_sender,
         inp_receiver) = std::sync::mpsc::channel();
-    let mut inp_sender = Some(inp_sender);
+    // let mut inp_sender = Some(inp_sender);
     
-    let (frame_sender,
-        frame_receiver) = std::sync::mpsc::channel::<Option<P::Frame>>();
 
     let send_frame = tracking_params.doughnut_correction;
+    let (frame_sender, frame_receiver) = if send_frame{
+        let (s, r) = std::sync::mpsc::channel::<P::Frame>();
+        (Some(s), Some(r))
+    } else {
+        (None, None)
+    };
+    // let (frame_sender,
+    //     frame_receiver) = std::sync::mpsc::channel::<Option<P::Frame>>();
     
-    let output = std::thread::scope(|scope: &Scope| -> crate::error::Result<(Vec<f32>, Option<Vec<crate::linking::DurationBookkeep>>)>{
+    let output = std::thread::scope(|scope: &Scope| -> Result<(Vec<f32>, Option<Vec<crate::linking::DurationBookkeep>>)>{
         let handle = {
             // let neighborhood_size = circle_inds.len();
             let thread_tracking_params = tracking_params.clone();
             let mut linker = tracking_params.search_range
                 .map(|range| Linker::new(range, tracking_params.memory.unwrap_or(0)));
-            scope.spawn(move ||{
+            scope.spawn(move || -> Result<(Vec<f32>, Option<Vec<crate::linking::DurationBookkeep>>)>{
                 let mut kernels = if send_frame {
                     let raw_sig_inds = FloatMemoizer::new(kernels::circle_inds);
                     let raw_bg_inds = FloatMemoizer::new(|radius| {
@@ -803,10 +825,13 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F> + ?Sized>(
                             thread_sleep.as_mut().map(|thread_sleep| *thread_sleep += now.unwrap().elapsed().as_nanos() as f64 / 1e9);
                             let (results, frame_index,
                                 _neighborhoods) = inp;
-                            let frame = frame_receiver.recv()
-                                .map_err(|_| crate::error::Error::ThreadError)?;
+                            let frame = match frame_receiver{
+                                Some(ref receiver) => Some(receiver.recv()
+                                    .map_err(|_| crate::error::Error::ThreadError)?),
+                                None => None,
+                            };
                             post_process(results, &mut output, frame_index, linker.as_mut(),
-                                kernels.as_mut(), frame, dims.clone(), &thread_tracking_params);
+                                kernels.as_mut(), frame, dims.clone(), &thread_tracking_params)?;
                         }
                     }
                 }
@@ -911,11 +936,13 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F> + ?Sized>(
         let (frame, positions, frame_index) = match the_iter.next(){
             Some(Ok(inner)) => inner,
             Some(Err(err)) => {
-                drop(inp_sender.take());
+                drop(inp_sender);
+                // drop(inp_sender.take());
                 return Err(err)
             },
             None => {
-                drop(inp_sender.take());
+                drop(inp_sender);
+                // drop(inp_sender.take());
                 return Err(Error::EmptyIterator)
             },
         };
@@ -927,11 +954,9 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F> + ?Sized>(
             return Err(crate::error::Error::DimensionMismatch { idx: frame_index, frame_len: slc.len(), dimensions: state.dims.clone() })
         }
         
-        let mut old_submission =
-            submit_work(frame.into_slice(), staging_buffer, state, &tracking_params, positions);
+        let (mut old_submission, mut handle) =
+            submit_work(frame, staging_buffer, state, &tracking_params, positions, &frame_sender, handle)?;
         
-        frame_sender.send(if send_frame{Some(frame)} else {None})
-            .map_err(|_err| crate::error::Error::ThreadError)?;
             // .map_err(|err| crate::error::Error::ThreadError { source: Box::new(err) as Box<dyn std::error::Error + Send> })?;
         // dbg!C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\tiff_vsi\vsi dummy\_Process_9747_\stack1\frame_t_0.ets(counter);
 
@@ -970,7 +995,8 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F> + ?Sized>(
             let (frame, positions, frame_index) = match res{
                 Ok(inner) => inner,
                 Err(err) => {
-                    drop(inp_sender.take());
+                    // drop(inp_sender.take());
+                    drop(inp_sender);
                     return Err(err)
                 }
             };
@@ -980,25 +1006,27 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F> + ?Sized>(
             if slc.len() != state.pic_size{
                 return Err(crate::error::Error::DimensionMismatch { idx: frame_index, frame_len: slc.len(), dimensions: state.dims.clone() })
             }
-            let new_submission = submit_work(slc, staging_buffer, &state, &tracking_params, positions);
-            frame_sender.send(if send_frame {Some(frame)} else {None})
-                .map_err(|_err| crate::error::Error::ThreadError)?;
+            let (new_submission, new_handle) = submit_work(frame, staging_buffer, &state, &tracking_params, positions, &frame_sender, handle)?;
+            handle = new_handle;
+            // frame_sender.send(if send_frame {Some(frame)} else {None})
+            //     .map_err(|_err| crate::error::Error::ThreadError)?;
                 // .map_err(|err| crate::error::Error::ThreadError { source: Box::new(err) as Box<dyn std::error::Error> })?;
             
             let finished_staging_buffer = in_use_staging_buffers.pop_front().unwrap();
-            
-            get_work(finished_staging_buffer,
+
+            handle = get_work(finished_staging_buffer,
                 &state, 
                 // &tracking_params,
                 old_submission, 
                 &mut wait_gpu_time,
                 get_work_frame_idx,
                 // debug,
-                inp_sender.as_ref(),
+                &inp_sender,
+                handle,
                 // Some(&inp_sender),
                 // &circle_inds,
                 // &dims,
-            );
+            )?;
 
 
             free_staging_buffers.push(finished_staging_buffer);
@@ -1008,21 +1036,24 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F> + ?Sized>(
         }
         let finished_staging_buffer = in_use_staging_buffers.pop_front().unwrap();
         
-        get_work(finished_staging_buffer,
+        let handle = get_work(finished_staging_buffer,
             &state, 
             // &tracking_params,
             old_submission, 
             &mut wait_gpu_time,
             get_work_frame_idx,
             // debug,
-            inp_sender.as_ref(),
+            &inp_sender,
+            handle,
             // Some(&inp_sender),
             // &circle_inds,
             // &dims,
-        );
+        )?;
+
         wait_gpu_time.map(|wait_gpu_time| println!("Wait GPU time: {} s", wait_gpu_time));
-        inp_sender.map(|sender| sender.send(None)
-            .map_err(|_err| crate::error::Error::ThreadError));
+        drop(inp_sender.send(None));
+        // inp_sender.map(|sender| sender.send(None)
+        //     .map_err(|_err| crate::error::Error::ThreadError));
         // let idk = handle.join().unwrap();
         // dbg!(frames.next().is_some());
         handle.join()
