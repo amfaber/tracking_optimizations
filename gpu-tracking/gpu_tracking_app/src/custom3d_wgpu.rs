@@ -271,7 +271,10 @@ impl Clone for Custom3d{
                         let result = RecalculateResult::from(
                             gpu_tracking::execute_gpu::execute_file(&path, channel, tracking_params.clone(), 0, None).into()
                         );
-                        result_sender.send(result).expect("Main thread lost");
+                        match result_sender.send(result){
+                            Ok(()) => (),
+                            Err(_) => break,
+                        };
                     },
                     Err(_) => break
                 }
