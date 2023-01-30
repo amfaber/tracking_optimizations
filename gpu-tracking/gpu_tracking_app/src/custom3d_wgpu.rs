@@ -90,7 +90,7 @@ pub struct AppWrapper{
 }
 
 impl AppWrapper{
-    pub fn new<'a>(cc: &'a eframe::CreationContext<'a>) -> Option<Self> {
+    pub fn new<'a>(_cc: &'a eframe::CreationContext<'a>) -> Option<Self> {
         let apps = vec![
             Rc::new(RefCell::new(Custom3d::new()?)),
         ];
@@ -273,7 +273,10 @@ impl Clone for Custom3d{
                         let result = RecalculateResult::from(
                             gpu_tracking::execute_gpu::execute_file(&path, channel, tracking_params.clone(), 0, None).into()
                         );
-                        result_sender.send(result).expect("Main thread lost");
+                        match result_sender.send(result){
+                            Ok(()) => (),
+                            Err(_) => break,
+                        };
                     },
                     Err(_) => break
                 }
@@ -305,7 +308,7 @@ impl Clone for Custom3d{
 
         // dbg!(&self.result_status);
         
-        let mut out = Self{
+        let out = Self{
             plot_radius_fallback: self.plot_radius_fallback.clone(),
             static_dataset: self.static_dataset.clone(),
             recently_updated: self.recently_updated.clone(),
