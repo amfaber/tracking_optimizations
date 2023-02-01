@@ -21,6 +21,7 @@ pub trait FrameProvider{
     // type IntoIter: Iterator<Item = Self::Frame>;
     fn get_frame(&self, frame_idx: usize) -> Result<Self::Frame, Error>;
     fn len(&self, too_high: Option<usize>) -> usize;
+    fn light_len(&self) -> Option<usize>;
     fn into_iter(self: Box<Self>) -> Self::FrameIter;
     // fn into_iter(self) -> Box<dyn Iterator<Item = Result<Self::Frame, Error>>>;
 }
@@ -34,6 +35,9 @@ impl<F: IntoSlice, I: Iterator<Item = Result<F, Error>>> FrameProvider for Box<d
     }
     fn len(&self, too_high: Option<usize>) -> usize{
         (**self).len(too_high)
+    }
+    fn light_len(&self) -> Option<usize>{
+        (**self).light_len()
     }
     fn into_iter(self: Box<Self>) -> I{
     // fn into_iter(self) -> Box<dyn Iterator<Item = Result<Self::Frame, Error>>>{
@@ -105,6 +109,10 @@ impl<R: Read + Seek + 'static> FrameProvider for RefCell<Decoder<R>>{
         hi
     }
 
+    fn light_len(&self) -> Option<usize>{
+        None
+    }
+
     fn into_iter(self: Box<Self>) -> Self::FrameIter{
         let iter = IterDecoder::from(self.into_inner());
         Box::new(iter)
@@ -125,6 +133,10 @@ impl<R: Read + Seek + 'static> FrameProvider for RefCell<ETSIterator<R>>{
 
     fn len(&self, _too_high: Option<usize>) -> usize{
         self.borrow().offsets.len()
+    }
+
+    fn light_len(&self) -> Option<usize>{
+        Some(self.len(None))
     }
 
     fn into_iter(self: Box<Self>) -> Box<dyn Iterator<Item = Result<Self::Frame, Error>>>{
@@ -174,6 +186,11 @@ impl<'a, 'b: 'a> FrameProvider for &'b ArrayView3<'a, my_dtype>{
     fn len(&self, _too_high: Option<usize>) -> usize{
         self.shape()[0]
     }
+    
+    fn light_len(&self) -> Option<usize>{
+        Some(self.len(None))
+    }
+    
     fn into_iter(self: Box<Self>) -> Box<dyn Iterator<Item = Result<Self::Frame, Error>> + 'a>{
         let iter = self.axis_iter(Axis(0)).map(|frame| Ok(frame));
         Box::new(iter)

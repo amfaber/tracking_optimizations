@@ -1,14 +1,14 @@
 // #![allow(warnings)]
 // #![allow(const_item_mutation)]
 use kd_tree::{KdPoint, KdTree, KdIndexTree};
-use std::cmp::Ordering;
+use std::{cmp::Ordering, sync::{atomic::AtomicBool, Arc}};
 use ndarray::{ArrayView2, Array2, Array, Axis, s};
 use kd_tree;
 use std::{collections::{HashMap, HashSet, VecDeque}, iter::FromIterator};
 type float = f32;
 use typenum::{self, U2};
 use num_traits;
-use crate::{execute_gpu::ResultRow, error::{Result}};
+use crate::{execute_gpu::ResultRow, error::{Result, Error}};
 use std::panic;
 use bitflags::bitflags;
 
@@ -381,36 +381,12 @@ impl Linker{
             part_idx: 0,
             starting_frame: Vec::new(),
             warning_raised: LinkingWarning::empty(),
-            warn_subnet_fraction: 0.05,
+            warn_subnet_fraction: 0.10,
         }
     }
 
     pub fn reset(&mut self){
         *self = Self::new(self.search_range, self.memory)
-    }
-
-    fn check<F: Fn() -> ()>(&mut self, other: &LinkingWarning, warning_type: LinkingWarning, handler: F){
-        if other.contains(warning_type) && !self.warning_raised.contains(warning_type){
-            handler();
-            self.warning_raised.insert(warning_type); 
-        }
-    }
-    pub fn handle_warning(&mut self, warning: LinkingWarning){
-        let warn_subnet_fraction = self.warn_subnet_fraction;
-        self.check(&warning, LinkingWarning::SUBNET_FRACTION_TOO_HIGH, move ||{
-            println!("WARNING: The fraction of linking errors is potentially greater than {}.\n\
-Try setting a smaller search range or track with settings that give fewer detections.", warn_subnet_fraction);
-        });
-        self.check(&warning, LinkingWarning::COMPUTATION_TOO_HEAVY, ||{
-            println!("WARNING: Computational load during linking is abnormally high. Try setting a smaller search range or track with settings that give fewer detections.")
-        })
-        // if !self.warning_raised{
-        //     match warning{
-        //         Some(LinkingWarning::SubnetFractionTooHigh) => {
-                    
-        //         }
-        //     }
-        // }
     }
 
     pub fn connect<T: KdPoint<Scalar = float, Dim = U2> + std::fmt::Debug>(&mut self, frame1: &[T], frame2: &[T]) -> Result<(Vec<usize>, Vec<usize>)>{
@@ -420,7 +396,7 @@ Try setting a smaller search range or track with settings that give fewer detect
             self.part_idx += 1;
             out
         }).collect();
-        let (result, _memory, warn) = link(
+        let (result, _memory) = link(
             &prev,
             frame2,
             &mut self.src_to_dest,
@@ -430,14 +406,18 @@ Try setting a smaller search range or track with settings that give fewer detect
             self.search_range,
             &mut self.part_idx,
             self.warn_subnet_fraction,
+            &mut self.warning_raised,
+            None,
         )?;
-        self.handle_warning(warn);
         let first = prev.into_iter().map(|(_, idx)| idx).collect();
         Ok((first, result))
     }
 
-    pub fn advance<T: KdPoint<Scalar = float, Dim = U2> + std::fmt::Debug>(&mut self, frame: &[T]) 
-            -> Result<Vec<usize>> {
+    pub fn advance<T: KdPoint<Scalar = float, Dim = U2> + std::fmt::Debug>(
+            &mut self,
+            frame: &[T],
+            interrupt: Option<&Arc<AtomicBool>>,
+        ) -> Result<Vec<usize>> {
         let N = frame.len();
         let memory_start_idx = match self.memory_vec{
             Some(ref memvec) =>{
@@ -457,7 +437,7 @@ Try setting a smaller search range or track with settings that give fewer detect
         };
         let prev_part_idx = self.part_idx;
         
-        let (result, memory, warn) =
+        let (result, memory) =
             link(
                 &self.prev,
                 &frame,
@@ -468,9 +448,10 @@ Try setting a smaller search range or track with settings that give fewer detect
                 self.search_range,
                 &mut self.part_idx,
                 self.warn_subnet_fraction,
+                &mut self.warning_raised,
+                interrupt,
             )?;
 
-        self.handle_warning(warn);
 
         for _ in 0..(self.part_idx - prev_part_idx){
             self.starting_frame.push(DurationBookkeep::new(self.frame_idx));
@@ -518,11 +499,32 @@ Try setting a smaller search range or track with settings that give fewer detect
 }
 
 bitflags!{
+    
     pub struct LinkingWarning: u8{
         // const NO_WARNING = 0b00000000;
         const SUBNET_FRACTION_TOO_HIGH = 0b00000001;
         const COMPUTATION_TOO_HEAVY = 0b00000010;
     }
+}
+
+impl LinkingWarning{
+    fn check<F: Fn() -> ()>(&mut self, other: &LinkingWarning, warning_type: LinkingWarning, handler: F){
+        if other.contains(warning_type) && !self.contains(warning_type){
+            handler();
+            self.insert(warning_type); 
+        }
+    }
+    pub fn handle_warning(&mut self, warning: LinkingWarning, warn_subnet_fraction: f32){
+        let warn_subnet_fraction = warn_subnet_fraction;
+        self.check(&warning, LinkingWarning::SUBNET_FRACTION_TOO_HIGH, move ||{
+            println!("WARNING: The fraction of linking errors is potentially greater than {}.\n\
+Try setting a smaller search range or track with settings that give fewer detections.", warn_subnet_fraction);
+        });
+        self.check(&warning, LinkingWarning::COMPUTATION_TOO_HEAVY, ||{
+            println!("WARNING: Computational load during linking is abnormally high. Try setting a smaller search range or track with settings that give fewer detections.")
+        })
+    }
+    
 }
 
 pub fn link<T: KdPoint<Scalar = float, Dim = U2> + std::fmt::Debug>(
@@ -535,7 +537,9 @@ pub fn link<T: KdPoint<Scalar = float, Dim = U2> + std::fmt::Debug>(
     radius: float,
     counter: &mut usize,
     warn_subnet_fraction: f32,
-    ) -> Result<(Vec<usize>, Vec<([float; 2], usize)>, LinkingWarning)>{
+    prev_warnings: &mut LinkingWarning,
+    interrupt: Option<&Arc<AtomicBool>>,
+    ) -> Result<(Vec<usize>, Vec<([float; 2], usize)>)>{
     
 
     let tree = kd_tree::KdIndexTree::build_by_ordered_float(dest);
@@ -627,14 +631,11 @@ pub fn link<T: KdPoint<Scalar = float, Dim = U2> + std::fmt::Debug>(
             src_part_of_subnet += path[0].len();
             dest_part_of_subnet += path[1].len();
             computational_load += path[0].len() * path[1].len();
-            // if n_distances > 30{
-            //     println!("{}", n_distances);
-            // }
             paths.push(path);
         }
     }
+    // println!("{}", computational_load);
 
-    println!("{}", computational_load);
     let mut warn = LinkingWarning::empty();
     let src_fraction = src_part_of_subnet as f32 / src.len() as f32;
     let dest_fraction = dest_part_of_subnet as f32 / dest.len() as f32;
@@ -642,17 +643,16 @@ pub fn link<T: KdPoint<Scalar = float, Dim = U2> + std::fmt::Debug>(
     if max_fraction > warn_subnet_fraction{
         warn |= LinkingWarning::SUBNET_FRACTION_TOO_HIGH;
     }
-    if computational_load > 10000{
+    if computational_load > 5000{
         return Err(crate::error::Error::TooDenseToLink)
     }
     if computational_load > 1000{
         warn |= LinkingWarning::COMPUTATION_TOO_HEAVY;
     }
-    // println!("src  {}", src_fraction);
-    // println!("dest {}", dest_fraction);
+
+    prev_warnings.handle_warning(warn, warn_subnet_fraction);
     
     
-    // println!("paths.len() = {}", paths.len());
     #[inline]
     fn recurse2(progress: usize,
         path: &[Vec<usize>; 2],
@@ -664,13 +664,21 @@ pub fn link<T: KdPoint<Scalar = float, Dim = U2> + std::fmt::Debug>(
         default_score: float,
         sources: &Vec<([float; 2], usize)>,
         nulls: &mut HashSet<usize>,
-        ){
+        interrupt: Option<&Arc<AtomicBool>>,
+        ) -> Result<()>{
         let current_dest = path[1][progress];
         let dest_to_src_with_null = dest_to_src[current_dest].iter()
             .map(|ele| (Some(sources[ele.0].1), ele.1)).chain(std::iter::once((None, default_score)));
+
+        
         for src in dest_to_src_with_null{
+            if let Some(interrupt) = interrupt{
+                if interrupt.load(std::sync::atomic::Ordering::Relaxed){
+                    return Err(Error::Interrupted)
+                }
+            }
             if *score > *best{
-                return;
+                return Ok(());
             }
             *score += src.1;
             let src_ident = src.0;
@@ -698,7 +706,8 @@ pub fn link<T: KdPoint<Scalar = float, Dim = U2> + std::fmt::Debug>(
                     }
                 }
             } else {
-                recurse2(progress + 1, path, score, best, used, output, dest_to_src, default_score, sources, nulls);
+                recurse2(progress + 1, path, score, best, used, output,
+                    dest_to_src, default_score, sources, nulls, interrupt)?;
             }
             match src_ident{
                 Some(src_ident) => {
@@ -710,7 +719,7 @@ pub fn link<T: KdPoint<Scalar = float, Dim = U2> + std::fmt::Debug>(
             }
             *score -= src.1;
         }
-        ()
+        Ok(())
     }
     
     for path in paths{
@@ -719,7 +728,7 @@ pub fn link<T: KdPoint<Scalar = float, Dim = U2> + std::fmt::Debug>(
         let score = &mut 0.0;
         let best = &mut f32::INFINITY.clone();
         recurse2(0, &path, score, best, &mut used, &mut output,
-            dest_to_src, radius * radius, &src, &mut nulls)
+            dest_to_src, radius * radius, &src, &mut nulls, interrupt)?;
     }
 
     let output = output.into_iter().map(|ele| match ele{ Some(val) => val, None => { let old = *counter; *counter += 1; old } }).collect::<Vec<_>>();
@@ -730,7 +739,7 @@ pub fn link<T: KdPoint<Scalar = float, Dim = U2> + std::fmt::Debug>(
         None => src.iter().filter(|ele| !used_sources.contains(&ele.1)).map(|ele| *ele).collect::<Vec<_>>(),
     };
 
-    Ok((output, unused_sources, warn))
+    Ok((output, unused_sources))
 }
 
 pub fn linker_all(frame_iter: impl Iterator<Item = crate::error::Result<(Option<usize>, Vec<[float; 2]>)>>, radius: float, memory: usize) -> crate::error::Result<Vec<usize>>{
@@ -739,7 +748,7 @@ pub fn linker_all(frame_iter: impl Iterator<Item = crate::error::Result<(Option<
     let mut results = Vec::new();
     for frame in frame_iter{
         let frame = frame?;
-        let result = linker.advance(&frame.1)?;
+        let result = linker.advance(&frame.1, None)?;
         results.extend(result.into_iter());
     }
     Ok(results)

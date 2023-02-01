@@ -84,8 +84,11 @@ accepted dimensions: (Nx2) or (Nx3). received: {:?}", dims)]
  search range or track with settings that give fewer detections.")]
 	TooDenseToLink,
 
-	#[error("Keyboard Interrupt")]
-	KeyboardInterrupt,
+	#[error("Keyboard Interrupt, my custom version")]
+	Interrupted,
+
+	#[error("Future polled after termination")]
+	PolledAfterTermination
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

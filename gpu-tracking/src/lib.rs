@@ -12,6 +12,7 @@ pub mod gpu_setup;
 pub mod linking;
 pub mod utils;
 pub mod error;
+pub mod progressfuture;
 
 // pub mod python_bindings;
 

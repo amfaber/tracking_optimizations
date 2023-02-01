@@ -1,12 +1,12 @@
-use std::{sync::{Arc, mpsc::{Receiver, Sender}}, collections::HashMap, path::PathBuf, ops::RangeInclusive, rc::{Rc, Weak}, cell::RefCell};
+use std::{sync::{Arc, mpsc::{Receiver, Sender}}, collections::{HashMap, HashSet, BTreeMap}, path::PathBuf, ops::RangeInclusive, rc::{Rc, Weak}, cell::RefCell, fmt::Display, thread::Scope};
 
 use eframe::egui_wgpu;
 use egui::{self, TextStyle};
 use epaint;
 use bytemuck;
 use thiserror::Error;
-use gpu_tracking::{gpu_setup::{TrackingParams, ParamStyle}, execute_gpu::path_to_iter};
-use ndarray::{Array, Array2, Axis, ArrayView1};
+use gpu_tracking::{gpu_setup::{TrackingParams, ParamStyle}, execute_gpu::path_to_iter, progressfuture::{ProgressFuture, PollResult}};
+use ndarray::{Array, Array2, Axis, ArrayView1, s, ArrayView2};
 use crate::{colormaps, texture::ColormapRenderResources};
 use kd_tree;
 use std::fmt::Write;
@@ -16,8 +16,11 @@ use rfd;
 use strum::IntoEnumIterator;
 use csv;
 use ndarray_csv::Array2Reader;
+
 // use ndarray_stats::histogram::{HistogramExt, strategies::Auto, Bins, Edges, Grid, GridBuilder};
 // use ordered_float;
+
+type WorkerType = ProgressFuture<Result<RecalculateResult, anyhow::Error>, (usize, Option<usize>), RecalculateJob>;
 
 fn ignore_result<R>(_res: R){}
 
@@ -34,7 +37,11 @@ impl ColorMap for [f32; 120]{
         let color_view: &[[f32; 4]] = bytemuck::cast_slice(self);
         
         let start = color_view[ind];
-        let end = color_view[ind + 1];
+        let end = if leftover == 0.0{
+            [0., 0., 0., 0.]
+        } else {
+            color_view[ind + 1]
+        };
         let mut out = [0; 4];
         for ((o, s), e) in out.iter_mut().zip(start.iter()).zip(end.iter()){
             *o = ((s + leftover * (e - s)) * 255.) as u8;
@@ -93,6 +100,7 @@ impl AppWrapper{
             Rc::new(RefCell::new(Custom3d::new()?)),
         ];
         let opens = vec![true];
+        
         Some(Self{apps, opens})
     }
 }
@@ -170,10 +178,12 @@ struct RecalculateJob{
     path: PathBuf,
     tracking_params: TrackingParams,
     channel: Option<usize>,
-    result_sender: Sender<anyhow::Result<RecalculateResult>>,
+    // result_sender: Sender<anyhow::Result<RecalculateResult>>,
 }
 
 pub struct Custom3d {
+    worker: WorkerType,
+    progress: Option<usize>,
     plot_radius_fallback: f32,
     static_dataset: bool,
     recently_updated: bool,
@@ -192,7 +202,11 @@ pub struct Custom3d {
     channel: Option<usize>,
     output_path: PathBuf,
     save_pending: bool,
-    particle_hash: Option<HashMap<usize, Vec<(usize, [f32; 2])>>>,
+    particle_hash: Option<BTreeMap<usize, Vec<(usize, [f32; 2], usize)>>>,
+    // row_range: Option<Vec<(usize, usize)>>,
+    alive_particles: Option<BTreeMap<usize, Vec<(usize, Option<usize>)>>>,
+    cumulative_particles: Option<BTreeMap<usize, HashSet<usize>>>,
+    
     circle_kdtree: Option<kd_tree::KdTree<([f32; 2], (usize, usize))>>,
 
     r_col: Option<usize>,
@@ -205,6 +219,8 @@ pub struct Custom3d {
     image_cmap: colormaps::KnownMaps,
     line_cmap: colormaps::KnownMaps,
     line_cmap_bounds: Option<RangeInclusive<f32>>,
+    track_colors: TrackColors,
+    all_tracks: bool,
     // line_cmap_end: f32,
 
     zoom_box_start: Option<egui::Pos2>,
@@ -214,8 +230,8 @@ pub struct Custom3d {
 
     uuid: Uuid,
     result_status: ResultStatus,
-    job_sender: Sender<RecalculateJob>,
-    result_receiver: Option<Receiver<anyhow::Result<RecalculateResult>>>,
+    // job_sender: Sender<RecalculateJob>,
+    // result_receiver: Option<Receiver<anyhow::Result<RecalculateResult>>>,
 
     input_state: InputState,
     needs_update: NeedsUpdate,
@@ -247,7 +263,7 @@ impl Playback{
     }
 }
 
-impl Clone for Custom3d{
+impl Custom3d{
     fn clone(&self) -> Self{
         
         let mode = self.mode.clone();
@@ -262,21 +278,30 @@ impl Clone for Custom3d{
 
         let texture_zoom_level = self.texture_zoom_level;
 
-        let (job_sender, job_receiver) = std::sync::mpsc::channel();
+        // let (job_sender, job_receiver) = std::sync::mpsc::channel();
         
-        std::thread::spawn(move ||{
-            loop{
-                match job_receiver.recv(){
-                    Ok(RecalculateJob { path, channel, tracking_params, result_sender }) => {
-                        let result = RecalculateResult::from(
-                            gpu_tracking::execute_gpu::execute_file(&path, channel, tracking_params.clone(), 0, None).into()
-                        );
-                        match result_sender.send(result){
-                            Ok(()) => (),
-                            Err(_) => break,
-                        };
-                    },
-                    Err(_) => break
+        // std::thread::spawn(move ||{
+        //     loop{
+        //         match job_receiver.recv(){
+        //             Ok(RecalculateJob { path, channel, tracking_params, result_sender }) => {
+        //                 let result = RecalculateResult::from(
+        //                     gpu_tracking::execute_gpu::execute_file(&path, channel, tracking_params.clone(), 0, None, None, None).into()
+        //                 );
+        //                 match result_sender.send(result){
+        //                     Ok(()) => (),
+        //                     Err(_) => break,
+        //                 };
+        //             },
+        //             Err(_) => break
+        //         }
+        //     }
+        // });
+        let worker = ProgressFuture::new(|job, progress, interrupt|{
+            match job{
+                RecalculateJob { path, tracking_params, channel } => {
+                    RecalculateResult::from(
+                        gpu_tracking::execute_gpu::execute_file(&path, channel, tracking_params.clone(), 0, None, Some(interrupt), Some(progress))
+                    )
                 }
             }
         });
@@ -302,11 +327,11 @@ impl Clone for Custom3d{
         let circle_color = self.circle_color.clone();
         let output_path = self.output_path.clone();
         let other_apps = self.other_apps.clone();
-        // other_apps.push(Rc::downgrade(&Rc::new(self)));
-
-        // dbg!(&self.result_status);
+        
         
         let out = Self{
+            worker,
+            progress: self.progress.clone(),
             plot_radius_fallback: self.plot_radius_fallback.clone(),
             static_dataset: self.static_dataset.clone(),
             recently_updated: self.recently_updated.clone(),
@@ -325,6 +350,10 @@ impl Clone for Custom3d{
             output_path,
             save_pending: self.save_pending.clone(),
             particle_hash: self.particle_hash.clone(),
+            alive_particles: self.alive_particles.clone(),
+            // row_range: self.row_range.clone(),
+            cumulative_particles: self.cumulative_particles.clone(),
+            
             circle_kdtree: self.circle_kdtree.clone(),
 
             r_col: self.r_col.clone(),
@@ -337,6 +366,8 @@ impl Clone for Custom3d{
             image_cmap,
             line_cmap,
             line_cmap_bounds: self.line_cmap_bounds.clone(),
+            track_colors: self.track_colors.clone(),
+            all_tracks: self.all_tracks.clone(),
 
             zoom_box_start: None,
             cur_asp,
@@ -345,8 +376,8 @@ impl Clone for Custom3d{
 
             uuid,
             result_status: self.result_status.clone(),
-            result_receiver: None,
-            job_sender,
+            // result_receiver: None,
+            // job_sender,
 
             input_state,
             needs_update,
@@ -721,6 +752,7 @@ impl Custom3d {
         self.cur_asp = cur_asp;
         self.result_status = ResultStatus::Processing;
         self.particle_hash = None;
+        // self.row_range = None;
         self.input_state.frame_idx = self.frame_idx.to_string();
         ignore_result(self.recalculate());
         Ok(())
@@ -742,25 +774,32 @@ impl Custom3d {
 
         let texture_zoom_level = zero_one_rect();
 
-        let (job_sender, job_receiver) = std::sync::mpsc::channel();
+        // let (job_sender, job_receiver) = std::sync::mpsc::channel();
         
-        std::thread::spawn(move ||{
-            loop{
-                match job_receiver.recv(){
-                    Ok(RecalculateJob { path, channel, tracking_params, result_sender }) => {
-                        // let generator = || gpu_tracking::execute_gpu::path_to_iter(&path, None);
-                        // let result = RecalculateResult::from(gpu_tracking::execute_gpu::execute_provider(generator, tracking_params.clone(), 0, None).unwrap());
-                        let result = RecalculateResult::from(
-                            gpu_tracking::execute_gpu::execute_file(&path, channel, tracking_params.clone(), 0, None).into()
-                        );
-                        result_sender.send(result).expect("Main thread lost");
-                    },
-                    Err(_) => break
+        // std::thread::spawn(move ||{
+        //     loop{
+        //         match job_receiver.recv(){
+        //             Ok(RecalculateJob { path, channel, tracking_params, result_sender }) => {
+        //                 let result = RecalculateResult::from(
+        //                     gpu_tracking::execute_gpu::execute_file(&path, channel, tracking_params.clone(), 0, None, None, None).into()
+        //                 );
+        //                 result_sender.send(result).expect("Main thread lost");
+        //             },
+        //             Err(_) => break
+        //         }
+        //     }
+        // });
+        
+        let worker = ProgressFuture::new(|job, progress, interrupt|{
+            match job{
+                RecalculateJob { path, tracking_params, channel } => {
+                    RecalculateResult::from(
+                        gpu_tracking::execute_gpu::execute_file(&path, channel, tracking_params.clone(), 0, None, Some(interrupt), Some(progress))
+                    )
                 }
             }
         });
         
-        // let settings_visibility = SettingsVisibility::default();
         let input_state = InputState::default();
         let params = input_state.to_trackingparams();
         
@@ -774,8 +813,12 @@ impl Custom3d {
         let playback = Playback::Off;
 
         let circle_color = egui::Color32::from_rgb(255, 255, 255);
+
+        let track_colors = TrackColors::Local;
         
         let out = Self{
+            worker,
+            progress: None,
             plot_radius_fallback: 4.5,
             static_dataset: false,
             recently_updated: false,
@@ -793,8 +836,12 @@ impl Custom3d {
             path: None,
             output_path: PathBuf::from(""),
             save_pending: false,
+            
             particle_hash: None,
+            // row_range: None,
+            alive_particles: None,
             circle_kdtree: None,
+            cumulative_particles: None,
 
             r_col: None,
             x_col: None,
@@ -806,6 +853,8 @@ impl Custom3d {
             image_cmap,
             line_cmap,
             line_cmap_bounds,
+            track_colors,
+            all_tracks: false,
 
             zoom_box_start: None,
             cur_asp,
@@ -814,8 +863,8 @@ impl Custom3d {
 
             uuid,
             result_status: ResultStatus::Processing,
-            result_receiver: None,
-            job_sender,
+            // result_receiver: None,
+            // job_sender,
 
             input_state,
             needs_update,
@@ -847,6 +896,21 @@ enum ResultStatus{
     Processing,
     TooOld,
     Static,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum TrackColors{
+    Local,
+    Global,
+}
+
+impl TrackColors{
+    fn to_str(&self) -> &'static str{
+        match self{
+            Self::Local => "Local",
+            Self::Global => "Global",
+        }
+    }
 }
 
 struct RecalculateResult{
@@ -899,32 +963,22 @@ impl Custom3d {
             }
             ResultStatus::Static | ResultStatus::Valid => ()
         }
-        if self.results.is_none(){
-            return None
-        }
-        let mut subsetter = gpu_tracking::linking::FrameSubsetter::new(
-            self.results.as_ref().unwrap().view(),
-            Some(0),
-            (1, 2),
-            None,
-            gpu_tracking::linking::SubsetterType::Agnostic,
-        );
-        
-        subsetter.find_map(|ele| {
-            match ele{
-                Ok((Some(i), gpu_tracking::linking::SubsetterOutput::Agnostic(res))) if i == frame => {
-                    Some(res)
-                },
-                _ => None
+        let results = self.results.as_ref()?;
+
+        if let Some(alive) = &self.alive_particles{
+            let mut out = Array2::zeros((0, results.shape()[1]));
+            for part in alive.get(&frame)?{
+                if let Some(row) = part.1{
+                    out.push_row(results.index_axis(Axis(0), row)).unwrap();
+                }
             }
-        })
+            Some(out)
+        } else {
+            Some(results.clone())
+        }
     }
 
     fn update_circles(&mut self){
-        // if self.results.is_none() | matches!(self.result_status, ResultStatus::Processing){
-        //     return
-        // }
-
         self.circles_to_plot.clear();
         if let Some(circles) = self.results_to_circles_to_plot(self.frame_idx){
             self.circles_to_plot.push((circles, None))
@@ -957,7 +1011,7 @@ impl Custom3d {
     fn update_from_recalculate(&mut self, result: anyhow::Result<RecalculateResult>) -> anyhow::Result<()>{
         let result = result?;
         let result_names: Vec<_> = result.result_names.into_iter().map(|(s1, s2)| (s1.to_string(), s2.to_string())).collect();
-        self.result_receiver = None;
+        // self.result_receiver = None;
         self.results = Some(result.results);
         self.result_names = Some(result_names);
         self.r_col = result.r_col;
@@ -976,14 +1030,49 @@ impl Custom3d {
         match (&self.mode, self.particle_col){
             (DataMode::Immediate, _) | (_, None) => {
                 self.particle_hash = None;
+                self.alive_particles = None;
+                self.cumulative_particles = None;
             },
             (_, Some(particle_col)) => {
-                self.particle_hash = Some(HashMap::new());
-                for row in self.results.as_ref().unwrap().axis_iter(Axis(0)){
-                    let part_id = row[particle_col];
-                    let to_insert = (row[self.frame_col.unwrap()] as usize, [row[self.x_col.unwrap()], row[self.y_col.unwrap()]]);
-                    self.particle_hash.as_mut().unwrap().entry(part_id as usize).or_insert(Vec::new()).push(to_insert);
+                let mut particle_hash = BTreeMap::new();
+                // let mut row_range: Vec<(usize, usize)> = Vec::new();
+                let mut alive_particles = BTreeMap::new();
+                let mut cumulative = BTreeMap::new();
+                for (i, row) in self.results.as_ref().unwrap().axis_iter(Axis(0)).enumerate(){
+                    let part_id = row[particle_col] as usize;
+                    let frame = row[self.frame_col.unwrap()] as usize;
+                    let to_insert = (frame, [row[self.x_col.unwrap()], row[self.y_col.unwrap()]], i);
+                    particle_hash.entry(part_id).or_insert(Vec::new()).push(to_insert);
                 }
+
+                for (part_id, vec) in particle_hash.iter_mut(){
+                    let mut prev_frame = None;
+                    for (frame, _pos, row) in vec{
+                        if let Some(prev) = prev_frame{
+                            for inbetween in prev..*frame{
+                                alive_particles.entry(inbetween).or_insert(Vec::new()).push((*part_id, None))
+                            }
+                        }
+                        alive_particles.entry(*frame).or_insert(Vec::new()).push((*part_id, Some(*row)));
+                        prev_frame = Some(*frame);
+                    }
+                }
+                let mut prev_entry: Option<&HashSet<_>> = None;
+                for (frame, vec) in &alive_particles{
+                    if let Some(prev) = prev_entry{
+                        let mut next_set = prev.clone();
+                        next_set.extend(vec.iter().map(|(part_id, _row)| *part_id));
+                        cumulative.insert(*frame, next_set);
+                    } else {
+                        cumulative.insert(*frame, vec.iter().map(|(part_id, _row)| *part_id).collect());
+                    }
+                    prev_entry = Some(&cumulative[frame]);
+                }
+
+                self.particle_hash = Some(particle_hash);
+                self.alive_particles = Some(alive_particles);
+                self.cumulative_particles = Some(cumulative);
+                
                 
                 // let mut to_debug: Vec<_> = self.particle_hash.as_ref().unwrap().iter().collect();
                 // to_debug.sort_by(|a, b| {
@@ -1002,35 +1091,53 @@ impl Custom3d {
 
     fn poll_result(&mut self) -> anyhow::Result<()>{
         self.recently_updated = false;
-        match self.result_receiver.as_ref(){
-            Some(recv) => {
-                match recv.try_recv(){
-                    Ok(res) => {
-                        match self.result_status{
-                            ResultStatus::Processing => {
-                                self.update_from_recalculate(res)?;
-                            },
-                            ResultStatus::TooOld => {
-                                self.result_receiver = None;
-                                self.recalculate()?;
-                            },
-                            ResultStatus::Valid | ResultStatus::Static => unreachable!(),
-                        }
-                        
+        match self.worker.poll()?{
+            PollResult::Done(res) => {
+                match self.result_status{
+                    ResultStatus::Processing => {
+                        self.update_from_recalculate(res)?;
                     },
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        
+                    ResultStatus::TooOld => {
+                        // self.worker.interrupt();
+                        self.recalculate()?;
                     },
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {panic!("Thread lost")},
+                    ResultStatus::Valid | ResultStatus::Static => unreachable!(),
                 }
             },
-            None => {
-                if !matches!(self.result_status, ResultStatus::Valid){
-                    assert!(matches!(self.mode, DataMode::Off))
-                }
-                // assert!(matches!(self.result_status, ResultStatus::Valid))
-            }
-        }
+            PollResult::Pending(prog) => {
+                self.progress = Some(prog.0)
+            },
+            PollResult::NoJobRunning => (),
+        };
+        // match self.result_receiver.as_ref(){
+        //     Some(recv) => {
+        //         match recv.try_recv(){
+        //             Ok(res) => {
+        //                 match self.result_status{
+        //                     ResultStatus::Processing => {
+        //                         self.update_from_recalculate(res)?;
+        //                     },
+        //                     ResultStatus::TooOld => {
+        //                         self.result_receiver = None;
+        //                         self.recalculate()?;
+        //                     },
+        //                     ResultStatus::Valid | ResultStatus::Static => unreachable!(),
+        //                 }
+                        
+        //             },
+        //             Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        
+        //             },
+        //             Err(std::sync::mpsc::TryRecvError::Disconnected) => {panic!("Thread lost")},
+        //         }
+        //     },
+        //     None => {
+        //         if !matches!(self.result_status, ResultStatus::Valid){
+        //             assert!(matches!(self.mode, DataMode::Off))
+        //         }
+        //         // assert!(matches!(self.result_status, ResultStatus::Valid))
+        //     }
+        // }
         Ok(())
     }
 
@@ -1194,10 +1301,10 @@ impl Custom3d {
 
     fn color_options(&mut self, ui: &mut egui::Ui){
         ui.horizontal(|ui|{
-            ui.label("Circle color:");
+            ui.label("Circles:");
             ui.color_edit_button_srgba(&mut self.circle_color);
 
-            ui.label("Image colormap:");
+            ui.label("Image:");
             egui::ComboBox::from_id_source(self.uuid.as_u128() + 1).selected_text(self.image_cmap.get_name())
                 .show_ui(ui, |ui|{ 
                     if colormap_dropdown(ui, &mut self.image_cmap){
@@ -1206,7 +1313,7 @@ impl Custom3d {
                 }
             );
 
-            ui.label("Tracks colormap:");
+            ui.label("Tracks:");
             egui::ComboBox::from_id_source(self.uuid.as_u128() + 2).selected_text(self.line_cmap.get_name())
                 .show_ui(ui, |ui|{ 
                     if colormap_dropdown(ui, &mut self.line_cmap){
@@ -1214,6 +1321,14 @@ impl Custom3d {
                     };
                 }
             );
+            
+            egui::ComboBox::from_id_source(self.uuid.as_u128() + 3).selected_text(self.track_colors.to_str())
+                .show_ui(ui, |ui|{ 
+                    ui.selectable_value(&mut self.track_colors, TrackColors::Local, "Local");
+                    ui.selectable_value(&mut self.track_colors, TrackColors::Global, "Global");
+                }
+            );
+            
         });
     }
     
@@ -1295,6 +1410,10 @@ impl Custom3d {
             if ui.add(egui::SelectableLabel::new(self.input_state.color_options, "Color Options")).clicked(){
                 self.input_state.color_options = !self.input_state.color_options;
             }
+            if ui.add(egui::SelectableLabel::new(self.all_tracks, "Tracks for all particles")).clicked(){
+                self.all_tracks = !self.all_tracks;
+            }
+            
         });
         if self.input_state.color_options{
             self.color_options(ui);
@@ -1303,7 +1422,6 @@ impl Custom3d {
         if submit_click | ui.ctx().input().key_down(egui::Key::Enter){
             self.update_state(ui);
         }
-
         
         
         match self.frame_provider{
@@ -1535,26 +1653,42 @@ impl Custom3d {
             }
             return Ok(())
         }
-        if self.result_receiver.is_some(){
+        // if self.result_receiver.is_some(){
+        //     self.result_status = ResultStatus::TooOld;
+        //     return Err(StillWaitingError.into())
+        // }
+        if self.worker.n_jobs() > 0{
             self.result_status = ResultStatus::TooOld;
+            self.worker.interrupt();
             return Err(StillWaitingError.into())
         }
         
         let tracking_params = self.tracking_params.clone();
         let path = self.path.as_ref().cloned().unwrap();
         let channel = self.channel.clone();
-        let (result_sender, result_receiver) =  std::sync::mpsc::channel();
-        self.result_receiver = Some(result_receiver);
-        self.job_sender.send(RecalculateJob{
-            path,
-            channel,
-            result_sender,
-            tracking_params
-        }).expect("Thread lost");
+        // let (result_sender, result_receiver) =  std::sync::mpsc::channel();
+        // self.result_receiver = Some(result_receiver);
+
+        self.worker.submit_new(
+            RecalculateJob{
+                path,
+                channel,
+                tracking_params
+            }
+        ).expect("thread crash");
+        // self.job_sender.send(RecalculateJob{
+        //     path,
+        //     channel,
+        //     result_sender,
+        //     tracking_params
+        // }).expect("Thread lost");
 
         self.result_status = ResultStatus::Processing;
         self.particle_hash = None;
+        self.alive_particles = None;
+        self.cumulative_particles = None;
         self.particle_col = None;
+        self.progress = None;
         Ok(())
     }
 
@@ -1661,14 +1795,10 @@ impl Custom3d {
     }
     
     fn result_dependent_plotting(&mut self, ui: &mut egui::Ui, rect: egui::Rect, hover_pos: Option<egui::Pos2>){
-        // let 
         for (circles_to_plot, owner) in self.circles_to_plot.iter(){
             let owner = unsafe{ self.get_owner(owner) };
             let owner = owner.map(|inner| (inner, inner.result_status.clone()));
             if let Some((owner, ResultStatus::Valid | ResultStatus::Static)) = owner{
-                // if owner.recently_updated{
-                //     self.update_circles();
-                // }
                 let circle_plotting = circles_to_plot.axis_iter(Axis(0)).map(|rrow|{
                     epaint::Shape::circle_stroke(
                         data_to_screen_coords_vec2([rrow[owner.x_col.unwrap()], rrow[owner.y_col.unwrap()]].into(), &rect, &self.databounds.as_ref().unwrap()),
@@ -1681,21 +1811,38 @@ impl Custom3d {
                 });
                 ui.painter_at(rect).extend(circle_plotting);
 
-
-                if let (Some(ref particle_hash), Some(particle_col)) =
-                    (&owner.particle_hash, &owner.particle_col){
+                
+                if let (Some(particle_hash), Some(alive_particles), Some(cumulative_particles)) =
+                    (&owner.particle_hash, &owner.alive_particles, &owner.cumulative_particles){
                     let cmap = owner.line_cmap.get_map();
                     let databounds = self.databounds.clone().unwrap();
                     let frame_idx = self.frame_idx;
-                    let line_plotting = circles_to_plot.axis_iter(Axis(0)).map(|rrow|{
-                        let particle = rrow[*particle_col];
-                        let particle_vec = &particle_hash[&(particle as usize)];
-                        let local_bounds = (particle_vec[0].0 as f32)..=(particle_vec[particle_vec.len()-2].0 as f32);
-                        let bounds = self.line_cmap_bounds.clone().unwrap_or(local_bounds);
+                    let iter: Box<dyn Iterator<Item = &usize>> = if self.all_tracks{
+                        Box::new(cumulative_particles[&frame_idx].iter().map(|part_id| part_id))
+                    } else {
+                        Box::new(alive_particles[&frame_idx].iter().map(|(part_id, _row)| part_id))
+                    };                    
+                    let line_plotting = iter.map(|part_id|{
+                        let particle_vec = &particle_hash[part_id];
+                        let bounds = match self.track_colors{
+                            TrackColors::Local => {
+                                let track_len = particle_vec.len();
+                                let local_max = if track_len > 2{
+                                    particle_vec[track_len-2].0 as f32
+                                } else {
+                                    (particle_vec[track_len-1].0 + 1) as f32
+                                };
+                                let local_bounds = (particle_vec[0].0 as f32)..=local_max;
+                                local_bounds
+                            },
+                            TrackColors::Global => {
+                                self.line_cmap_bounds.clone().unwrap()
+                            },
+                        };
                         particle_vec.windows(2).flat_map(move |window|{
                             let start = window[0];
                             let end = window[1];
-                            if end.0 <= frame_idx{
+                            if end.0 <= frame_idx && end.0 - start.0 == 1{
                                 let t = inverse_lerp(start.0 as f32, bounds.start().clone(), bounds.end().clone());
                                 Some(epaint::Shape::line_segment([
                                     data_to_screen_coords_vec2(start.1.into(), &rect, &databounds),
@@ -1862,7 +2009,21 @@ impl Custom3d {
             ResultStatus::Processing => {
                 match self.mode{
                     DataMode::Off | DataMode::Immediate => {},
-                    _ => { ui.put(rect, egui::widgets::Spinner::new().size(60.)); },
+                    DataMode::Full => { 
+                        ui.put(rect,
+                            egui::widgets::ProgressBar::new(
+                                self.progress.unwrap_or(0) as f32 / self.vid_len.unwrap() as f32
+                            ).desired_width(180.));
+                    },
+                    DataMode::Range(ref range) => { 
+                        let prog = (self.progress.unwrap_or(0) as f32 - *range.start() as f32) 
+                                    / (range.end() - range.start()) as f32;
+                        // dbg!(prog);
+                        ui.put(rect,
+                            egui::widgets::ProgressBar::new(
+                                prog
+                            ).desired_width(180.));
+                    },
                 }
                 ui.ctx().request_repaint();
             }
