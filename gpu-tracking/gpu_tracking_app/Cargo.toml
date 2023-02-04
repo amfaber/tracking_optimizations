@@ -15,14 +15,14 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # chrono = { version = "0.4", features = ["js-sys", "wasmbind"] }
-eframe = { git = "https://github.com/amfaber/egui", default-features = false, features = ["wgpu"] }
-epaint = { git = "https://github.com/amfaber/egui" }
-emath = { git = "https://github.com/amfaber/egui" }
-egui = { git = "https://github.com/amfaber/egui" }
-# eframe = { path = "C:/Users/andre/Documents/egui/crates/eframe", default-features = false, features = ["wgpu"] }
-# epaint = { path = "C:/Users/andre/Documents/egui/crates/epaint" }
-# emath = { path = "C:/Users/andre/Documents/egui/crates/emath" }
-# egui = { path = "C:/Users/andre/Documents/egui/crates/egui" }
+# eframe = { git = "https://github.com/amfaber/egui", default-features = false, features = ["wgpu"] }
+# epaint = { git = "https://github.com/amfaber/egui" }
+# emath = { git = "https://github.com/amfaber/egui" }
+# egui = { git = "https://github.com/amfaber/egui" }
+eframe = { path = "C:/Users/andre/Documents/egui/crates/eframe", default-features = false, features = ["wgpu"] }
+epaint = { path = "C:/Users/andre/Documents/egui/crates/epaint" }
+emath = { path = "C:/Users/andre/Documents/egui/crates/emath" }
+egui = { path = "C:/Users/andre/Documents/egui/crates/egui" }
 bytemuck = { version = "*" }
 gpu_tracking = { version = "*", path = "../"}
 phf = { version = "0.11.1", features = ["macros"] }

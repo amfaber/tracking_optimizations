@@ -186,7 +186,7 @@ impl eframe::App for AppWrapper{
         // dbg!("hi");
         if let Some(data) = frame.frame_pixels(){
             // std::fs::write("from_gpu.bin", &data).expect("failed to write");
-            // image::save_buffer("from_gpu.png", &data, 1200, 1000, image::ColorType::Rgba8).expect("save failed");
+            image::save_buffer("from_gpu.png", &data, 1200, 1000, image::ColorType::Rgba8).expect("save failed");
         }
         // frame.storage
     }
