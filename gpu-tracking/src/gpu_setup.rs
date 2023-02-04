@@ -542,7 +542,12 @@ pub fn setup_state(
     characterize_new_points: bool,
     ) -> crate::error::Result<GpuState> {
     
-    let instance = wgpu::Instance::new(wgpu::Backends::all());
+    let instance = wgpu::Instance::new(
+        wgpu::InstanceDescriptor{
+            backends: wgpu::Backends::all(),
+            dx12_shader_compiler: Default::default(),
+        }
+    );
 
     let adapter = instance
     .request_adapter(&wgpu::RequestAdapterOptionsBase{

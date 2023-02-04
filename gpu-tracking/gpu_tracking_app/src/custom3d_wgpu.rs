@@ -1,4 +1,4 @@
-use std::{sync::{Arc, mpsc::{Receiver, Sender}}, collections::{HashMap, HashSet, BTreeMap}, path::PathBuf, ops::RangeInclusive, rc::{Rc, Weak}, cell::RefCell, fmt::Display, thread::Scope};
+use std::{sync::Arc, collections::{HashMap, HashSet, BTreeMap}, path::PathBuf, ops::RangeInclusive, rc::{Rc, Weak}, cell::RefCell};
 
 use eframe::egui_wgpu;
 use egui::{self, TextStyle};
@@ -6,7 +6,7 @@ use epaint;
 use bytemuck;
 use thiserror::Error;
 use gpu_tracking::{gpu_setup::{TrackingParams, ParamStyle}, execute_gpu::path_to_iter, progressfuture::{ProgressFuture, PollResult}};
-use ndarray::{Array, Array2, Axis, ArrayView1, s, ArrayView2};
+use ndarray::{Array, Array2, Axis, ArrayView1};
 use crate::{colormaps, texture::ColormapRenderResources};
 use kd_tree;
 use std::fmt::Write;
@@ -16,6 +16,7 @@ use rfd;
 use strum::IntoEnumIterator;
 use csv;
 use ndarray_csv::Array2Reader;
+use image::save_buffer;
 
 // use ndarray_stats::histogram::{HistogramExt, strategies::Auto, Bins, Edges, Grid, GridBuilder};
 // use ordered_float;
@@ -92,6 +93,7 @@ impl DataMode{
 pub struct AppWrapper{
     apps: Vec<Rc<RefCell<Custom3d>>>,
     opens: Vec<bool>,
+    frame_count: usize,
 }
 
 impl AppWrapper{
@@ -101,12 +103,15 @@ impl AppWrapper{
         ];
         let opens = vec![true];
         
-        Some(Self{apps, opens})
+        Some(Self{apps, opens, frame_count: 0})
     }
 }
 
 impl eframe::App for AppWrapper{
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // if self.frame_count == 4{
+        //     frame.request_pixels();
+        // }
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::both()
                 .auto_shrink([false; 2])
@@ -115,6 +120,9 @@ impl eframe::App for AppWrapper{
                     if response.clicked(){
                         self.apps.push(Rc::new(RefCell::new(Custom3d::new().unwrap())));
                         self.opens.push(true);
+                    }
+                    if ui.button("capture").clicked(){
+                        frame.request_pixels();
                     }
                     let mut adds = Vec::new();
                     let mut removes = Vec::new();
@@ -137,7 +145,7 @@ impl eframe::App for AppWrapper{
                                         app.update_circles();
                                     }
                                     if ui.button("Copy python command").clicked(){
-                                        ui.output().copied_text = app.input_state.to_py_command();
+                                        ui.output_mut(|output| output.copied_text = app.input_state.to_py_command());
                                     }
                                     if ui.button("Output data to csv").clicked() | app.save_pending{
                                         app.output_csv();
@@ -171,6 +179,16 @@ impl eframe::App for AppWrapper{
                     }
                 })
         });
+        self.frame_count += 1;
+    }
+
+    fn post_rendering(&mut self, _window_size_px: [u32; 2], frame: &eframe::Frame) {
+        // dbg!("hi");
+        if let Some(data) = frame.frame_pixels(){
+            // std::fs::write("from_gpu.bin", &data).expect("failed to write");
+            // image::save_buffer("from_gpu.png", &data, 1200, 1000, image::ColorType::Rgba8).expect("save failed");
+        }
+        // frame.storage
     }
 }
 
@@ -1419,7 +1437,7 @@ impl Custom3d {
             self.color_options(ui);
         }
         
-        if submit_click | ui.ctx().input().key_down(egui::Key::Enter){
+        if submit_click | ui.ctx().input(|inp| inp.key_down(egui::Key::Enter)){
             self.update_state(ui);
         }
         
@@ -1621,12 +1639,9 @@ impl Custom3d {
     fn show(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame){
         ui.horizontal(|ui|{
             egui::Frame::canvas(ui.style()).show(ui, |ui| {
-                let change = FrameChange::from_scroll(ui.ctx().input().scroll_delta);
+                let change = FrameChange::from_scroll(ui.ctx().input(|inp| inp.scroll_delta));
                 self.custom_painting(ui, change);
             });
-            // egui::widgets::plot::Plot::new("test").show(ui, |ui| {
-                
-            // });
         });
     }
 
@@ -1884,12 +1899,13 @@ impl Custom3d {
                             }
                         }
                         label_text.pop();
-                        let label = epaint::text::Fonts::layout_no_wrap(
-                            &*ui.fonts(),
+                        let label = ui.fonts(|fonts| fonts.layout_no_wrap(
                             label_text,
                             TextStyle::Body.resolve(ui.style()),
                             egui::Color32::from_rgb(0, 0, 0),
-                        );
+                        ));
+                        // let label = epaint::text::Fonts::layout_no_wrap(
+                        // );
                 
                         let mut screen_pos = egui::Pos2{
                             x: 10. + lerp(inverse_lerp(nearest.item.0[1], self.databounds.as_ref().unwrap().min.y, self.databounds.as_ref().unwrap().max.y), rect.min.x, rect.max.x),
@@ -1967,9 +1983,10 @@ impl Custom3d {
         ui.painter().add(callback);
         
         if let Some(pos) = response.interact_pointer_pos(){
-            let input = ui.ctx().input();
-            let primary_clicked = input.pointer.primary_clicked();
-            drop(input);
+            // let input = ui.ctx().input();
+            // let primary_clicked = input.pointer.primary_clicked();
+            // drop(input);
+            let primary_clicked = ui.ctx().input(|inp| inp.pointer.primary_clicked());
             if response.drag_started() && primary_clicked{
                 self.zoom_box_start = Some(rect.clamp(pos));
             }

@@ -1,8 +1,6 @@
 use proc_macro2::Ident;
 use proc_macro::TokenStream;
-// use syn::parse;
 use quote::{quote, format_ident};
-// use lazy_static::lazy_static;
 use InputType::*;
 use Style::*;
 use strum::{EnumIter, IntoEnumIterator};
@@ -37,7 +35,6 @@ fn make_func(inp: InputType, style: Style) -> TokenStream2{
 }
 
 fn args(inp: InputType, style: Style) -> TokenStream2{
-	// let mut args = TokenStream2::new();
 	let preargs = match inp{
 		File => file_args(),
 		Array => array_args(),
@@ -89,9 +86,7 @@ fn body(inp: InputType, style: Style) -> TokenStream2{
 	    let res = if tqdm{
 	        std::thread::scope(|scope|{
 	            let mut worker = ScopedProgressFuture::new(scope, |job, progress, interrupt|{
-	                // let (#argdiff, params) = job;
 	                let (#argdiff, params, characterize_points) = job;
-	                // #func_name(#argdiff, params, 0, None, Some(interrupt), Some(progress))
 	                #func_name(#argdiff, params, 0, characterize_points, Some(interrupt), Some(progress))
 	            });
 	            worker.submit_same((&#argdiff, params, characterize_points));

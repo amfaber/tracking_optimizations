@@ -21,43 +21,45 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>){
     
     var sum = 0.0;
 
-    let datum = input[flat_idx + stride * 0u];
+    var datum = 0.0;
+    
+    datum = input[flat_idx + stride * 0u];
     if (bitcast<u32>(datum) != 4294967295u){
         sum += datum;
     }
     
-    let datum = input[flat_idx + stride * 1u];
+    datum = input[flat_idx + stride * 1u];
     if (bitcast<u32>(datum) != 4294967295u){
         sum += datum;
     }
     
-    let datum = input[flat_idx + stride * 2u];
+    datum = input[flat_idx + stride * 2u];
     if (bitcast<u32>(datum) != 4294967295u){
         sum += datum;
     }
     
-    let datum = input[flat_idx + stride * 3u];
+    datum = input[flat_idx + stride * 3u];
     if (bitcast<u32>(datum) != 4294967295u){
         sum += datum;
     }
     
-    let datum = input[flat_idx + stride * 4u];
+    datum = input[flat_idx + stride * 4u];
     if (bitcast<u32>(datum) != 4294967295u){
         sum += datum;
     }
     
-    let datum = input[flat_idx + stride * 5u];
+    datum = input[flat_idx + stride * 5u];
     if (bitcast<u32>(datum) != 4294967295u){
         sum += datum;
     }
     
-    let datum = input[flat_idx + stride * 6u];
+    datum = input[flat_idx + stride * 6u];
     if (bitcast<u32>(datum) != 4294967295u){
         sum += datum;
     }
     
     let last_access = flat_idx + stride * 7u;
-    let datum = input[last_access];
+    datum = input[last_access];
     if (last_access < pc.stride * 8u) & (bitcast<u32>(datum) != 4294967295u){
         sum += datum;
     }

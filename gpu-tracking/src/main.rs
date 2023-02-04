@@ -50,14 +50,13 @@ fn test_trackpy_easy() -> gpu_tracking::error::Result<()>{
         .expect("Couldn't set ctrl-c handler");
     let args: Args = Args::parse();
     let now_top = Instant::now();
-    dbg!(std::env::current_dir());
     // let path = args.input.unwrap_or("testing/frank_freeze/frame_t_0.ets".to_string());
     // let path = args.input.unwrap_or(r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\testing\marcus_blobs\big_blobs.tif".to_string());
     // let path = args.input.unwrap_or(r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\testing\kdtree_panic\emily_she_kdtree_panic.tif".to_string());
     // let path = args.input.unwrap_or(r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\tiff_vsi\vsi dummy\_Process_9747_\stack1\frame_t_0.ets".to_string());
-    let path = args.input.unwrap_or(r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\tiff_vsi\vsi dummy\Process_9747.vsi".to_string());
+    // let path = args.input.unwrap_or(r"C:\Users\andre\Documents\tracking_optimizations\gpu-tracking\tiff_vsi\vsi dummy\Process_9747.vsi".to_string());
     
-    // let path = args.input.unwrap_or("testing/easy_test_data.tif".to_string());
+    let path = args.input.unwrap_or("testing/easy_test_data.tif".to_string());
     let debug = args.debug.unwrap_or(false);
     let filter = args.filter.unwrap_or(true);
     let characterize = args.characterize.unwrap_or(false);
@@ -151,7 +150,6 @@ fn test_trackpy_easy() -> gpu_tracking::error::Result<()>{
                 PollResult::Pending(prog) => {
                     // bar.set_position(prog.0 as u64);
                     // bar.set_message(prog.0.to_string());
-                    dbg!(prog);
                     // if prog >= 1000{
                     //     break match future.interrupt(){
                     //         PollResult::Done(res) => res,

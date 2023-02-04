@@ -769,8 +769,6 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F> + ?Sized>(
         (Some(_), None) => frames.light_len(),
         (Some(_), Some(keys)) => Some(keys.len()),
     };
-    dbg!(prog_max);
-    dbg!(progress);
 
     let send_frame = tracking_params.doughnut_correction;
     let (frame_sender, frame_receiver) = if send_frame{

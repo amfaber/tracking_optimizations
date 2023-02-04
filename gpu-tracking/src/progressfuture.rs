@@ -1,6 +1,5 @@
 use std::sync::{mpsc::{Receiver, Sender, self, TryRecvError, RecvError}, atomic::{AtomicBool, Ordering}, Arc, Mutex, TryLockError};
 use std::thread::{Scope, ScopedJoinHandle};
-// use std::result::Result;
 use thiserror;
 
 
@@ -53,7 +52,6 @@ where
         let (job_sender, job_receiver) = mpsc::channel();
         let handle = {
             let progress = progress.clone();
-            // let interrupter = interrupter.clone();
             scope.spawn(move||{
                 loop{
                     match job_receiver.recv(){
@@ -138,26 +136,6 @@ where
         }
     }
     
-    // pub fn try_poll(&mut self) -> TryPollResult<R, P>{
-    //     if self.queued_jobs == 0{
-    //         return TryPollResult::NoJobRunning
-    //     }
-    //     match self.result_receiver.try_recv(){
-    //         Ok(res) => {
-    //             self.queued_jobs -= 1;
-    //             return TryPollResult::Done(res)
-    //         },
-    //         Err(TryRecvError::Disconnected) => return TryPollResult::Error,
-    //         Err(TryRecvError::Empty) => ()
-    //     }
-        
-    //     match self.progress.try_lock(){
-    //         Ok(prog) => TryPollResult::Pending(*prog),
-    //         Err(TryLockError::WouldBlock) => TryPollResult::WouldBlock,
-    //         Err(_) => return TryPollResult::Error,
-    //     }
-    // }
-
     fn wait(&mut self) -> Result<WaitResult<R>, Error>{
         if self.queued_jobs == 0{
             return Ok(WaitResult::NoJobRunning)
@@ -246,7 +224,6 @@ where
         let (job_sender, job_receiver) = mpsc::channel();
         {
             let progress = progress.clone();
-            // let interrupter = interrupter.clone();
             std::thread::spawn(move||{
                 loop{
                     match job_receiver.recv(){
@@ -323,26 +300,6 @@ where
         }
     }
     
-    // pub fn try_poll(&mut self) -> TryPollResult<R, P>{
-    //     if self.queued_jobs == 0{
-    //         return TryPollResult::NoJobRunning
-    //     }
-    //     match self.result_receiver.try_recv(){
-    //         Ok(res) => {
-    //             self.queued_jobs -= 1;
-    //             return TryPollResult::Done(res)
-    //         },
-    //         Err(TryRecvError::Disconnected) => return TryPollResult::Error,
-    //         Err(TryRecvError::Empty) => ()
-    //     }
-        
-    //     match self.progress.try_lock(){
-    //         Ok(prog) => TryPollResult::Pending(*prog),
-    //         Err(TryLockError::WouldBlock) => TryPollResult::WouldBlock,
-    //         Err(_) => return TryPollResult::Error,
-    //     }
-    // }
-
     fn wait(&mut self) -> Result<WaitResult<R>, Error>{
         if self.queued_jobs == 0{
             return Ok(WaitResult::NoJobRunning)

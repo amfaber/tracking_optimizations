@@ -68,7 +68,6 @@ impl ToPyErr for ::gpu_tracking::progressfuture::Error{
 
 gen_python_functions!();
 
-
 // #[pyfunction] fn example < 'py >
 // (py : Python < 'py >, pyarr : PyReadonlyArray3 < my_dtype >,
 // points_to_characterize : PyReadonlyArray2 < my_dtype >, points_has_frames :

@@ -20,13 +20,14 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>){
     let stride = pc.stride;
     
     var sum = 0.0;
+    var datum = 0.0;
 
-    let datum = input[flat_idx];
+    datum = input[flat_idx];
     if ((datum == datum) != (datum != datum)){
         sum += datum;
     }
     
-    let datum = input[flat_idx + stride];
+    datum = input[flat_idx + stride];
     if ((datum == datum) != (datum != datum)){
         sum += datum;
     }

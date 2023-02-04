@@ -129,7 +129,7 @@ fn characterize(part_idx: u32, kernel_rows: i32, kernel_cols: i32){
   ecc_sin *= ecc_sin;
   ecc_cos *= ecc_cos;
   let ecc = sqrt(ecc_sin + ecc_cos) / (mass - processed_buffer[middle_idx]);
-  let Rg = sqrt(Rg / mass);
+  Rg = sqrt(Rg / mass);
 
   results[part_idx].Rg = Rg;
   results[part_idx].raw_mass = raw_mass;

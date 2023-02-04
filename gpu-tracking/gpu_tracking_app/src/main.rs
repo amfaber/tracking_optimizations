@@ -15,5 +15,5 @@ fn main() {
         "egui demo app",
         options,
         Box::new(|cc| Box::new(gpu_tracking_app::custom3d_wgpu::AppWrapper::new(cc).unwrap())),
-    )
+    ).unwrap();
 }
