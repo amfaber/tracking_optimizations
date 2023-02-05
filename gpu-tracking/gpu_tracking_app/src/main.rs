@@ -12,7 +12,7 @@ fn main() {
         ..Default::default()
     };
     eframe::run_native(
-        "egui demo app",
+        "gpu_tracking",
         options,
         Box::new(|cc| Box::new(gpu_tracking_app::custom3d_wgpu::AppWrapper::new(cc).unwrap())),
     ).unwrap();
