@@ -193,17 +193,12 @@ impl eframe::App for AppWrapper{
 fn retrieve_rect(size: [u32; 2], frame_data: &Vec<u8>, rect: &egui::Rect) -> Vec<u8>{
     let mut output = Vec::with_capacity(rect.area() as usize * 4);
     let color_stride = 4;
-    let row_stride = size[1] as usize * color_stride;
+    let row_stride = size[0] as usize * color_stride;
     let offset_start = color_stride * rect.min.x as usize;
     let offset_end = color_stride * rect.max.x as usize-1;
-    dbg!(size);
-    dbg!(rect.area());
-    dbg!(frame_data.len());
-
 
     for row in rect.min.y as usize..rect.max.y as usize{
-        output.extend(&frame_data[row*row_stride + offset_start..row*row_stride + offset_end]);
-        // ineedhelp += 1;
+        output.extend(&frame_data[row*row_stride + offset_start..=row*row_stride + offset_end]);
     }
 
     
@@ -2068,7 +2063,9 @@ impl Custom3d {
     }
     
     fn custom_painting(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame, direction: Option<FrameChange>) {
-        let size = egui::Vec2::splat(600.0) * self.cur_asp;
+        // let size = ui.cursor().min.y;
+        let screen_rect = ui.ctx().screen_rect();
+        let size = egui::Vec2::splat(screen_rect.max.y - screen_rect.min.y - 300.) * self.cur_asp;
         let (rect, response) =
             ui.allocate_exact_size(size, egui::Sense::drag());
         
