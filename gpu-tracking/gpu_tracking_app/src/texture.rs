@@ -26,6 +26,7 @@ impl Texture {
         img: &ArrayView2<f32>,
         label: Option<&str>,
         cmap: [f32; 120],
+        cpu_minmax: &[f32; 2],
     ) -> Result<Self> {
         let rgba = img.as_slice().unwrap();
         let dimensions = img.shape();
@@ -80,41 +81,41 @@ impl Texture {
             contents: bytemuck::cast_slice(&cmap),
         });
 
-        let img_min = img.iter().fold(f32::INFINITY, |acc, ele| {
-            match acc.partial_cmp(ele){
-                Some(std::cmp::Ordering::Less) => {
-                    acc
-                },
-                Some(std::cmp::Ordering::Equal) => {
-                    acc
-                },
-                Some(std::cmp::Ordering::Greater) => {
-                    *ele
-                },
-                None => acc
-            }
-        });
-        let img_max = img.iter().fold(f32::NEG_INFINITY, |acc, ele| {
-            match acc.partial_cmp(ele){
-                Some(std::cmp::Ordering::Less) => {
-                    *ele
-                },
-                Some(std::cmp::Ordering::Equal) => {
-                    acc
-                },
-                Some(std::cmp::Ordering::Greater) => {
-                    acc
-                },
-                None => acc
-            }
-        });
+        // let img_min = img.iter().fold(f32::INFINITY, |acc, ele| {
+        //     match acc.partial_cmp(ele){
+        //         Some(std::cmp::Ordering::Less) => {
+        //             acc
+        //         },
+        //         Some(std::cmp::Ordering::Equal) => {
+        //             acc
+        //         },
+        //         Some(std::cmp::Ordering::Greater) => {
+        //             *ele
+        //         },
+        //         None => acc
+        //     }
+        // });
+        // let img_max = img.iter().fold(f32::NEG_INFINITY, |acc, ele| {
+        //     match acc.partial_cmp(ele){
+        //         Some(std::cmp::Ordering::Less) => {
+        //             *ele
+        //         },
+        //         Some(std::cmp::Ordering::Equal) => {
+        //             acc
+        //         },
+        //         Some(std::cmp::Ordering::Greater) => {
+        //             acc
+        //         },
+        //         None => acc
+        //     }
+        // });
 
-        let cpu_minmax = [img_min, img_max];
+        // let cpu_minmax = [img_min, img_max];
         
         let minmax = device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
             label: None,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            contents: bytemuck::cast_slice(&cpu_minmax),
+            contents: bytemuck::cast_slice(cpu_minmax),
         });
 
         Ok(Self {
@@ -196,7 +197,7 @@ pub struct ColormapRenderResources {
 }
 
 impl ColormapRenderResources {
-    pub fn new(wgpu_render_state: &RenderState, frame_view: &ArrayView2<f32>, cmap: [f32; 120]) -> Self {
+    pub fn new(wgpu_render_state: &RenderState, frame_view: &ArrayView2<f32>, cmap: [f32; 120], minmax: &[f32; 2]) -> Self {
         // let diffuse_bytes = include_bytes!("happy-tree.png");
         // let frame = provider.get_frame(0).unwrap();
         // let frame = Array::from_shape_vec([dims[0] as usize, dims[1] as usize], frame).unwrap();
@@ -207,7 +208,7 @@ impl ColormapRenderResources {
         let queue = wgpu_render_state.queue.clone();
         
         let diffuse_texture =
-            texture::Texture::from_image(&device, &queue, frame_view, None, cmap).unwrap();
+            texture::Texture::from_image(&device, &queue, frame_view, None, cmap, minmax).unwrap();
 
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -286,7 +287,7 @@ impl ColormapRenderResources {
         });
 
         // let shader_str = std::fs::read_to_string("src/shader.wgsl").unwrap();
-        let shader_str = include_str!("shader.wgsl");
+        let shader_str = include_str!("texture.wgsl");
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
             source: wgpu::ShaderSource::Wgsl(shader_str.into()),
@@ -382,7 +383,71 @@ impl ColormapRenderResources {
         queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&gen_vertices(bounding)))
     }
 
-	pub fn update_texture(&mut self, queue: &wgpu::Queue, frame: &ArrayView2<f32>){
+    pub fn get_min(frame: &ArrayView2<f32>) -> f32{
+        frame.iter().fold(f32::INFINITY, |acc, ele| {
+            match acc.partial_cmp(ele){
+                Some(std::cmp::Ordering::Less) => {
+                    acc
+                },
+                Some(std::cmp::Ordering::Equal) => {
+                    acc
+                },
+                Some(std::cmp::Ordering::Greater) => {
+                    *ele
+                },
+                None => acc
+            }
+        })
+    }
+    
+    pub fn get_max(frame: &ArrayView2<f32>) -> f32{
+        frame.iter().fold(f32::NEG_INFINITY, |acc, ele| {
+            match acc.partial_cmp(ele){
+                Some(std::cmp::Ordering::Less) => {
+                    *ele
+                },
+                Some(std::cmp::Ordering::Equal) => {
+                    acc
+                },
+                Some(std::cmp::Ordering::Greater) => {
+                    acc
+                },
+                None => acc
+            }
+        })
+    }
+
+    pub fn get_minmax(frame: &ArrayView2<f32>) -> [f32; 2]{
+        frame.iter().fold([f32::INFINITY, f32::NEG_INFINITY], |acc, ele| {
+            let min = match acc[0].partial_cmp(ele){
+                Some(std::cmp::Ordering::Less) => {
+                    acc[0]
+                },
+                Some(std::cmp::Ordering::Equal) => {
+                    acc[0]
+                },
+                Some(std::cmp::Ordering::Greater) => {
+                    *ele
+                },
+                None => acc[0]
+            };
+            let max = match acc[1].partial_cmp(ele){
+                Some(std::cmp::Ordering::Less) => {
+                    *ele
+                },
+                Some(std::cmp::Ordering::Equal) => {
+                    acc[1]
+                },
+                Some(std::cmp::Ordering::Greater) => {
+                    acc[1]
+                },
+                None => acc[1]
+            };
+            [min, max]
+        })
+    }
+    
+	pub fn update_texture(&mut self, queue: &wgpu::Queue, frame: &ArrayView2<f32>, minmax: &[f32; 2]){
 		let dimensions = frame.shape();
 		
         let size = wgpu::Extent3d {
@@ -390,39 +455,7 @@ impl ColormapRenderResources {
             height: dimensions[0] as u32,
             depth_or_array_layers: 1,
         };
-
-        let img_min = frame.iter().fold(f32::INFINITY, |acc, ele| {
-            match acc.partial_cmp(ele){
-                Some(std::cmp::Ordering::Less) => {
-                    acc
-                },
-                Some(std::cmp::Ordering::Equal) => {
-                    acc
-                },
-                Some(std::cmp::Ordering::Greater) => {
-                    *ele
-                },
-                None => acc
-            }
-        });
-        let img_max = frame.iter().fold(f32::NEG_INFINITY, |acc, ele| {
-            match acc.partial_cmp(ele){
-                Some(std::cmp::Ordering::Less) => {
-                    *ele
-                },
-                Some(std::cmp::Ordering::Equal) => {
-                    acc
-                },
-                Some(std::cmp::Ordering::Greater) => {
-                    acc
-                },
-                None => acc
-            }
-        });
-
-        let cpu_minmax = [img_min, img_max];
-		
-		queue.write_buffer(&self.diffuse_texture.minmax, 0, bytemuck::cast_slice(&cpu_minmax));
+		queue.write_buffer(&self.diffuse_texture.minmax, 0, bytemuck::cast_slice(minmax));
 		
         queue.write_texture(
             wgpu::ImageCopyTexture {
@@ -439,5 +472,6 @@ impl ColormapRenderResources {
             },
             size,
         );
+
 	}
 }

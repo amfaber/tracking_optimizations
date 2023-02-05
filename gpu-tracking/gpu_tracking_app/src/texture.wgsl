@@ -33,17 +33,17 @@ var<uniform> cmap: array<vec4<f32>, 30>;
 @group(0) @binding(3)
 var<uniform> minmax: vec2<f32>;
 
-fn interpolate_cmap(val: vec4<f32>) -> vec4<f32>{
-    let ind = i32(val.x);
-    let t = val - f32(ind);
-    // return mix(cmap[ind], cmap[ind + 1], t.x);
-    return cmap[29];
+fn interpolate_cmap(t: f32) -> vec4<f32>{
+    let val = t * 29.;
+    let ind = i32(val);
+    let little_t = val - f32(ind);
+    return mix(cmap[ind], cmap[ind + 1], little_t);
 } 
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    var idk = textureSample(t_diffuse, s_diffuse, in.tex_coords);
-    idk = 29. * (idk - minmax[0]) / (minmax[1] - minmax[0]);
-    let out = interpolate_cmap(idk);
-    return vec4<f32>(out.xyz, 1.);
+    var sample = textureSample(t_diffuse, s_diffuse, in.tex_coords);
+    let t = clamp((sample.x - minmax[0]) / (minmax[1] - minmax[0]), 0., 1.);
+    let out = interpolate_cmap(t);
+    return out;
 }

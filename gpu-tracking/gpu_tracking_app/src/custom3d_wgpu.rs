@@ -6,7 +6,7 @@ use epaint;
 use bytemuck;
 use thiserror::Error;
 use gpu_tracking::{gpu_setup::{TrackingParams, ParamStyle}, execute_gpu::path_to_iter, progressfuture::{ProgressFuture, PollResult}};
-use ndarray::{Array, Array2, Axis, ArrayView1};
+use ndarray::{Array, Array2, Axis, ArrayView1, ArrayView2};
 use crate::{colormaps, texture::ColormapRenderResources};
 use kd_tree;
 use std::fmt::Write;
@@ -16,7 +16,8 @@ use rfd;
 use strum::IntoEnumIterator;
 use csv;
 use ndarray_csv::Array2Reader;
-use image::save_buffer;
+// use image::save_buffer;
+use tiff::encoder::*;
 
 // use ndarray_stats::histogram::{HistogramExt, strategies::Auto, Bins, Edges, Grid, GridBuilder};
 // use ordered_float;
@@ -93,7 +94,6 @@ impl DataMode{
 pub struct AppWrapper{
     apps: Vec<Rc<RefCell<Custom3d>>>,
     opens: Vec<bool>,
-    frame_count: usize,
 }
 
 impl AppWrapper{
@@ -103,15 +103,12 @@ impl AppWrapper{
         ];
         let opens = vec![true];
         
-        Some(Self{apps, opens, frame_count: 0})
+        Some(Self{apps, opens})
     }
 }
 
 impl eframe::App for AppWrapper{
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        // if self.frame_count == 4{
-        //     frame.request_pixels();
-        // }
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::both()
                 .auto_shrink([false; 2])
@@ -127,7 +124,6 @@ impl eframe::App for AppWrapper{
                     let mut adds = Vec::new();
                     let mut removes = Vec::new();
                     for (i, (app, open)) in self.apps.iter_mut().zip(self.opens.iter_mut()).enumerate(){
-                        // app.borrow_mut()
                         let mut app = app.borrow_mut();
                         egui::containers::Window::new("")
                             .id(egui::Id::new(app.uuid.as_u128()))
@@ -155,7 +151,6 @@ impl eframe::App for AppWrapper{
                                         .hint_text("Save file path (must be .csv)"));
                                 });
                             });
-                        // drop(app);
                     }
                     for (i, open) in self.opens.iter().enumerate(){
                         if !*open{
@@ -166,7 +161,6 @@ impl eframe::App for AppWrapper{
                         let app = self.apps.iter().find(|app| app.borrow().uuid == uuid).unwrap();
                         let new_app = Rc::new(RefCell::new(app.borrow().clone()));
                         let mut new_app_mut = new_app.borrow_mut();
-                        // let new_app_mut = Rc::get_mut(&mut new_app).unwrap();
                         new_app_mut.setup_gpu_after_clone(ui, frame);
                         new_app_mut.other_apps.push(Rc::downgrade(app));
                         drop(new_app_mut);
@@ -179,24 +173,44 @@ impl eframe::App for AppWrapper{
                     }
                 })
         });
-        self.frame_count += 1;
     }
 
-    fn post_rendering(&mut self, _window_size_px: [u32; 2], frame: &eframe::Frame) {
-        // dbg!("hi");
-        if let Some(data) = frame.frame_pixels(){
-            // std::fs::write("from_gpu.bin", &data).expect("failed to write");
-            image::save_buffer("from_gpu.png", &data, 1200, 1000, image::ColorType::Rgba8).expect("save failed");
+   
+    fn post_rendering(&mut self, size: [u32; 2], frame: &eframe::Frame) {
+        if let Some(frame_data) = frame.frame_pixels(){
+            for app in &self.apps{
+                let mut app = app.borrow_mut();
+                match &mut app.playback{
+                    Playback::Recording { rect: Some(rect), data, .. } => {
+                        data.push(retrieve_rect(size, &frame_data, rect));
+                    },
+                    _ => ()
+                }
+            }
         }
-        // frame.storage
     }
 }
 
+fn retrieve_rect(size: [u32; 2], frame_data: &Vec<u8>, rect: &egui::Rect) -> Vec<u8>{
+    let mut output = Vec::with_capacity(rect.area() as usize * 4);
+    for (i, row) in frame_data.chunks_exact(size[0] as usize * 4).enumerate(){
+        for (j, color) in row.chunks_exact(4).enumerate(){
+            if rect.contains(
+                epaint::Pos2 { x: j as f32, y: i as f32 }
+            ){
+                output.push(color[0]);
+                output.push(color[1]);
+                output.push(color[2]);
+                output.push(color[3]);
+            }
+        }
+    }
+    output
+}
 struct RecalculateJob{
     path: PathBuf,
     tracking_params: TrackingParams,
     channel: Option<usize>,
-    // result_sender: Sender<anyhow::Result<RecalculateResult>>,
 }
 
 pub struct Custom3d {
@@ -209,8 +223,6 @@ pub struct Custom3d {
     vid_len: Option<usize>,
     frame_idx: usize,
     other_apps: Vec<Weak<RefCell<Custom3d>>>,
-    // last_render: Option<std::time::Instant>,
-    // gpu_tracking_state: gpu_tracking::gpu_setup::GpuState,
     results: Option<Array2<f32>>,
     result_names: Option<Vec<(String, String)>>,
     circles_to_plot: Vec<(Array2<f32>, Option<Weak<RefCell<Custom3d>>>)>,
@@ -221,7 +233,6 @@ pub struct Custom3d {
     output_path: PathBuf,
     save_pending: bool,
     particle_hash: Option<BTreeMap<usize, Vec<(usize, [f32; 2], usize)>>>,
-    // row_range: Option<Vec<(usize, usize)>>,
     alive_particles: Option<BTreeMap<usize, Vec<(usize, Option<usize>)>>>,
     cumulative_particles: Option<BTreeMap<usize, HashSet<usize>>>,
     
@@ -239,7 +250,6 @@ pub struct Custom3d {
     line_cmap_bounds: Option<RangeInclusive<f32>>,
     track_colors: TrackColors,
     all_tracks: bool,
-    // line_cmap_end: f32,
 
     zoom_box_start: Option<egui::Pos2>,
     cur_asp: egui::Vec2,
@@ -248,8 +258,6 @@ pub struct Custom3d {
 
     uuid: Uuid,
     result_status: ResultStatus,
-    // job_sender: Sender<RecalculateJob>,
-    // result_receiver: Option<Receiver<anyhow::Result<RecalculateResult>>>,
 
     input_state: InputState,
     needs_update: NeedsUpdate,
@@ -257,18 +265,27 @@ pub struct Custom3d {
     playback: Playback,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Playback{
     FPS((f32, std::time::Instant)),
+    Recording{
+        rect: Option<egui::Rect>,
+        data: Vec<Vec<u8>>,
+        path: PathBuf,
+    },
     Off,
 }
 
 impl Playback{
-    fn should_frame_advance(&mut self, ui: &mut egui::Ui) -> bool{
+    fn should_frame_advance(
+        &mut self,
+        ui: &mut egui::Ui,
+        frame: &mut eframe::Frame,
+        region_rect: &egui::Rect,
+    ) -> bool{
         match self{
             Self::FPS((fps, last_advance)) => {
                 ui.ctx().request_repaint();
-                
                 if last_advance.elapsed().as_micros() as f32 / 1_000_000. > 1./(*fps){
                     *last_advance = std::time::Instant::now();
                     true
@@ -277,6 +294,23 @@ impl Playback{
                 }
             },
             Self::Off => false,
+            Self::Recording { rect, .. } => {
+                frame.request_pixels();
+                ui.ctx().request_repaint();
+                // let idk = region_rect.min - egui::Vec2{x: -1., y: -1. };
+                let this_rect = egui::Rect{min: region_rect.min, max: region_rect.max + egui::Vec2{x: -1., y: -1.}};
+                *rect = Some(this_rect);
+                true
+            },
+            // Self::Recording { finished: true, data, rect, } => {
+                // let size = rect.unwrap().size();
+                // dbg!(rect);
+                // let mut writer = std::io::BufWriter::new(std::fs::File::create("test.png").unwrap());
+                // dbg!("Hi");
+                // image::write_buffer_with_format(&mut writer, &data[0], size[0] as u32 + 1, size[1] as u32 + 1, image::ColorType::Rgba8, image::ImageOutputFormat::Png).unwrap();
+            //     *self = Self::Off;
+            //     false
+            // },
         }
     }
 }
@@ -418,11 +452,17 @@ struct InputState{
     path: String,
     channel: String,
     output_path: String,
+    recording_path: String,
     frame_idx: String,
     datamode: DataMode,
     range_start: String,
     range_end: String,
     fps: String,
+    
+    cmap_min_hint: String,
+    cmap_max_hint: String,
+    cmap_min: String,
+    cmap_max: String,
 
     style: Style,
     all_options: bool,
@@ -464,12 +504,18 @@ impl Default for InputState{
             path: String::new(),
             channel: String::new(),
             output_path: String::new(),
+            recording_path: String::new(),
             frame_idx: "0".to_string(),
             datamode: DataMode::Immediate,
             range_start: "0".to_string(),
             range_end: "10".to_string(),
             fps: "30".to_string(),
 
+            cmap_min_hint: String::new(),
+            cmap_max_hint: String::new(),
+            cmap_min: String::new(),
+            cmap_max: String::new(),
+            
             style: Style::Trackpy,
             all_options: false,
             color_options: false,
@@ -477,7 +523,7 @@ impl Default for InputState{
             plot_radius_fallback: "4.5".to_string(),
 
             diameter: "9".to_string(),
-            separation: "10".to_string(),
+            separation: "".to_string(),
             filter_close: true,
             
             min_radius: "2.3".to_string(),
@@ -674,7 +720,8 @@ impl Custom3d {
         let provider = self.frame_provider.as_ref().unwrap();
         let frame = provider.to_array(self.frame_idx)?;
         let frame_view = frame.view();
-        let resources = ColormapRenderResources::new(wgpu_render_state, &frame_view, self.image_cmap.get_map());
+        let minmax = self.update_image_cmap_minmax(&frame_view);
+        let resources = ColormapRenderResources::new(wgpu_render_state, &frame_view, self.image_cmap.get_map(), &minmax);
         wgpu_render_state
             .renderer
             .write()
@@ -739,8 +786,17 @@ impl Custom3d {
                 // return Ok(())
             }
         };
+        
         let provider_dimension = ProviderDimension((provider, dims));
-        self.vid_len = Some(provider_dimension.len());
+        let vid_len = provider_dimension.len();
+        self.vid_len = Some(vid_len);
+        match &mut self.mode{
+            DataMode::Range(range) => {
+                *range = *range.start().clamp(&0, &vid_len)..=*range.end().clamp(&0, &vid_len)
+            },
+            _ => ()
+        };
+        
         self.line_cmap_bounds = match self.mode{
             DataMode::Range(ref range) => {
                 Some(*range.start() as f32..=(*range.end() as f32))
@@ -922,6 +978,19 @@ enum TrackColors{
     Global,
 }
 
+#[derive(Debug, thiserror::Error)]
+enum FrameChangeError{
+    #[error("Already at bounds of the range we are looking at")]
+    AtBounds,
+
+    #[error("Couldn't parse")]
+    CouldNotParse,
+
+    #[error("Couldn't get frame")]
+    CouldNotGetFrame
+}
+
+
 impl TrackColors{
     fn to_str(&self) -> &'static str{
         match self{
@@ -973,6 +1042,14 @@ impl RecalculateResult{
 
 
 impl Custom3d {
+
+    fn video_range(&self) -> Option<RangeInclusive<usize>>{
+        let vid_len = self.vid_len.as_ref()?;
+        match &self.mode{
+            DataMode::Off | DataMode::Immediate | DataMode::Full => Some(0..=*vid_len-1),
+            DataMode::Range(range) => Some(range.clone()),
+        }
+    }
 
     fn results_to_circles_to_plot(&self, frame: usize) -> Option<Array2<f32>>{
         match self.result_status{
@@ -1127,35 +1204,6 @@ impl Custom3d {
             },
             PollResult::NoJobRunning => (),
         };
-        // match self.result_receiver.as_ref(){
-        //     Some(recv) => {
-        //         match recv.try_recv(){
-        //             Ok(res) => {
-        //                 match self.result_status{
-        //                     ResultStatus::Processing => {
-        //                         self.update_from_recalculate(res)?;
-        //                     },
-        //                     ResultStatus::TooOld => {
-        //                         self.result_receiver = None;
-        //                         self.recalculate()?;
-        //                     },
-        //                     ResultStatus::Valid | ResultStatus::Static => unreachable!(),
-        //                 }
-                        
-        //             },
-        //             Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        
-        //             },
-        //             Err(std::sync::mpsc::TryRecvError::Disconnected) => {panic!("Thread lost")},
-        //         }
-        //     },
-        //     None => {
-        //         if !matches!(self.result_status, ResultStatus::Valid){
-        //             assert!(matches!(self.mode, DataMode::Off))
-        //         }
-        //         // assert!(matches!(self.result_status, ResultStatus::Valid))
-        //     }
-        // }
         Ok(())
     }
 
@@ -1171,10 +1219,11 @@ impl Custom3d {
                 },
                 DataMode::Range(_) => {
                     let (start, mut end) = (start.parse::<usize>()?, end.parse::<usize>()?);
-                    let len = self.vid_len.unwrap();
-                    if end >= len{
-                        end = len - 1;
-                        self.input_state.range_end = end.to_string();
+                    if let Some(vid_len) = self.vid_len{
+                        if end >= vid_len{
+                            end = vid_len - 1;
+                            self.input_state.range_end = end.to_string();
+                        }
                     }
                     let range = start..=end;
                     if range.is_empty(){
@@ -1319,6 +1368,24 @@ impl Custom3d {
 
     fn color_options(&mut self, ui: &mut egui::Ui){
         ui.horizontal(|ui|{
+            let mut changed = false;
+            
+            ui.label("Image colormap minimum:");
+            changed |= ui.add(egui::widgets::TextEdit::singleline(
+                &mut self.input_state.cmap_min
+            ).desired_width(30.).hint_text(&self.input_state.cmap_min_hint)).changed();
+            
+            ui.label("Maximum:");
+            changed |= ui.add(egui::widgets::TextEdit::singleline(
+                &mut self.input_state.cmap_max
+            ).desired_width(30.).hint_text(&self.input_state.cmap_max_hint)).changed();
+
+            if changed{
+                self.update_frame(ui, FrameChange::Resubmit);
+            }
+        });
+        
+        ui.horizontal(|ui|{
             ui.label("Circles:");
             ui.color_edit_button_srgba(&mut self.circle_color);
 
@@ -1365,9 +1432,21 @@ impl Custom3d {
                             Ok(fps) => fps,
                             Err(_) => 30.,
                         };
-                        self.playback = Playback::FPS((fps, std::time::Instant::now()))
+                        if let Some(range) = self.video_range(){
+                            if *range.end() == self.frame_idx{
+                                self.input_state.frame_idx = range.start().to_string();
+                                self.update_frame(&ui, FrameChange::Input);
+                            }
+                        }
+                        self.playback = Playback::FPS((fps, std::time::Instant::now()));
                     };
                 },
+                Playback::Recording { .. } => {
+                    frame.request_pixels();
+                    if ui.button("Cancel export").clicked(){
+                        self.playback = Playback::Off
+                    }
+                }
             }
             let fps_changed = ui.add(egui::widgets::TextEdit::singleline(
                 &mut self.input_state.fps
@@ -1380,7 +1459,36 @@ impl Custom3d {
                 };
                 self.playback = Playback::FPS((fps, std::time::Instant::now()))
             };
-            ui.label("fps")
+            ui.label("fps");
+
+            if ui.button("Record").clicked(){
+                if let Some(range) = self.video_range(){
+                    self.input_state.frame_idx = range.start().to_string();
+                    self.update_frame(&ui, FrameChange::Input);
+                    
+                    let pathbuf = PathBuf::from(&self.input_state.recording_path);
+                    let pathbuf = if let Some("tif") | Some("tiff") = pathbuf.extension().map(|osstr| osstr.to_str().unwrap_or("")){
+                        Some(pathbuf)
+                    } else {
+                        let dialog = rfd::FileDialog::new()
+                            .add_filter("Tiff", &["tif", "tiff"])
+                            .set_directory(std::env::current_dir().unwrap())
+                            .save_file();
+                        if let Some(path) = dialog{
+                            Some(path)
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(path) = pathbuf{
+                        self.input_state.recording_path = path.to_str().unwrap().to_string();
+                        self.playback = Playback::Recording { rect: None, data: Vec::new(), path };
+                    }
+                }
+            }
+            ui.add(egui::widgets::TextEdit::singleline(&mut self.input_state.recording_path)
+                .code_editor()
+                .hint_text("Tiff export path"));
         });
         ui.horizontal(|ui|{
             let mut changed = false;
@@ -1389,14 +1497,14 @@ impl Custom3d {
             changed |= ui.selectable_value(&mut self.input_state.datamode, DataMode::Full, "All").clicked();
             changed |= ui.selectable_value(&mut self.input_state.datamode, DataMode::Range(0..=1), "Range").clicked();
             
-            ui.label("Showing frame:");
-            let frame_changed = ui.add(egui::widgets::TextEdit::singleline(
-                &mut self.input_state.frame_idx
-            ).desired_width(30.)).changed();
+            // ui.label("Showing frame:");
+            // let frame_changed = ui.add(egui::widgets::TextEdit::singleline(
+            //     &mut self.input_state.frame_idx
+            // ).desired_width(30.)).changed();
             
-            if frame_changed{
-                ignore_result(self.update_frame(ui, FrameChange::Input));
-            }
+            // if frame_changed{
+            //     ignore_result(self.update_frame(ui, FrameChange::Input));
+            // }
             
             if self.input_state.datamode == DataMode::Range(0..=1){
                 ui.label("in range");
@@ -1440,7 +1548,29 @@ impl Custom3d {
         if submit_click | ui.ctx().input(|inp| inp.key_down(egui::Key::Enter)){
             self.update_state(ui);
         }
-        
+
+        let mut should_frame_update = false;
+        if let Some(range) = self.video_range(){
+            ui.vertical(|ui|{
+                let spacing = ui.spacing_mut();
+                spacing.slider_width = 600. - spacing.interact_size.x - spacing.item_spacing.x;
+                ui.add(
+                    egui::widgets::Slider::from_get_set(*range.start() as f64..=*range.end() as f64, |val|{
+                        match val{
+                            Some(setter) => {
+                                self.input_state.frame_idx = (setter as usize).to_string();
+                                should_frame_update = true;
+                                setter
+                            },
+                            None => self.frame_idx as f64
+                        }
+                    }).fixed_decimals(0)
+                );
+            });
+        }
+        if should_frame_update{
+            self.update_frame(ui, FrameChange::Input);
+        }
         
         match self.frame_provider{
             Some(_) => self.show(ui, frame),
@@ -1636,11 +1766,11 @@ impl Custom3d {
         self.resize(ui, zero_one_rect(), databounds);
     }
 
-    fn show(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame){
+    fn show(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame){
         ui.horizontal(|ui|{
             egui::Frame::canvas(ui.style()).show(ui, |ui| {
                 let change = FrameChange::from_scroll(ui.ctx().input(|inp| inp.scroll_delta));
-                self.custom_painting(ui, change);
+                self.custom_painting(ui, frame, change);
             });
         });
     }
@@ -1679,7 +1809,7 @@ impl Custom3d {
         }
         
         let tracking_params = self.tracking_params.clone();
-        let path = self.path.as_ref().cloned().unwrap();
+        let path = self.path.as_ref().cloned().ok_or(anyhow::Error::msg("path not set up yet"))?;
         let channel = self.channel.clone();
         // let (result_sender, result_receiver) =  std::sync::mpsc::channel();
         // self.result_receiver = Some(result_receiver);
@@ -1739,8 +1869,24 @@ impl Custom3d {
             callback: Arc::new(cb),
         });
     }
+
+    fn update_image_cmap_minmax(&mut self, view: &ArrayView2<f32>) -> [f32; 2]{
+        let min = self.input_state.cmap_min.parse::<f32>();
+        let max = self.input_state.cmap_max.parse::<f32>();
+
+        let minmax = match (min, max){
+            (Ok(min), Ok(max)) => [min, max],
+            (Err(_), Ok(max)) => [ColormapRenderResources::get_min(view), max],
+            (Ok(min), Err(_)) => [min, ColormapRenderResources::get_max(view)],
+            (Err(_), Err(_)) => ColormapRenderResources::get_minmax(view),
+        };
+
+        self.input_state.cmap_min_hint = minmax[0].to_string();
+        self.input_state.cmap_max_hint = minmax[1].to_string();
+        minmax
+    }
     
-    fn update_frame(&mut self, ui: &mut egui::Ui, direction: FrameChange) -> anyhow::Result<()>{
+    fn update_frame(&mut self, ui: &egui::Ui, direction: FrameChange) -> Result<(), FrameChangeError>{
         if self.frame_provider.is_none(){
             return Ok(())
         }
@@ -1750,7 +1896,7 @@ impl Custom3d {
                 if self.frame_idx != 0 { self.frame_idx - 1 } else { 0 }
             },
             FrameChange::Input => {
-                self.input_state.frame_idx.parse::<usize>()?
+                self.input_state.frame_idx.parse::<usize>().map_err(|_| FrameChangeError::CouldNotParse)?
             },
             FrameChange::Resubmit => self.frame_idx
         };
@@ -1764,11 +1910,11 @@ impl Custom3d {
         
         
         if new_index == self.frame_idx && !matches!(direction, FrameChange::Resubmit){
-            return Ok(())
+            return Err(FrameChangeError::AtBounds)
         }
         self.frame_idx = new_index;
         self.input_state.frame_idx = self.frame_idx.to_string();
-        let array = self.frame_provider.as_ref().unwrap().to_array(self.frame_idx)?;
+        let array = self.frame_provider.as_ref().unwrap().to_array(self.frame_idx).map_err(|_| FrameChangeError::CouldNotGetFrame)?;
         match self.mode{
             DataMode::Immediate => {
                 ignore_result(self.recalculate());
@@ -1782,13 +1928,15 @@ impl Custom3d {
         }
         
         let uuid = self.uuid;
+        
+        let minmax = self.update_image_cmap_minmax(&array.view());
 
         let cb = egui_wgpu::CallbackFn::new()
             .prepare(move |_device, queue, _encoder, paint_callback_resources|{
                 let resources: &mut HashMap<Uuid, ColormapRenderResources> = paint_callback_resources.get_mut().unwrap();
                 let resources = resources.get_mut(&uuid).unwrap();
                 let array_view = array.view();
-                resources.update_texture(queue, &array_view);
+                resources.update_texture(queue, &array_view, &minmax);
                 Vec::new()
             });
         ui.painter().add(egui::PaintCallback{
@@ -1876,7 +2024,7 @@ impl Custom3d {
             
         }
 
-        if let (Some(hover), Some(tree)) = (hover_pos, &self.circle_kdtree){
+        if let (Some(hover), Some(tree), Playback::Off) = (hover_pos, &self.circle_kdtree, &self.playback){
             let hover_data = [
                 lerp(inverse_lerp(hover.y, rect.min.y, rect.max.y), self.databounds.as_ref().unwrap().min.x, self.databounds.as_ref().unwrap().max.x),
                 lerp(inverse_lerp(hover.x, rect.min.x, rect.max.x), self.databounds.as_ref().unwrap().min.y, self.databounds.as_ref().unwrap().max.y),
@@ -1938,7 +2086,7 @@ impl Custom3d {
         }
     }
     
-    fn custom_painting(&mut self, ui: &mut egui::Ui, direction: Option<FrameChange>) {
+    fn custom_painting(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame, direction: Option<FrameChange>) {
         let size = egui::Vec2::splat(600.0) * self.cur_asp;
         let (rect, response) =
             ui.allocate_exact_size(size, egui::Sense::drag());
@@ -1961,9 +2109,36 @@ impl Custom3d {
             ignore_result(self.update_frame(ui, direction));
         }
 
-        if self.playback.should_frame_advance(ui){
-           ignore_result(self.update_frame(ui, FrameChange::Next));
-            // ui.ctx().request_repaint();
+        if self.playback.should_frame_advance(ui, frame, &rect){
+            match self.update_frame(ui, FrameChange::Next){
+                Ok(()) => (),
+                Err(FrameChangeError::AtBounds) => {
+                    match &mut self.playback{
+                        Playback::Off => (),
+                        Playback::FPS(_) => self.playback = Playback::Off,
+                        Playback::Recording { rect, data, path } => {
+                            let size = rect.unwrap().size() + egui::Vec2{ x: 1.0, y: 1.0 };
+                            
+                            let writer = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
+                            if size.x as usize * size.y as usize * 4 * data.len() < 1<<31{
+                                let mut encoder = TiffEncoder::new(writer).unwrap();
+                                for image in data{
+                                    let image_encoder = encoder.new_image::<colortype::RGBA8>(size[0] as u32, size[1] as u32).unwrap();
+                                    image_encoder.write_data(image).unwrap();
+                                }
+                            } else {
+                                let mut encoder = TiffEncoder::new_big(writer).unwrap();
+                                for image in data{
+                                    let image_encoder = encoder.new_image::<colortype::RGBA8>(size[0] as u32, size[1] as u32).unwrap();
+                                    image_encoder.write_data(image).unwrap();
+                                }
+                            }
+                            self.playback = Playback::Off;
+                        }
+                    }
+                }
+                Err(_) => ()
+            }
         }
         
         let uuid = self.uuid;
@@ -2035,7 +2210,6 @@ impl Custom3d {
                     DataMode::Range(ref range) => { 
                         let prog = (self.progress.unwrap_or(0) as f32 - *range.start() as f32) 
                                     / (range.end() - range.start()) as f32;
-                        // dbg!(prog);
                         ui.put(rect,
                             egui::widgets::ProgressBar::new(
                                 prog

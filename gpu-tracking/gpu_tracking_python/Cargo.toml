@@ -9,7 +9,8 @@ edition = "2021"
 gpu_tracking = { path = ".."}
 gpu_tracking_app = { path = "../gpu_tracking_app" }
 ndarray = "0.15.6"
-eframe = { version = "0.20.0", default-features = false, features = ["wgpu"] }
+# eframe = { version = "0.20.0", default-features = false, features = ["wgpu"] }
+eframe = { git = "https://github.com/amfaber/egui", default-features = false, features = ["wgpu"] }
 gpu_tracking_macros = { path = "../gpu_tracking_macros" }
 ctrlc = "3.2.4"
 indicatif = "0.17.3"
