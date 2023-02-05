@@ -1,4 +1,4 @@
-use std::sync::{mpsc::{Receiver, Sender, self, TryRecvError, RecvError}, atomic::{AtomicBool, Ordering}, Arc, Mutex, TryLockError};
+use std::sync::{mpsc::{Receiver, Sender, self, TryRecvError, RecvError}, atomic::{AtomicBool, Ordering}, Arc, Mutex};
 use std::thread::{Scope, ScopedJoinHandle};
 use thiserror;
 

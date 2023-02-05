@@ -118,9 +118,6 @@ impl eframe::App for AppWrapper{
                         self.apps.push(Rc::new(RefCell::new(Custom3d::new().unwrap())));
                         self.opens.push(true);
                     }
-                    if ui.button("capture").clicked(){
-                        frame.request_pixels();
-                    }
                     let mut adds = Vec::new();
                     let mut removes = Vec::new();
                     for (i, (app, open)) in self.apps.iter_mut().zip(self.opens.iter_mut()).enumerate(){
@@ -297,20 +294,10 @@ impl Playback{
             Self::Recording { rect, .. } => {
                 frame.request_pixels();
                 ui.ctx().request_repaint();
-                // let idk = region_rect.min - egui::Vec2{x: -1., y: -1. };
                 let this_rect = egui::Rect{min: region_rect.min, max: region_rect.max + egui::Vec2{x: -1., y: -1.}};
                 *rect = Some(this_rect);
                 true
             },
-            // Self::Recording { finished: true, data, rect, } => {
-                // let size = rect.unwrap().size();
-                // dbg!(rect);
-                // let mut writer = std::io::BufWriter::new(std::fs::File::create("test.png").unwrap());
-                // dbg!("Hi");
-                // image::write_buffer_with_format(&mut writer, &data[0], size[0] as u32 + 1, size[1] as u32 + 1, image::ColorType::Rgba8, image::ImageOutputFormat::Png).unwrap();
-            //     *self = Self::Off;
-            //     false
-            // },
         }
     }
 }
@@ -1214,7 +1201,9 @@ impl Custom3d {
             let end = &self.input_state.range_end;
             match &self.input_state.datamode{
                 DataMode::Immediate | DataMode::Full | DataMode::Off if self.mode != self.input_state.datamode => {
-                    self.line_cmap_bounds = Some(0.0..=((self.vid_len.unwrap() - 1) as f32));
+                    if let Some(vid_len) = self.vid_len{
+                        self.line_cmap_bounds = Some(0.0..=((vid_len - 1) as f32));
+                    }
                     self.mode = self.input_state.datamode.clone()
                 },
                 DataMode::Range(_) => {
@@ -1381,7 +1370,7 @@ impl Custom3d {
             ).desired_width(30.).hint_text(&self.input_state.cmap_max_hint)).changed();
 
             if changed{
-                self.update_frame(ui, FrameChange::Resubmit);
+                ignore_result(self.update_frame(ui, FrameChange::Resubmit));
             }
         });
         
@@ -1435,16 +1424,17 @@ impl Custom3d {
                         if let Some(range) = self.video_range(){
                             if *range.end() == self.frame_idx{
                                 self.input_state.frame_idx = range.start().to_string();
-                                self.update_frame(&ui, FrameChange::Input);
+                                ignore_result(self.update_frame(&ui, FrameChange::Input));
                             }
                         }
                         self.playback = Playback::FPS((fps, std::time::Instant::now()));
                     };
                 },
                 Playback::Recording { .. } => {
-                    frame.request_pixels();
                     if ui.button("Cancel export").clicked(){
                         self.playback = Playback::Off
+                    } else {
+                        frame.request_pixels();
                     }
                 }
             }
@@ -1464,7 +1454,7 @@ impl Custom3d {
             if ui.button("Record").clicked(){
                 if let Some(range) = self.video_range(){
                     self.input_state.frame_idx = range.start().to_string();
-                    self.update_frame(&ui, FrameChange::Input);
+                    ignore_result(self.update_frame(&ui, FrameChange::Input));
                     
                     let pathbuf = PathBuf::from(&self.input_state.recording_path);
                     let pathbuf = if let Some("tif") | Some("tiff") = pathbuf.extension().map(|osstr| osstr.to_str().unwrap_or("")){
@@ -1496,15 +1486,6 @@ impl Custom3d {
             changed |= ui.selectable_value(&mut self.input_state.datamode, DataMode::Immediate, "One").clicked();
             changed |= ui.selectable_value(&mut self.input_state.datamode, DataMode::Full, "All").clicked();
             changed |= ui.selectable_value(&mut self.input_state.datamode, DataMode::Range(0..=1), "Range").clicked();
-            
-            // ui.label("Showing frame:");
-            // let frame_changed = ui.add(egui::widgets::TextEdit::singleline(
-            //     &mut self.input_state.frame_idx
-            // ).desired_width(30.)).changed();
-            
-            // if frame_changed{
-            //     ignore_result(self.update_frame(ui, FrameChange::Input));
-            // }
             
             if self.input_state.datamode == DataMode::Range(0..=1){
                 ui.label("in range");
@@ -1569,7 +1550,7 @@ impl Custom3d {
             });
         }
         if should_frame_update{
-            self.update_frame(ui, FrameChange::Input);
+            ignore_result(self.update_frame(ui, FrameChange::Input));
         }
         
         match self.frame_provider{
