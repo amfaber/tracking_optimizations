@@ -94,10 +94,12 @@ impl DataMode{
 pub struct AppWrapper{
     apps: Vec<Rc<RefCell<Custom3d>>>,
     opens: Vec<bool>,
+    // pixels_per_point: f32,
 }
 
 impl AppWrapper{
     pub fn new<'a>(_cc: &'a eframe::CreationContext<'a>) -> Option<Self> {
+        // let pixels_per_point = _cc.egui_ctx.pixels_per_point();
         let apps = vec![
             Rc::new(RefCell::new(Custom3d::new()?)),
         ];
@@ -190,18 +192,34 @@ impl eframe::App for AppWrapper{
 
 fn retrieve_rect(size: [u32; 2], frame_data: &Vec<u8>, rect: &egui::Rect) -> Vec<u8>{
     let mut output = Vec::with_capacity(rect.area() as usize * 4);
-    for (i, row) in frame_data.chunks_exact(size[0] as usize * 4).enumerate(){
-        for (j, color) in row.chunks_exact(4).enumerate(){
-            if rect.contains(
-                epaint::Pos2 { x: j as f32, y: i as f32 }
-            ){
-                output.push(color[0]);
-                output.push(color[1]);
-                output.push(color[2]);
-                output.push(color[3]);
-            }
-        }
+    let color_stride = 4;
+    let row_stride = size[1] as usize * color_stride;
+    let offset_start = color_stride * rect.min.x as usize;
+    let offset_end = color_stride * rect.max.x as usize-1;
+    dbg!(size);
+    dbg!(rect.area());
+    dbg!(frame_data.len());
+
+
+    for row in rect.min.y as usize..rect.max.y as usize{
+        output.extend(&frame_data[row*row_stride + offset_start..row*row_stride + offset_end]);
+        // ineedhelp += 1;
     }
+
+    
+    // for (i, row) in frame_data.chunks_exact(size[0] as usize * 4).enumerate(){
+        // for (j, color) in row.chunks_exact(4).enumerate(){
+            // if rect.contains(
+                // epaint::Pos2 { x: j as f32, y: i as f32 }
+                // epaint::Pos2 { x: j as f32 / pixels_per_point, y: i as f32 }
+            // ){
+                // output.push(color[0]);
+                // output.push(color[1]);
+                // output.push(color[2]);
+                // output.push(color[3]);
+    //         }
+    //     }
+    // }
     output
 }
 struct RecalculateJob{
@@ -293,8 +311,12 @@ impl Playback{
             Self::Off => false,
             Self::Recording { rect, .. } => {
                 frame.request_pixels();
+                let ppp = ui.ctx().pixels_per_point();
                 ui.ctx().request_repaint();
-                let this_rect = egui::Rect{min: region_rect.min, max: region_rect.max + egui::Vec2{x: -1., y: -1.}};
+                let this_rect = egui::Rect{
+                    min: (region_rect.min.to_vec2() * ppp).to_pos2(),
+                    max: (region_rect.max.to_vec2() * ppp).to_pos2(),
+                };
                 *rect = Some(this_rect);
                 true
             },
@@ -820,8 +842,6 @@ impl Custom3d {
     }
     
     pub fn new() -> Option<Self> {
-        // Get the WGPU render state from the eframe creation context. This can also be retrieved
-        // from `eframe::Frame` when you don't have a `CreationContext` available.
         let mode = DataMode::Immediate;
         let cur_asp = egui::Vec2{
             x: 1.0,
@@ -835,22 +855,6 @@ impl Custom3d {
 
         let texture_zoom_level = zero_one_rect();
 
-        // let (job_sender, job_receiver) = std::sync::mpsc::channel();
-        
-        // std::thread::spawn(move ||{
-        //     loop{
-        //         match job_receiver.recv(){
-        //             Ok(RecalculateJob { path, channel, tracking_params, result_sender }) => {
-        //                 let result = RecalculateResult::from(
-        //                     gpu_tracking::execute_gpu::execute_file(&path, channel, tracking_params.clone(), 0, None, None, None).into()
-        //                 );
-        //                 result_sender.send(result).expect("Main thread lost");
-        //             },
-        //             Err(_) => break
-        //         }
-        //     }
-        // });
-        
         let worker = ProgressFuture::new(|job, progress, interrupt|{
             match job{
                 RecalculateJob { path, tracking_params, channel } => {
@@ -888,7 +892,6 @@ impl Custom3d {
             frame_provider: None,
             vid_len: None,
             frame_idx,
-            // last_render: None,
             results: None,
             result_names: None,
             circles_to_plot: Vec::new(),
@@ -899,7 +902,6 @@ impl Custom3d {
             save_pending: false,
             
             particle_hash: None,
-            // row_range: None,
             alive_particles: None,
             circle_kdtree: None,
             cumulative_particles: None,
@@ -924,8 +926,6 @@ impl Custom3d {
 
             uuid,
             result_status: ResultStatus::Processing,
-            // result_receiver: None,
-            // job_sender,
 
             input_state,
             needs_update,
@@ -2098,7 +2098,7 @@ impl Custom3d {
                         Playback::Off => (),
                         Playback::FPS(_) => self.playback = Playback::Off,
                         Playback::Recording { rect, data, path } => {
-                            let size = rect.unwrap().size() + egui::Vec2{ x: 1.0, y: 1.0 };
+                            let size = rect.unwrap().size();
                             
                             let writer = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
                             if size.x as usize * size.y as usize * 4 * data.len() < 1<<31{
