@@ -166,12 +166,14 @@ impl eframe::App for AppWrapper{
 
    
     fn post_rendering(&mut self, size: [u32; 2], frame: &eframe::Frame) {
+        let ppp = frame.info().native_pixels_per_point;
         if let Some(frame_data) = frame.frame_pixels(){
             for app in &self.apps{
                 let mut app = app.borrow_mut();
                 match &mut app.playback{
                     Playback::Recording { rect: Some(rect), data, .. } => {
-                        data.push(retrieve_rect(size, &frame_data, rect));
+                        data.push(frame_data.region(rect, ppp));
+                        // data.push(retrieve_rect(size, &frame_data, rect));
                     },
                     _ => ()
                 }
@@ -188,7 +190,7 @@ fn retrieve_rect(size: [u32; 2], frame_data: &Vec<u8>, rect: &egui::Rect) -> Vec
     let offset_end = color_stride * rect.max.x as usize-1;
 
     for row in rect.min.y as usize..rect.max.y as usize{
-        output.extend(&frame_data[row*row_stride + offset_start..=row*row_stride + offset_end]);
+        output.extend_from_slice(&frame_data[row*row_stride + offset_start..=row*row_stride + offset_end]);
     }
 
     output
@@ -251,12 +253,12 @@ pub struct Custom3d {
     playback: Playback,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 enum Playback{
     FPS((f32, std::time::Instant)),
     Recording{
         rect: Option<egui::Rect>,
-        data: Vec<Vec<u8>>,
+        data: Vec<egui::ColorImage>,
         path: PathBuf,
     },
     Off,
@@ -282,11 +284,11 @@ impl Playback{
             Self::Off => false,
             Self::Recording { rect, .. } => {
                 frame.request_pixels();
-                let ppp = ui.ctx().pixels_per_point();
+                // let ppp = ui.ctx().pixels_per_point();
                 ui.ctx().request_repaint();
                 let this_rect = egui::Rect{
-                    min: (region_rect.min.to_vec2() * ppp).to_pos2(),
-                    max: (region_rect.max.to_vec2() * ppp).to_pos2(),
+                    min: (region_rect.min.to_vec2()).to_pos2(),
+                    max: (region_rect.max.to_vec2()).to_pos2(),
                 };
                 *rect = Some(this_rect);
                 true
@@ -2059,13 +2061,13 @@ impl Custom3d {
                                 let mut encoder = TiffEncoder::new(writer).unwrap();
                                 for image in data{
                                     let image_encoder = encoder.new_image::<colortype::RGBA8>(size[0] as u32, size[1] as u32).unwrap();
-                                    image_encoder.write_data(image).unwrap();
+                                    image_encoder.write_data(image.as_raw()).unwrap();
                                 }
                             } else {
                                 let mut encoder = TiffEncoder::new_big(writer).unwrap();
                                 for image in data{
                                     let image_encoder = encoder.new_image::<colortype::RGBA8>(size[0] as u32, size[1] as u32).unwrap();
-                                    image_encoder.write_data(image).unwrap();
+                                    image_encoder.write_data(image.as_raw()).unwrap();
                                 }
                             }
                             self.playback = Playback::Off;
