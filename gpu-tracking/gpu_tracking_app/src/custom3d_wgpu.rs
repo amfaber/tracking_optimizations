@@ -82,24 +82,14 @@ enum DataMode{
     Full,
 }
 
-impl DataMode{
-    // fn get_range(&self) -> &RangeInclusive<usize>{
-    //     match self{
-    //         Self::Range(range) => range,
-    //         _ => panic!("Tried to get range where there is none"),
-    //     }
-    // }
-}
 
 pub struct AppWrapper{
     apps: Vec<Rc<RefCell<Custom3d>>>,
     opens: Vec<bool>,
-    // pixels_per_point: f32,
 }
 
 impl AppWrapper{
     pub fn new<'a>(_cc: &'a eframe::CreationContext<'a>) -> Option<Self> {
-        // let pixels_per_point = _cc.egui_ctx.pixels_per_point();
         let apps = vec![
             Rc::new(RefCell::new(Custom3d::new()?)),
         ];
@@ -201,20 +191,6 @@ fn retrieve_rect(size: [u32; 2], frame_data: &Vec<u8>, rect: &egui::Rect) -> Vec
         output.extend(&frame_data[row*row_stride + offset_start..=row*row_stride + offset_end]);
     }
 
-    
-    // for (i, row) in frame_data.chunks_exact(size[0] as usize * 4).enumerate(){
-        // for (j, color) in row.chunks_exact(4).enumerate(){
-            // if rect.contains(
-                // epaint::Pos2 { x: j as f32, y: i as f32 }
-                // epaint::Pos2 { x: j as f32 / pixels_per_point, y: i as f32 }
-            // ){
-                // output.push(color[0]);
-                // output.push(color[1]);
-                // output.push(color[2]);
-                // output.push(color[3]);
-    //         }
-    //     }
-    // }
     output
 }
 struct RecalculateJob{
@@ -334,24 +310,6 @@ impl Custom3d{
 
         let texture_zoom_level = self.texture_zoom_level;
 
-        // let (job_sender, job_receiver) = std::sync::mpsc::channel();
-        
-        // std::thread::spawn(move ||{
-        //     loop{
-        //         match job_receiver.recv(){
-        //             Ok(RecalculateJob { path, channel, tracking_params, result_sender }) => {
-        //                 let result = RecalculateResult::from(
-        //                     gpu_tracking::execute_gpu::execute_file(&path, channel, tracking_params.clone(), 0, None, None, None).into()
-        //                 );
-        //                 match result_sender.send(result){
-        //                     Ok(()) => (),
-        //                     Err(_) => break,
-        //                 };
-        //             },
-        //             Err(_) => break
-        //         }
-        //     }
-        // });
         let worker = ProgressFuture::new(|job, progress, interrupt|{
             match job{
                 RecalculateJob { path, tracking_params, channel } => {
@@ -395,7 +353,6 @@ impl Custom3d{
             frame_provider,
             vid_len,
             frame_idx,
-            // last_render: None,
             results: self.results.clone(),
             result_names: self.result_names.clone(),
             circles_to_plot: self.circles_to_plot.clone(),
@@ -407,7 +364,6 @@ impl Custom3d{
             save_pending: self.save_pending.clone(),
             particle_hash: self.particle_hash.clone(),
             alive_particles: self.alive_particles.clone(),
-            // row_range: self.row_range.clone(),
             cumulative_particles: self.cumulative_particles.clone(),
             
             circle_kdtree: self.circle_kdtree.clone(),
@@ -432,8 +388,6 @@ impl Custom3d{
 
             uuid,
             result_status: self.result_status.clone(),
-            // result_receiver: None,
-            // job_sender,
 
             input_state,
             needs_update,
@@ -628,7 +582,6 @@ impl InputState{
             linker_reset_points: None,
             keys: None,
             noise_size: noise_size.unwrap_or(1.0),
-            // smoothing_size: Some(smoothing_size.unwrap_or(smoothing_size_default)),
             smoothing_size,
             illumination_correction_per_frame,
         }
@@ -639,12 +592,14 @@ impl InputState{
         match self.style{
             Style::Trackpy => {
                 output.push_str("batch(\n\t");
+                ignore_result(write!(output, "{},\n\t", self.path));
                 self.diameter.parse::<u32>().ok().map(|val| write!(output, "{},\n\t", val));
                 self.separation.parse::<u32>().ok().map(|val| write!(output, "separation = {},\n\t", val));
                 if !self.filter_close { write!(output, "filter_close = False,\n\t").unwrap() };
             },
             Style::Log => {
                 output.push_str("LoG(\n\t");
+                ignore_result(write!(output, "{},\n\t", self.path));
                 self.min_radius.parse::<f32>().ok().map(|val| write!(output, "{},\n\t", val));
                 self.max_radius.parse::<f32>().ok().map(|val| write!(output, "{},\n\t", val));
                 self.n_radii.parse::<usize>().ok().map(|val| write!(output, "n_radii = {},\n\t", val));
@@ -1149,19 +1104,6 @@ impl Custom3d {
                 self.particle_hash = Some(particle_hash);
                 self.alive_particles = Some(alive_particles);
                 self.cumulative_particles = Some(cumulative);
-                
-                
-                // let mut to_debug: Vec<_> = self.particle_hash.as_ref().unwrap().iter().collect();
-                // to_debug.sort_by(|a, b| {
-                //     let outer = a.1[0].0.cmp(&b.1[0].0);
-                //     match outer{
-                //         std::cmp::Ordering::Equal => {
-                //             a.1[0].1[0].partial_cmp(&b.1[0].1[0]).unwrap()
-                //         },
-                //         _ => outer
-                //     }
-                // });
-                
             }
         }
     }
@@ -1402,7 +1344,6 @@ impl Custom3d {
     }
     
     fn get_input(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame){
-        // ui.vertical(|ui|{
         ui.horizontal(|ui|{
             match self.playback{
                 Playback::FPS(_) => {
@@ -1525,34 +1466,32 @@ impl Custom3d {
             self.update_state(ui);
         }
 
-        let mut should_frame_update = false;
-        if let Some(range) = self.video_range(){
-            ui.vertical(|ui|{
-                let spacing = ui.spacing_mut();
-                spacing.slider_width = 600. - spacing.interact_size.x - spacing.item_spacing.x;
-                ui.add(
-                    egui::widgets::Slider::from_get_set(*range.start() as f64..=*range.end() as f64, |val|{
-                        match val{
-                            Some(setter) => {
-                                self.input_state.frame_idx = (setter as usize).to_string();
-                                should_frame_update = true;
-                                setter
-                            },
-                            None => self.frame_idx as f64
-                        }
-                    }).fixed_decimals(0)
-                );
-            });
-        }
-        if should_frame_update{
-            ignore_result(self.update_frame(ui, FrameChange::Input));
-        }
-        
+        // let mut should_frame_update = false;
+        // if let Some(range) = self.video_range(){
+        //     ui.vertical(|ui|{
+        //         let spacing = ui.spacing_mut();
+        //         spacing.slider_width = 600. - spacing.interact_size.x - spacing.item_spacing.x;
+        //         ui.add(
+        //             egui::widgets::Slider::from_get_set(*range.start() as f64..=*range.end() as f64, |val|{
+        //                 match val{
+        //                     Some(setter) => {
+        //                         self.input_state.frame_idx = (setter as usize).to_string();
+        //                         should_frame_update = true;
+        //                         setter
+        //                     },
+        //                     None => self.frame_idx as f64
+        //                 }
+        //             }).fixed_decimals(0)
+        //         );
+        //     });
+        // }
+        // if should_frame_update{
+        //     ignore_result(self.update_frame(ui, FrameChange::Input));
+        // }
         match self.frame_provider{
             Some(_) => self.show(ui, frame),
             None => {},
         }
-        // });
     }
 
     fn tracking_input(&mut self, ui: &mut egui::Ui){
@@ -1743,10 +1682,37 @@ impl Custom3d {
     }
 
     fn show(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame){
+        
+        let screen_rect = ui.ctx().screen_rect();
+        let splat_size = screen_rect.max.y - screen_rect.min.y - 300.;
+
+        let mut should_frame_update = false;
+        if let Some(range) = self.video_range(){
+            ui.vertical(|ui|{
+                let spacing = ui.spacing_mut();
+                spacing.slider_width = splat_size - spacing.interact_size.x - spacing.item_spacing.x;
+                ui.add(
+                    egui::widgets::Slider::from_get_set(*range.start() as f64..=*range.end() as f64, |val|{
+                        match val{
+                            Some(setter) => {
+                                self.input_state.frame_idx = (setter as usize).to_string();
+                                should_frame_update = true;
+                                setter
+                            },
+                            None => self.frame_idx as f64
+                        }
+                    }).fixed_decimals(0)
+                );
+            });
+        }
+        if should_frame_update{
+            ignore_result(self.update_frame(ui, FrameChange::Input));
+        }
+        
         ui.horizontal(|ui|{
             egui::Frame::canvas(ui.style()).show(ui, |ui| {
                 let change = FrameChange::from_scroll(ui.ctx().input(|inp| inp.scroll_delta));
-                self.custom_painting(ui, frame, change);
+                self.custom_painting(ui, splat_size, frame, change);
             });
         });
     }
@@ -1774,10 +1740,6 @@ impl Custom3d {
             }
             return Ok(())
         }
-        // if self.result_receiver.is_some(){
-        //     self.result_status = ResultStatus::TooOld;
-        //     return Err(StillWaitingError.into())
-        // }
         if self.worker.n_jobs() > 0{
             self.result_status = ResultStatus::TooOld;
             self.worker.interrupt();
@@ -1787,8 +1749,6 @@ impl Custom3d {
         let tracking_params = self.tracking_params.clone();
         let path = self.path.as_ref().cloned().ok_or(anyhow::Error::msg("path not set up yet"))?;
         let channel = self.channel.clone();
-        // let (result_sender, result_receiver) =  std::sync::mpsc::channel();
-        // self.result_receiver = Some(result_receiver);
 
         self.worker.submit_new(
             RecalculateJob{
@@ -1797,12 +1757,6 @@ impl Custom3d {
                 tracking_params
             }
         ).expect("thread crash");
-        // self.job_sender.send(RecalculateJob{
-        //     path,
-        //     channel,
-        //     result_sender,
-        //     tracking_params
-        // }).expect("Thread lost");
 
         self.result_status = ResultStatus::Processing;
         self.particle_hash = None;
@@ -2028,8 +1982,6 @@ impl Custom3d {
                             TextStyle::Body.resolve(ui.style()),
                             egui::Color32::from_rgb(0, 0, 0),
                         ));
-                        // let label = epaint::text::Fonts::layout_no_wrap(
-                        // );
                 
                         let mut screen_pos = egui::Pos2{
                             x: 10. + lerp(inverse_lerp(nearest.item.0[1], self.databounds.as_ref().unwrap().min.y, self.databounds.as_ref().unwrap().max.y), rect.min.x, rect.max.x),
@@ -2062,10 +2014,15 @@ impl Custom3d {
         }
     }
     
-    fn custom_painting(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame, direction: Option<FrameChange>) {
-        // let size = ui.cursor().min.y;
-        let screen_rect = ui.ctx().screen_rect();
-        let size = egui::Vec2::splat(screen_rect.max.y - screen_rect.min.y - 300.) * self.cur_asp;
+    fn custom_painting(
+        &mut self,
+        ui: &mut egui::Ui,
+        splat_size: f32,
+        frame: &mut eframe::Frame,
+        direction: Option<FrameChange>,
+    ) {
+        // let screen_rect = ui.ctx().screen_rect();
+        let size = egui::Vec2::splat(splat_size) * self.cur_asp;
         let (rect, response) =
             ui.allocate_exact_size(size, egui::Sense::drag());
         
@@ -2136,9 +2093,6 @@ impl Custom3d {
         ui.painter().add(callback);
         
         if let Some(pos) = response.interact_pointer_pos(){
-            // let input = ui.ctx().input();
-            // let primary_clicked = input.pointer.primary_clicked();
-            // drop(input);
             let primary_clicked = ui.ctx().input(|inp| inp.pointer.primary_clicked());
             if response.drag_started() && primary_clicked{
                 self.zoom_box_start = Some(rect.clamp(pos));
