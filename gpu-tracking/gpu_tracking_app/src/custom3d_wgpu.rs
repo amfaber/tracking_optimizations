@@ -172,6 +172,7 @@ impl eframe::App for AppWrapper{
                 let mut app = app.borrow_mut();
                 match &mut app.playback{
                     Playback::Recording { rect: Some(rect), data, .. } => {
+                        // data.push(frame_data.clone());
                         data.push(frame_data.region(rect, ppp));
                         // data.push(retrieve_rect(size, &frame_data, rect));
                     },
@@ -2060,13 +2061,13 @@ impl Custom3d {
                             if size.x as usize * size.y as usize * 4 * data.len() < 1<<31{
                                 let mut encoder = TiffEncoder::new(writer).unwrap();
                                 for image in data{
-                                    let image_encoder = encoder.new_image::<colortype::RGBA8>(size[0] as u32, size[1] as u32).unwrap();
+                                    let image_encoder = encoder.new_image::<colortype::RGBA8>(image.size[0] as u32, image.size[1] as u32).unwrap();
                                     image_encoder.write_data(image.as_raw()).unwrap();
                                 }
                             } else {
                                 let mut encoder = TiffEncoder::new_big(writer).unwrap();
                                 for image in data{
-                                    let image_encoder = encoder.new_image::<colortype::RGBA8>(size[0] as u32, size[1] as u32).unwrap();
+                                    let image_encoder = encoder.new_image::<colortype::RGBA8>(image.size[0] as u32, image.size[1] as u32).unwrap();
                                     image_encoder.write_data(image.as_raw()).unwrap();
                                 }
                             }
