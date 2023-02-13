@@ -151,7 +151,11 @@ impl eframe::App for AppWrapper{
                         let new_app = Rc::new(RefCell::new(app.borrow().clone()));
                         let mut new_app_mut = new_app.borrow_mut();
                         new_app_mut.setup_gpu_after_clone(ui, frame);
-                        new_app_mut.other_apps.push(Rc::downgrade(app));
+                        let coupling = Coupling{
+                            link: Rc::downgrade(app),
+                            ty: CouplingType::Controlling,
+                        };
+                        new_app_mut.other_apps.push(coupling);
                         drop(new_app_mut);
                         self.apps.insert(i + 1, new_app);
                         self.opens.insert(i + 1, true);
@@ -167,7 +171,7 @@ impl eframe::App for AppWrapper{
    
     fn post_rendering(&mut self, size: [u32; 2], frame: &eframe::Frame) {
         let ppp = frame.info().native_pixels_per_point;
-        if let Some(frame_data) = frame.frame_pixels(){
+        if let Some(frame_data) = frame.screenshot(){
             for app in &self.apps{
                 let mut app = app.borrow_mut();
                 match &mut app.playback{
@@ -202,6 +206,27 @@ struct RecalculateJob{
     channel: Option<usize>,
 }
 
+#[derive(Debug, Clone)]
+enum CouplingType{
+    Controlling,
+    NonControlling,
+}
+
+struct Coupling{
+    link: Weak<RefCell<Custom3d>>,
+    ty: CouplingType,
+}
+
+
+impl Clone for Coupling{
+    fn clone(&self) -> Self{
+        Self{
+            link: Weak::clone(&self.link),
+            ty: self.ty.clone(),
+        }
+    }
+}
+
 pub struct Custom3d {
     worker: WorkerType,
     progress: Option<usize>,
@@ -211,10 +236,10 @@ pub struct Custom3d {
 	frame_provider: Option<ProviderDimension>,
     vid_len: Option<usize>,
     frame_idx: usize,
-    other_apps: Vec<Weak<RefCell<Custom3d>>>,
+    other_apps: Vec<Coupling>,
     results: Option<Array2<f32>>,
     result_names: Option<Vec<(String, String)>>,
-    circles_to_plot: Vec<(Array2<f32>, Option<Weak<RefCell<Custom3d>>>)>,
+    circles_to_plot: Vec<(Array2<f32>, Option<Coupling>)>,
     tracking_params: gpu_tracking::gpu_setup::TrackingParams,
     mode: DataMode,
     path: Option<PathBuf>,
@@ -284,15 +309,15 @@ impl Playback{
             },
             Self::Off => false,
             Self::Recording { rect, .. } => {
-                frame.request_pixels();
-                // let ppp = ui.ctx().pixels_per_point();
+                frame.request_screenshot();
                 ui.ctx().request_repaint();
                 let this_rect = egui::Rect{
                     min: (region_rect.min.to_vec2()).to_pos2(),
                     max: (region_rect.max.to_vec2()).to_pos2(),
                 };
+                let should_advance = rect.is_some();
                 *rect = Some(this_rect);
-                true
+                should_advance
             },
         }
     }
@@ -675,7 +700,7 @@ impl Custom3d {
         let wgpu_render_state = frame.wgpu_render_state().unwrap();
         ignore_result(self.create_gpu_resource(wgpu_render_state));
         ignore_result(self.update_frame(ui, FrameChange::Resubmit));
-        self.resize(ui, self.texture_zoom_level, self.databounds.unwrap());
+        self.resize(ui, self.texture_zoom_level, self.databounds.unwrap(), self.cur_asp);
     }
 
     fn create_gpu_resource(&mut self, wgpu_render_state: &egui_wgpu::RenderState) -> anyhow::Result<()>{
@@ -1020,9 +1045,16 @@ impl Custom3d {
         }
 
         for owner in self.other_apps.iter(){
-            if let Some(alive_owner) = owner.upgrade(){
-                if let Some(circles) = alive_owner.borrow().results_to_circles_to_plot(self.frame_idx){
-                    self.circles_to_plot.push((circles, Some(Weak::clone(owner))));
+            if let Some(alive_owner) = owner.link.upgrade(){
+                if let Ok(borrowed_owner) = alive_owner.try_borrow(){
+                    let idx = if matches!(borrowed_owner.result_status, ResultStatus::Static){
+                        self.frame_idx
+                    } else {
+                        borrowed_owner.frame_idx
+                    };
+                    if let Some(circles) = borrowed_owner.results_to_circles_to_plot(idx){
+                        self.circles_to_plot.push((circles, Some(owner.clone())));
+                    }
                 }
             }
         }
@@ -1070,7 +1102,6 @@ impl Custom3d {
             },
             (_, Some(particle_col)) => {
                 let mut particle_hash = BTreeMap::new();
-                // let mut row_range: Vec<(usize, usize)> = Vec::new();
                 let mut alive_particles = BTreeMap::new();
                 let mut cumulative = BTreeMap::new();
                 for (i, row) in self.results.as_ref().unwrap().axis_iter(Axis(0)).enumerate(){
@@ -1373,7 +1404,7 @@ impl Custom3d {
                     if ui.button("Cancel export").clicked(){
                         self.playback = Playback::Off
                     } else {
-                        frame.request_pixels();
+                        frame.request_screenshot();
                     }
                 }
             }
@@ -1413,6 +1444,7 @@ impl Custom3d {
                         self.input_state.recording_path = path.to_str().unwrap().to_string();
                         self.playback = Playback::Recording { rect: None, data: Vec::new(), path };
                     }
+                    // frame.request_screenshot()
                 }
             }
             ui.add(egui::widgets::TextEdit::singleline(&mut self.input_state.recording_path)
@@ -1673,7 +1705,7 @@ impl Custom3d {
             x: self.frame_provider.as_ref().unwrap().0.1[1] as f32,
             y: self.frame_provider.as_ref().unwrap().0.1[0] as f32,
         };
-        self.cur_asp = dims / dims.max_elem();
+        let asp = dims / dims.max_elem();
         let databounds = egui::Rect{
             min: egui::Pos2::ZERO,
             max: egui::Pos2{
@@ -1681,7 +1713,7 @@ impl Custom3d {
                 y: dims.x - 1.0,
             }
         };
-        self.resize(ui, zero_one_rect(), databounds);
+        self.resize(ui, zero_one_rect(), databounds, asp);
     }
 
     fn show(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame){
@@ -1770,7 +1802,8 @@ impl Custom3d {
         Ok(())
     }
 
-    fn resize(&mut self, ui: &mut egui::Ui, size: egui::Rect, databounds: egui::Rect){
+    fn resize(&mut self, ui: &mut egui::Ui, size: egui::Rect, databounds: egui::Rect, asp: egui::Vec2){
+        self.cur_asp = asp;
         self.texture_zoom_level = size.clone();
         self.databounds = Some(databounds.clone());
         let uuid = self.uuid;
@@ -1785,6 +1818,18 @@ impl Custom3d {
             rect: egui::Rect::EVERYTHING,
             callback: Arc::new(cb),
         });
+        for other in &self.other_apps{
+            match other.ty{
+                CouplingType::Controlling => {
+                    if let Some(alive) = other.link.upgrade(){
+                        if let Ok(mut mut_alive) = alive.try_borrow_mut(){
+                            mut_alive.resize(ui, size, databounds, asp);
+                        }
+                    }
+                },
+                _ => ()
+            }
+        }
     }
 
     fn set_image_cmap(&mut self, ui: &mut egui::Ui){
@@ -1820,9 +1865,6 @@ impl Custom3d {
     }
     
     fn update_frame(&mut self, ui: &egui::Ui, direction: FrameChange) -> Result<(), FrameChangeError>{
-        if self.frame_provider.is_none(){
-            return Ok(())
-        }
         let new_index = match direction{
             FrameChange::Next => self.frame_idx + 1,
             FrameChange::Previous => {
@@ -1847,6 +1889,29 @@ impl Custom3d {
         }
         self.frame_idx = new_index;
         self.input_state.frame_idx = self.frame_idx.to_string();
+
+        for other in &self.other_apps{
+            match other.ty{
+                CouplingType::Controlling => {
+                    if let Some(alive) = other.link.upgrade(){
+                        if let (Ok(mut mut_alive), Some(self_vid_range)) = (alive.try_borrow_mut(), self.video_range()){
+                            if let Some(other_vid_range) = mut_alive.video_range(){
+                                let t = ((self.frame_idx - self_vid_range.start()) as f32) / (self_vid_range.end() - self_vid_range.start()) as f32;
+                                let other_idx = other_vid_range.start() + 
+                                    ((other_vid_range.end() - other_vid_range.start()) as f32 * t).round() as usize;
+                                mut_alive.input_state.frame_idx = other_idx.to_string();
+                                ignore_result(mut_alive.update_frame(ui, FrameChange::Input));
+                            }
+                        }
+                    }
+                },
+                _ => ()
+            }
+        }
+        if self.frame_provider.is_none(){
+            return Ok(())
+        }
+        
         let array = self.frame_provider.as_ref().unwrap().to_array(self.frame_idx).map_err(|_| FrameChangeError::CouldNotGetFrame)?;
         match self.mode{
             DataMode::Immediate => {
@@ -1876,14 +1941,16 @@ impl Custom3d {
             rect: egui::Rect::EVERYTHING,
             callback: Arc::new(cb),
         });
+
+        
         Ok(())
     }
 
 
-    unsafe fn get_owner(&self, owner: &Option<Weak<RefCell<Self>>>) -> Option<&Self>{
+    unsafe fn get_owner(&self, owner: &Option<Coupling>) -> Option<&Self>{
         match owner{
             Some(inner) => {
-                let owner = unsafe { inner.upgrade().map(|inner| &*(&*inner.borrow() as *const Custom3d)) };
+                let owner = unsafe { inner.link.upgrade().and_then(|inner| (inner.try_borrow().ok().map(|double_inner| (&*(&*double_inner as *const Custom3d))))) };
                 owner
             },
             None => Some(self),
@@ -1912,7 +1979,11 @@ impl Custom3d {
                     (&owner.particle_hash, &owner.alive_particles, &owner.cumulative_particles){
                     let cmap = owner.line_cmap.get_map();
                     let databounds = self.databounds.clone().unwrap();
-                    let frame_idx = self.frame_idx;
+                    let frame_idx = if matches!(&owner.result_status, ResultStatus::Static) {
+                        self.frame_idx
+                    } else {
+                        owner.frame_idx
+                    };
                     let iter: Box<dyn Iterator<Item = &usize>> = if self.all_tracks{
                         Box::new(cumulative_particles[&frame_idx].iter().map(|part_id| part_id))
                     } else {
@@ -2035,7 +2106,7 @@ impl Custom3d {
 
         let mut need_to_update_cirles = false;
         for other in self.other_apps.iter(){
-            if let Some(alive_other) = other.upgrade(){
+            if let Some(alive_other) = other.link.upgrade(){
                 need_to_update_cirles |= alive_other.borrow().recently_updated;
             }
         }
@@ -2106,9 +2177,10 @@ impl Custom3d {
                 let this_rect = normalize_rect(egui::Rect::from_two_pos(start, pos));
                 ui.painter_at(rect).rect_stroke(this_rect, 0.0, (1., self.circle_color));
                 if response.drag_released() {
-                    let this_asp = this_rect.max - this_rect.min;
+                    let mut this_asp = this_rect.max - this_rect.min;
                     if this_asp.x != 0.0 && this_asp.y != 0.0{
-                        self.cur_asp = this_asp / this_asp.max_elem();
+                        // self.cur_asp = this_asp / this_asp.max_elem();
+                        this_asp = this_asp / this_asp.max_elem();
 
                         let t = inverse_lerp_rect(&rect, &this_rect);
                         let texture_zoom_level = lerp_rect(&self.texture_zoom_level, &t);
@@ -2117,7 +2189,7 @@ impl Custom3d {
                             max: egui::Pos2{ x: t.max.y, y: t.max.x },
                         };
                         let databounds = lerp_rect(&self.databounds.as_ref().unwrap(), &t);
-                        self.resize(ui, texture_zoom_level, databounds);
+                        self.resize(ui, texture_zoom_level, databounds, this_asp);
                         self.zoom_box_start = None;
                     }
                 }
@@ -2131,8 +2203,7 @@ impl Custom3d {
         self.result_dependent_plotting(ui, rect, response.hover_pos());
         
         match self.result_status{
-            ResultStatus::Valid | ResultStatus::Static => {
-            },
+            ResultStatus::Valid | ResultStatus::Static => (),
             ResultStatus::Processing => {
                 match self.mode{
                     DataMode::Off | DataMode::Immediate => {},
