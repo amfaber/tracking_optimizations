@@ -5,7 +5,7 @@ use egui::{self, TextStyle};
 use epaint;
 use bytemuck;
 use thiserror::Error;
-use gpu_tracking::{gpu_setup::{TrackingParams, ParamStyle}, execute_gpu::path_to_iter, progressfuture::{ProgressFuture, PollResult}};
+use gpu_tracking::{gpu_setup::{TrackingParams, ParamStyle}, execute_gpu::path_to_iter, progressfuture::{ProgressFuture, PollResult}, linking::{FrameSubsetter, SubsetterOutput}};
 use ndarray::{Array, Array2, Axis, ArrayView1, ArrayView2};
 use crate::{colormaps, texture::ColormapRenderResources};
 use kd_tree;
@@ -16,7 +16,6 @@ use rfd;
 use strum::IntoEnumIterator;
 use csv;
 use ndarray_csv::Array2Reader;
-// use image::save_buffer;
 use tiff::encoder::*;
 
 // use ndarray_stats::histogram::{HistogramExt, strategies::Auto, Bins, Edges, Grid, GridBuilder};
@@ -66,9 +65,7 @@ impl ProviderDimension{
         let frame = Array::from_shape_vec([dims[0] as usize, dims[1] as usize], frame).unwrap();
         Ok(frame)
     }
-    // fn dims(&self) -> &[u32; 2]{
-    //     &self.0.1
-    // }
+
     fn len(&self) -> usize{
         self.0.0.len(None)
     }
@@ -95,6 +92,34 @@ impl AppWrapper{
         ];
         let opens = vec![true];
         
+        Some(Self{apps, opens})
+    }
+
+    pub fn test<'a>(cc: &'a eframe::CreationContext<'a>) -> Option<Self> {
+        let mut app = Custom3d::new()?;
+        let opens = vec![true, true];
+        let render_state = cc.wgpu_render_state.as_ref().unwrap();
+
+        app.input_state.path = "/Users/amfaber/Downloads/Experiment_Process_005_20230111.tif".to_string();
+        app.all_tracks = false;
+        ignore_result(app.setup_new_path(render_state));
+        let mut next_app = app.clone();
+        next_app.input_state.path = "/Users/amfaber/Downloads/Experiment_Process_006_20230111.tif".to_string();
+        ignore_result(next_app.setup_new_path(render_state));
+
+        let rc_app = Rc::new(RefCell::new(app));
+        let coupling = Coupling{
+            link: Rc::downgrade(&rc_app),
+            ty: CouplingType::Controlling,
+        };
+
+        next_app.other_apps.push(coupling);
+
+        let apps = vec![
+            rc_app,
+            Rc::new(RefCell::new(next_app)),
+        ];
+
         Some(Self{apps, opens})
     }
 }
@@ -169,16 +194,14 @@ impl eframe::App for AppWrapper{
     }
 
    
-    fn post_rendering(&mut self, size: [u32; 2], frame: &eframe::Frame) {
+    fn post_rendering(&mut self, _size: [u32; 2], frame: &eframe::Frame) {
         let ppp = frame.info().native_pixels_per_point;
         if let Some(frame_data) = frame.screenshot(){
             for app in &self.apps{
                 let mut app = app.borrow_mut();
                 match &mut app.playback{
                     Playback::Recording { rect: Some(rect), data, .. } => {
-                        // data.push(frame_data.clone());
                         data.push(frame_data.region(rect, ppp));
-                        // data.push(retrieve_rect(size, &frame_data, rect));
                     },
                     _ => ()
                 }
@@ -187,19 +210,6 @@ impl eframe::App for AppWrapper{
     }
 }
 
-fn retrieve_rect(size: [u32; 2], frame_data: &Vec<u8>, rect: &egui::Rect) -> Vec<u8>{
-    let mut output = Vec::with_capacity(rect.area() as usize * 4);
-    let color_stride = 4;
-    let row_stride = size[0] as usize * color_stride;
-    let offset_start = color_stride * rect.min.x as usize;
-    let offset_end = color_stride * rect.max.x as usize-1;
-
-    for row in rect.min.y as usize..rect.max.y as usize{
-        output.extend_from_slice(&frame_data[row*row_stride + offset_start..=row*row_stride + offset_end]);
-    }
-
-    output
-}
 struct RecalculateJob{
     path: PathBuf,
     tracking_params: TrackingParams,
@@ -209,7 +219,7 @@ struct RecalculateJob{
 #[derive(Debug, Clone)]
 enum CouplingType{
     Controlling,
-    NonControlling,
+    _NonControlling,
 }
 
 struct Coupling{
@@ -277,6 +287,7 @@ pub struct Custom3d {
     needs_update: NeedsUpdate,
 
     playback: Playback,
+    frame_step: i32,
 }
 
 #[derive(Clone)]
@@ -366,7 +377,7 @@ impl Custom3d{
 
         let playback = self.playback.clone();
 
-        let circle_color = self.circle_color.clone();
+        let circle_color = egui::Color32::from_rgb(255, 0, 0);
         let output_path = self.output_path.clone();
         let other_apps = self.other_apps.clone();
         
@@ -420,7 +431,8 @@ impl Custom3d{
             input_state,
             needs_update,
 
-            playback
+            playback,
+            frame_step: self.frame_step.clone(),
         };
         out
         
@@ -444,6 +456,7 @@ struct InputState{
     range_start: String,
     range_end: String,
     fps: String,
+    frame_step: String,
     
     cmap_min_hint: String,
     cmap_max_hint: String,
@@ -496,6 +509,7 @@ impl Default for InputState{
             range_start: "0".to_string(),
             range_end: "10".to_string(),
             fps: "30".to_string(),
+            frame_step: "1".to_string(),
 
             cmap_min_hint: String::new(),
             cmap_max_hint: String::new(),
@@ -742,9 +756,19 @@ impl Custom3d {
             element.0 == "particle"
         });
         self.result_names = Some(header);
+
+        self.vid_len = match self.frame_col{
+            Some(col) => {
+                Some(results[(results.shape()[0] - 1, col)] as usize + 1)
+            },
+            None => Some(1),
+        };
         self.results = Some(results);
         self.path = Some(self.input_state.path.clone().into());
         self.result_status = ResultStatus::Static;
+        self.recently_updated = true;
+        self.update_lines();
+        self.update_circles();
         Ok(())
     }
     
@@ -908,7 +932,8 @@ impl Custom3d {
             input_state,
             needs_update,
 
-            playback
+            playback,
+            frame_step: 1,
         };
         Some(out)
     }
@@ -1034,7 +1059,28 @@ impl Custom3d {
             }
             Some(out)
         } else {
-            Some(results.clone())
+            let mut subsetter = FrameSubsetter::new(results.view(), self.frame_col, (self.y_col.unwrap(), self.x_col.unwrap()), self.r_col, gpu_tracking::linking::SubsetterType::Agnostic);
+            loop{
+                match subsetter.next(){
+                    Some(Ok((Some(frame_idx), SubsetterOutput::Agnostic(subset_res)))) => {
+                        if frame_idx == frame{
+                            break Some(subset_res)
+                        }
+                    },
+                    Some(Ok((None, SubsetterOutput::Agnostic(subset_res)))) => {
+                        break Some(subset_res)
+                    },
+                    None => {
+                        break None
+                    },
+                    Some(Err(e)) => {
+                        panic!("Encountered error when subsetting dataset: {:?}", e)
+                    },
+                    Some(Ok((_, SubsetterOutput::Linking(_)))) | Some(Ok((_, SubsetterOutput::Characterization(_))))=>{
+                        unreachable!()
+                    }
+                }
+            }
         }
     }
 
@@ -1047,11 +1093,7 @@ impl Custom3d {
         for owner in self.other_apps.iter(){
             if let Some(alive_owner) = owner.link.upgrade(){
                 if let Ok(borrowed_owner) = alive_owner.try_borrow(){
-                    let idx = if matches!(borrowed_owner.result_status, ResultStatus::Static){
-                        self.frame_idx
-                    } else {
-                        borrowed_owner.frame_idx
-                    };
+                    let idx = borrowed_owner.frame_idx;
                     if let Some(circles) = borrowed_owner.results_to_circles_to_plot(idx){
                         self.circles_to_plot.push((circles, Some(owner.clone())));
                     }
@@ -1078,7 +1120,6 @@ impl Custom3d {
     fn update_from_recalculate(&mut self, result: anyhow::Result<RecalculateResult>) -> anyhow::Result<()>{
         let result = result?;
         let result_names: Vec<_> = result.result_names.into_iter().map(|(s1, s2)| (s1.to_string(), s2.to_string())).collect();
-        // self.result_receiver = None;
         self.results = Some(result.results);
         self.result_names = Some(result_names);
         self.r_col = result.r_col;
@@ -1094,13 +1135,18 @@ impl Custom3d {
     }
 
     fn update_lines(&mut self){
-        match (&self.mode, self.particle_col){
-            (DataMode::Immediate, _) | (_, None) => {
+        match self.particle_col{
+            None => {
                 self.particle_hash = None;
                 self.alive_particles = None;
                 self.cumulative_particles = None;
             },
-            (_, Some(particle_col)) => {
+            _ if matches!(self.mode, DataMode::Immediate) && !matches!(self.result_status, ResultStatus::Static) => {
+                self.particle_hash = None;
+                self.alive_particles = None;
+                self.cumulative_particles = None;
+            },
+            Some(particle_col)  => {
                 let mut particle_hash = BTreeMap::new();
                 let mut alive_particles = BTreeMap::new();
                 let mut cumulative = BTreeMap::new();
@@ -1151,7 +1197,6 @@ impl Custom3d {
                         self.update_from_recalculate(res)?;
                     },
                     ResultStatus::TooOld => {
-                        // self.worker.interrupt();
                         self.recalculate()?;
                     },
                     ResultStatus::Valid | ResultStatus::Static => unreachable!(),
@@ -1421,6 +1466,16 @@ impl Custom3d {
             };
             ui.label("fps");
 
+            if ui.add(egui::widgets::TextEdit::singleline(
+                &mut self.input_state.frame_step
+            ).desired_width(30.)).changed(){
+                match self.input_state.frame_step.parse::<i32>(){
+                    Ok(val) => self.frame_step = val,
+                    Err(_) => self.frame_step = 1,
+                }
+            }
+            ui.label("frame step");
+
             if ui.button("Record").clicked(){
                 if let Some(range) = self.video_range(){
                     self.input_state.frame_idx = range.start().to_string();
@@ -1501,28 +1556,6 @@ impl Custom3d {
             self.update_state(ui);
         }
 
-        // let mut should_frame_update = false;
-        // if let Some(range) = self.video_range(){
-        //     ui.vertical(|ui|{
-        //         let spacing = ui.spacing_mut();
-        //         spacing.slider_width = 600. - spacing.interact_size.x - spacing.item_spacing.x;
-        //         ui.add(
-        //             egui::widgets::Slider::from_get_set(*range.start() as f64..=*range.end() as f64, |val|{
-        //                 match val{
-        //                     Some(setter) => {
-        //                         self.input_state.frame_idx = (setter as usize).to_string();
-        //                         should_frame_update = true;
-        //                         setter
-        //                     },
-        //                     None => self.frame_idx as f64
-        //                 }
-        //             }).fixed_decimals(0)
-        //         );
-        //     });
-        // }
-        // if should_frame_update{
-        //     ignore_result(self.update_frame(ui, FrameChange::Input));
-        // }
         match self.frame_provider{
             Some(_) => self.show(ui, frame),
             None => {},
@@ -1810,8 +1843,9 @@ impl Custom3d {
         let cb = egui_wgpu::CallbackFn::new()
             .prepare(move |_device, queue, _encoder, paint_callback_resources|{
                 let resources: &mut HashMap<Uuid, ColormapRenderResources> = paint_callback_resources.get_mut().unwrap();
-                let resources = resources.get_mut(&uuid).unwrap();
-                resources.resize(queue, &size);
+                if let Some(resources) = resources.get_mut(&uuid){
+                    resources.resize(queue, &size);
+                }
                 Vec::new()
             });
         ui.painter().add(egui::PaintCallback{
@@ -1838,8 +1872,9 @@ impl Custom3d {
         let cb = egui_wgpu::CallbackFn::new()
             .prepare(move |_device, queue, _encoder, paint_callback_resources|{
                 let resources: &mut HashMap<Uuid, ColormapRenderResources> = paint_callback_resources.get_mut().unwrap();
-                let resources = resources.get_mut(&uuid).unwrap();
-                resources.set_cmap(queue, &cmap);
+                if let Some(resources) = resources.get_mut(&uuid){
+                    resources.set_cmap(queue, &cmap);
+                };
                 Vec::new()
             });
         ui.painter().add(egui::PaintCallback{
@@ -1866,22 +1901,27 @@ impl Custom3d {
     
     fn update_frame(&mut self, ui: &egui::Ui, direction: FrameChange) -> Result<(), FrameChangeError>{
         let new_index = match direction{
-            FrameChange::Next => self.frame_idx + 1,
+            FrameChange::Next => self.frame_idx as i32 + self.frame_step,
             FrameChange::Previous => {
-                if self.frame_idx != 0 { self.frame_idx - 1 } else { 0 }
+                self.frame_idx as i32 - self.frame_step
             },
             FrameChange::Input => {
-                self.input_state.frame_idx.parse::<usize>().map_err(|_| FrameChangeError::CouldNotParse)?
+                self.input_state.frame_idx.parse::<i32>().map_err(|_| FrameChangeError::CouldNotParse)?
             },
-            FrameChange::Resubmit => self.frame_idx
+            FrameChange::Resubmit => self.frame_idx as i32
         };
 
         let new_index = match self.mode{
             DataMode::Range(ref range) => {
-                new_index.clamp(*range.start(), *range.end())
+                new_index.clamp(*range.start() as i32, *range.end() as i32)
             },
-            _ => new_index.min(self.vid_len.unwrap()-1)
-        };
+            _ => {
+                match self.video_range(){
+                    Some(range) => new_index.clamp(*range.start() as i32, *range.end() as i32),
+                    None => new_index.max(0),
+                }
+            }
+        } as usize;
         
         
         if new_index == self.frame_idx && !matches!(direction, FrameChange::Resubmit){
@@ -1932,9 +1972,10 @@ impl Custom3d {
         let cb = egui_wgpu::CallbackFn::new()
             .prepare(move |_device, queue, _encoder, paint_callback_resources|{
                 let resources: &mut HashMap<Uuid, ColormapRenderResources> = paint_callback_resources.get_mut().unwrap();
-                let resources = resources.get_mut(&uuid).unwrap();
-                let array_view = array.view();
-                resources.update_texture(queue, &array_view, &minmax);
+                if let Some(resources) = resources.get_mut(&uuid){
+                    let array_view = array.view();
+                    resources.update_texture(queue, &array_view, &minmax);
+                };
                 Vec::new()
             });
         ui.painter().add(egui::PaintCallback{
@@ -1958,6 +1999,7 @@ impl Custom3d {
     }
     
     fn result_dependent_plotting(&mut self, ui: &mut egui::Ui, rect: egui::Rect, hover_pos: Option<egui::Pos2>){
+
         for (circles_to_plot, owner) in self.circles_to_plot.iter(){
             let owner = unsafe{ self.get_owner(owner) };
             let owner = owner.map(|inner| (inner, inner.result_status.clone()));
@@ -1979,11 +2021,7 @@ impl Custom3d {
                     (&owner.particle_hash, &owner.alive_particles, &owner.cumulative_particles){
                     let cmap = owner.line_cmap.get_map();
                     let databounds = self.databounds.clone().unwrap();
-                    let frame_idx = if matches!(&owner.result_status, ResultStatus::Static) {
-                        self.frame_idx
-                    } else {
-                        owner.frame_idx
-                    };
+                    let frame_idx = owner.frame_idx;
                     let iter: Box<dyn Iterator<Item = &usize>> = if self.all_tracks{
                         Box::new(cumulative_particles[&frame_idx].iter().map(|part_id| part_id))
                     } else {
