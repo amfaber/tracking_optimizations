@@ -14,7 +14,7 @@ use gpu_tracking::{
     },
     gpu_setup::TrackingParams,
 };
-use ndarray::{s, Array2, Axis};
+use ndarray::{s, Array2, Axis, Array, Array3};
 use pollster::FutureExt;
 use std::cell::RefCell;
 use std::io::Write;
@@ -113,6 +113,11 @@ fn test_trackpy_easy() -> gpu_tracking::error::Result<()>{
     // let point_iter = FrameSubsetter::new(&point_view, Some(0), (1, 2));
     // let tmp = points.view();
     // let inp = Some(FrameSubsetter::new(tmp, Some(0), (1, 2), Some(3), gpu_tracking::linking::SubsetterType::Characterization::Characterization));
+    let (provider, dims) = path_to_iter(&path, None)?;
+    let array = provider.into_iter().flat_map(|frame| frame.unwrap().into_iter()).collect::<Vec<_>>();
+    let array = Array::from_shape_vec([array.len() / (dims[0] * dims[1]) as usize, dims[0] as usize, dims[1] as usize], array).unwrap();
+
+    let now = Instant::now();
     let (results, column_names) = if false{
         execute_gpu::execute_file(
             &path,
@@ -127,28 +132,25 @@ fn test_trackpy_easy() -> gpu_tracking::error::Result<()>{
         )?
     } else {
         let mut future = ProgressFuture::from_interrupt_signal(atomic, |job, progress, interruption|{
-            let (path, params, channel): (String, TrackingParams, Option<usize>) = job;
-            execute_gpu::execute_file(
-                path,
-                channel,
+            let (array, params, channel): (Array3<f32>, _, Option<usize>)= job;
+            execute_gpu::execute_ndarray(
+                &array.view(),
                 params,
                 0,
-                // Some((points.view(), true, true)),
-                // Some(&points.view()),
                 None::<_>,
                 Some(interruption),
                 Some(progress),
             )
         });
 
-        future.submit_same((path, params, None));
+        future.submit_same((array, params, None));
 
     let bar = indicatif::ProgressBar::with_draw_target(None, indicatif::ProgressDrawTarget::stderr());
         let idk = loop{
             match future.poll().unwrap(){
                 PollResult::Done(res) => break res,
                 PollResult::Pending(prog) => {
-                    // bar.set_position(prog.0 as u64);
+                    bar.set_position(prog.0 as u64);
                     // bar.set_message(prog.0.to_string());
                     // if prog >= 1000{
                     //     break match future.interrupt(){
@@ -168,6 +170,7 @@ fn test_trackpy_easy() -> gpu_tracking::error::Result<()>{
         println!("interrupt = {}", future.interrupter.load(Ordering::Relaxed));
         idk
     };
+
 
 
     

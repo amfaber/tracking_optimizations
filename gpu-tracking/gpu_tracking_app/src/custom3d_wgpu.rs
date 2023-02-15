@@ -100,12 +100,12 @@ impl AppWrapper{
         let opens = vec![true, true];
         let render_state = cc.wgpu_render_state.as_ref().unwrap();
 
-        app.input_state.path = "/Users/amfaber/Downloads/Experiment_Process_005_20230111.tif".to_string();
+        app.input_state.path = "testing/easy_test_data.tif".to_string();
         app.all_tracks = false;
         ignore_result(app.setup_new_path(render_state));
         let mut next_app = app.clone();
-        next_app.input_state.path = "/Users/amfaber/Downloads/Experiment_Process_006_20230111.tif".to_string();
-        ignore_result(next_app.setup_new_path(render_state));
+        // next_app.input_state.path = "testing/easy_test_data.tif".to_string();
+        // ignore_result(next_app.setup_new_path(render_state));
 
         let rc_app = Rc::new(RefCell::new(app));
         let coupling = Coupling{
