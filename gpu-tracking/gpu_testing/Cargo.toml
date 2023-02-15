@@ -9,3 +9,5 @@ edition = "2021"
 gpu_tracking = { path = ".." }
 wgpu = "*"
 ndarray = "*"
+pollster = "*"
+bytemuck = "*"
