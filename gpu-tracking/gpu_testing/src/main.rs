@@ -24,7 +24,7 @@ fn main() {
     ).block_on().unwrap();
 
     let mut desc = wgpu::DeviceDescriptor::default();
-    desc.features = wgpu::Features::MAPPABLE_PRIMARY_BUFFERS | wgpu::Features::PUSH_CONSTANTS;
+    // desc.features = wgpu::Features::MAPPABLE_PRIMARY_BUFFERS | wgpu::Features::PUSH_CONSTANTS;
     desc.limits.max_push_constant_size = 16;
     desc.limits.max_storage_buffers_per_shader_stage = 12;
     let (device, queue) = adapter
@@ -36,8 +36,11 @@ fn main() {
     let buffer = device.create_buffer(&wgpu::BufferDescriptor{
         label: None,
         size: (shape[1] * shape[2]) as u64 * 4,
-        usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC | 
-        wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        usage: 
+        wgpu::BufferUsages::COPY_DST
+        // wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC 
+        // | wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST
+            ,
         mapped_at_creation: false,
     });
 
@@ -50,26 +53,30 @@ fn main() {
 
 
     let now = std::time::Instant::now();
-    let bufslice = buffer.slice(..);
-    let (sender, receiver) = std::sync::mpsc::channel();
-    // let mut mapped = bufslice.get_mapped_range_mut();
-    // let mut i = 0;
+
+    // let bufslice = buffer.slice(..);
+    // let (sender, receiver) = std::sync::mpsc::channel();
+    // for frame in array.axis_iter(Axis(0)){
+    //     let sender = sender.clone();
+    //     bufslice.map_async(wgpu::MapMode::Write, move |res| {sender.send(res).unwrap();});
+    //     queue.submit(None);
+    //     // device.poll(wgpu::MaintainBase::Wait);
+    //     receiver.recv().unwrap().unwrap();
+
+    //     let mut mapped = bufslice.get_mapped_range_mut();
+    //     mapped.clone_from_slice(bytemuck::cast_slice(frame.as_slice().unwrap()));
+    //     drop(mapped);
+    //     buffer.unmap();
+
+    //     let mut encoder = device.create_command_encoder(&Default::default());
+    //     encoder.copy_buffer_to_buffer(&buffer, 0, &buffer2, 0, buffer.size());
+    //     queue.submit(Some(encoder.finish()));
+    //     device.poll(wgpu::MaintainBase::Wait);
+    // }
+
     for frame in array.axis_iter(Axis(0)){
-        let sender = sender.clone();
-        bufslice.map_async(wgpu::MapMode::Write, move |res| {sender.send(res).unwrap();});
+        queue.write_buffer(&buffer, 0, bytemuck::cast_slice(frame.as_slice().unwrap()));
         queue.submit(None);
-        // device.poll(wgpu::MaintainBase::Wait);
-        receiver.recv().unwrap().unwrap();
-
-        let mut mapped = bufslice.get_mapped_range_mut();
-        mapped.clone_from_slice(bytemuck::cast_slice(frame.as_slice().unwrap()));
-        drop(mapped);
-        buffer.unmap();
-
-        let mut encoder = device.create_command_encoder(&Default::default());
-        encoder.copy_buffer_to_buffer(&buffer, 0, &buffer2, 0, buffer.size());
-        queue.submit(Some(encoder.finish()));
-        device.poll(wgpu::MaintainBase::Wait);
     }
     // let elapsed2 = now.elapsed().as_secs_f64();
     // dbg!(elapsed2);
