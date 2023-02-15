@@ -44,7 +44,6 @@ pub struct FrameSubsetter<'a>{
     idx: usize,
     cur_frame: float,
     ty: SubsetterType,
-    // iter: ndarray::iter::Iter<'a, float, >,
 }
 
 impl<'a> FrameSubsetter<'a>{
