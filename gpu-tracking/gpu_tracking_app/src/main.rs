@@ -14,6 +14,6 @@ fn main() {
     eframe::run_native(
         "gpu_tracking",
         options,
-        Box::new(|cc| Box::new(gpu_tracking_app::custom3d_wgpu::AppWrapper::new(cc).unwrap())),
+        Box::new(|cc| Box::new(gpu_tracking_app::custom3d_wgpu::AppWrapper::test(cc).unwrap())),
     ).unwrap();
 }

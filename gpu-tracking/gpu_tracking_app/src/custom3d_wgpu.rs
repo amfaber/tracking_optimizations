@@ -83,6 +83,7 @@ enum DataMode{
 pub struct AppWrapper{
     apps: Vec<Rc<RefCell<Custom3d>>>,
     opens: Vec<bool>,
+    test_function: Option<Box<dyn FnOnce(&mut Self, &mut egui::Ui, &mut eframe::Frame) -> ()>>,
 }
 
 impl AppWrapper{
@@ -92,7 +93,7 @@ impl AppWrapper{
         ];
         let opens = vec![true];
         
-        Some(Self{apps, opens})
+        Some(Self{apps, opens, test_function: None})
     }
 
     pub fn test<'a>(cc: &'a eframe::CreationContext<'a>) -> Option<Self> {
@@ -104,8 +105,8 @@ impl AppWrapper{
         app.all_tracks = false;
         ignore_result(app.setup_new_path(render_state));
         let mut next_app = app.clone();
-        // next_app.input_state.path = "testing/easy_test_data.tif".to_string();
-        // ignore_result(next_app.setup_new_path(render_state));
+        next_app.input_state.path = "testing/easy_test_data.tif".to_string();
+        ignore_result(next_app.setup_new_path(render_state));
 
         let rc_app = Rc::new(RefCell::new(app));
         let coupling = Coupling{
@@ -119,17 +120,26 @@ impl AppWrapper{
             rc_app,
             Rc::new(RefCell::new(next_app)),
         ];
+        let function = Some(Box::new(|wrapper: &mut Self, ui: &mut egui::Ui, _frame: &mut eframe::Frame| {
+            let mut idk = wrapper.apps[1].borrow_mut();
+            ignore_result(idk.update_frame(ui, FrameChange::Next));
+        }) as _);
+        // let function = None;
 
-        Some(Self{apps, opens})
+        Some(Self{apps, opens, test_function: function})
     }
 }
 
 impl eframe::App for AppWrapper{
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        dbg!("entering frame");
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::both()
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
+                    if let Some(func) = self.test_function.take(){
+                        func(self, ui, frame)
+                    }
                     let response = ui.button("New");
                     if response.clicked(){
                         self.apps.push(Rc::new(RefCell::new(Custom3d::new().unwrap())));
@@ -353,7 +363,7 @@ impl Custom3d{
             match job{
                 RecalculateJob { path, tracking_params, channel } => {
                     RecalculateResult::from(
-                        gpu_tracking::execute_gpu::execute_file(&path, channel, tracking_params.clone(), 0, None, Some(interrupt), Some(progress))
+                        gpu_tracking::execute_gpu::execute_file(&path, channel, tracking_params, 0, None, Some(interrupt), Some(progress))
                     )
                 }
             }
@@ -1102,13 +1112,27 @@ impl Custom3d {
         }
         
         
-        let kdtree = kd_tree::KdTree::build_by_ordered_float(self.circles_to_plot.iter().enumerate().flat_map(|(idx, (array, _owner))| {
-            let y_col = self.y_col.clone().unwrap();
-            let x_col = self.x_col.clone().unwrap();
-            array.axis_iter(Axis(0)).enumerate().map(move |(i, row)| {
-                ([row[y_col], row[x_col]], (idx, i))
-            })
-        }).collect());
+        let kdtree = kd_tree::KdTree::build_by_ordered_float(self.circles_to_plot.iter().enumerate().flat_map(|(idx, (array, owner))| {
+            let (y_col, x_col) = match owner{
+                Some(owner) => {
+                    if let Some(alive) = Weak::upgrade(&owner.link){
+                        if let Some(borrowed) = alive.try_borrow().ok(){
+                            (borrowed.y_col.clone().unwrap(), borrowed.x_col.clone().unwrap())
+                        } else {
+                            return None
+                        }
+                    } else {
+                        return None
+                    }
+                },
+                None => (self.y_col.clone().unwrap(), self.x_col.clone().unwrap())
+            };
+            Some(
+                array.axis_iter(Axis(0)).enumerate().map(move |(i, row)| {
+                    ([row[y_col], row[x_col]], (idx, i))
+                })
+            )
+        }).flatten().collect());
         
         if !kdtree.is_empty(){
             self.circle_kdtree = Some(kdtree);
