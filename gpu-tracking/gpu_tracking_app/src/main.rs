@@ -11,9 +11,14 @@ fn main() {
 
         ..Default::default()
     };
+    if let Some(i) if i == 4 = Some(5){
+        
+    }
     eframe::run_native(
         "gpu_tracking",
         options,
         Box::new(|cc| Box::new(gpu_tracking_app::custom3d_wgpu::AppWrapper::new(cc).unwrap())),
-    ).unwrap();
+    ){
+        e
+    };
 }

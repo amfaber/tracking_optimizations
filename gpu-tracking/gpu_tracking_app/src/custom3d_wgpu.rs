@@ -165,9 +165,9 @@ impl eframe::App for AppWrapper{
     }
 
    
-    fn post_rendering(&mut self, size: [u32; 2], frame: &eframe::Frame) {
+    fn post_rendering(&mut self, _size: [u32; 2], frame: &eframe::Frame) {
         let ppp = frame.info().native_pixels_per_point;
-        if let Some(frame_data) = frame.frame_pixels(){
+        if let Some(frame_data) = frame.screenshot(){
             for app in &self.apps{
                 let mut app = app.borrow_mut();
                 match &mut app.playback{
@@ -183,19 +183,20 @@ impl eframe::App for AppWrapper{
     }
 }
 
-fn retrieve_rect(size: [u32; 2], frame_data: &Vec<u8>, rect: &egui::Rect) -> Vec<u8>{
-    let mut output = Vec::with_capacity(rect.area() as usize * 4);
-    let color_stride = 4;
-    let row_stride = size[0] as usize * color_stride;
-    let offset_start = color_stride * rect.min.x as usize;
-    let offset_end = color_stride * rect.max.x as usize-1;
+// fn retrieve_rect(size: [u32; 2], frame_data: &Vec<u8>, rect: &egui::Rect) -> Vec<u8>{
+//     let mut output = Vec::with_capacity(rect.area() as usize * 4);
+//     let color_stride = 4;
+//     let row_stride = size[0] as usize * color_stride;
+//     let offset_start = color_stride * rect.min.x as usize;
+//     let offset_end = color_stride * rect.max.x as usize-1;
 
-    for row in rect.min.y as usize..rect.max.y as usize{
-        output.extend_from_slice(&frame_data[row*row_stride + offset_start..=row*row_stride + offset_end]);
-    }
+//     for row in rect.min.y as usize..rect.max.y as usize{
+//         output.extend_from_slice(&frame_data[row*row_stride + offset_start..=row*row_stride + offset_end]);
+//     }
 
-    output
-}
+//     output
+// }
+
 struct RecalculateJob{
     path: PathBuf,
     tracking_params: TrackingParams,
@@ -284,7 +285,7 @@ impl Playback{
             },
             Self::Off => false,
             Self::Recording { rect, .. } => {
-                frame.request_pixels();
+                frame.request_screenshot();
                 // let ppp = ui.ctx().pixels_per_point();
                 ui.ctx().request_repaint();
                 let this_rect = egui::Rect{
@@ -1373,7 +1374,7 @@ impl Custom3d {
                     if ui.button("Cancel export").clicked(){
                         self.playback = Playback::Off
                     } else {
-                        frame.request_pixels();
+                        frame.request_screenshot();
                     }
                 }
             }
