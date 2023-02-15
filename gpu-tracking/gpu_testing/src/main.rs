@@ -78,6 +78,7 @@ fn main() {
         queue.write_buffer(&buffer, 0, bytemuck::cast_slice(frame.as_slice().unwrap()));
         queue.submit(None);
     }
+    device.poll(wgpu::MaintainBase::Wait);
     // let elapsed2 = now.elapsed().as_secs_f64();
     // dbg!(elapsed2);
     // queue.submit(None);
