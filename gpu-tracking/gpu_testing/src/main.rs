@@ -15,6 +15,8 @@ fn main() {
             dx12_shader_compiler: Default::default(),
         }
     );
+    
+    
     let adapter = instance.request_adapter(
         &wgpu::RequestAdapterOptionsBase{
             power_preference: wgpu::PowerPreference::HighPerformance,

@@ -21,6 +21,7 @@ use crate::{kernels, into_slice::IntoSlice,
     Dispatcher,
 }, error::{Error, Result}};
 use kd_tree::{self, KdPoint};
+use tracing::*;
 
 // type channel_type = Option<(Vec<ResultRow>, usize, Option<Vec<my_dtype>>, Option<f32>)>;
 type channel_type = Option<(Vec<ResultRow>, usize, Option<Vec<my_dtype>>)>;
@@ -777,6 +778,7 @@ pub fn execute_gpu<F: IntoSlice + Send, P: FrameProvider<Frame = F> + ?Sized>(
     } else {
         (None, None)
     };
+    error!("entering execute_gpu");
     
     let output = std::thread::scope(|scope: &Scope| -> Result<(Vec<f32>, Option<Vec<crate::linking::DurationBookkeep>>)>{
         let handle = {
@@ -1068,6 +1070,7 @@ pub fn execute_provider<'a, F: IntoSlice + Send, P: FrameProvider<Frame = F> + ?
     interruption: Option<&Arc<AtomicBool>>,
     progress: Option<&Arc<Mutex<(usize, Option<usize>)>>>,
     ) -> crate::error::Result<(Array2<my_dtype>, Vec<(&'static str, &'static str)>)> {
+    error!("entering provider");
     let pos_iter = match pos_array{
         Some((pos_array, true, true)) => 
             Some(FrameSubsetter::new(pos_array, Some(0), (1, 2), Some(3), SubsetterType::Characterization)),
@@ -1084,7 +1087,9 @@ pub fn execute_provider<'a, F: IntoSlice + Send, P: FrameProvider<Frame = F> + ?
     };
 
     let (provider, dims) = provider_generator()?;
+    error!("before state setup");
     let mut state = gpu_setup::setup_state(&params, &dims, pos_iter.is_some())?;
+    error!("state was set up");
     
     if params.illumination_sigma.is_some() && !params.illumination_correction_per_frame{
         // let (provider, dims) = path_to_iter(&path, None)?;
@@ -1113,6 +1118,7 @@ pub fn execute_file<'a>(
     interruption: Option<&Arc<AtomicBool>>,
     progress: Option<&Arc<Mutex<(usize, Option<usize>)>>>,
     ) -> crate::error::Result<(Array2<my_dtype>, Vec<(&'static str, &'static str)>)> {
+    error!("entering execute_file");
     let path = Into::<PathBuf>::into(path);
     let generator = || path_to_iter(&path, channel);
     

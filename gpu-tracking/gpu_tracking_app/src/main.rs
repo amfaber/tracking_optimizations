@@ -1,7 +1,11 @@
 // use egui;
 use eframe;
 use gpu_tracking_app;
+use tracing_subscriber;
 fn main() {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing_subscriber::filter::LevelFilter::ERROR)
+        .with_thread_ids(true).init();
     let options = eframe::NativeOptions {
         drag_and_drop_support: true,
         // maximized: true,

@@ -4,6 +4,7 @@ use crate::{my_dtype, utils::*};
 
 use pollster::FutureExt;
 use wgpu::{Buffer, Device, self, util::DeviceExt, ComputePipeline, BindGroupLayout};
+use tracing::*;
 
 
 #[derive(Clone)]
@@ -541,13 +542,25 @@ pub fn setup_state(
     dims: &[u32; 2],
     characterize_new_points: bool,
     ) -> crate::error::Result<GpuState> {
+    error!("entering state setup");
     
     let instance = wgpu::Instance::new(
-        wgpu::InstanceDescriptor{
-            backends: wgpu::Backends::all(),
-            dx12_shader_compiler: Default::default(),
+        {
+            let backends = wgpu::Backends::all();
+            error!("backends");
+            let dx12_shader_compiler = wgpu::Dx12Compiler::default();
+            error!("compiler");
+            wgpu::InstanceDescriptor{
+                backends,
+                dx12_shader_compiler,
+            }
+            // wgpu::InstanceDescriptor{
+            //     backends: wgpu::Backends::all(),
+            //     dx12_shader_compiler: Default::default(),
+            // }
         }
     );
+    error!("instance created");
 
     let adapter = instance
     .request_adapter(&wgpu::RequestAdapterOptionsBase{
@@ -556,6 +569,7 @@ pub fn setup_state(
         compatible_surface: None,
     })
     .block_on().ok_or(crate::error::Error::GpuAdapterError)?;
+    error!("adapter created");
 
     let mut desc = wgpu::DeviceDescriptor::default();
     desc.features = wgpu::Features::MAPPABLE_PRIMARY_BUFFERS | wgpu::Features::PUSH_CONSTANTS;
@@ -566,6 +580,7 @@ pub fn setup_state(
     let (device, queue) = adapter
     .request_device(&desc, None)
     .block_on()?;
+    error!("device created");
     
     
     // let workgroup_size2d = [32u32, 32, 1];

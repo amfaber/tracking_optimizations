@@ -17,6 +17,7 @@ use strum::IntoEnumIterator;
 use csv;
 use ndarray_csv::Array2Reader;
 use tiff::encoder::*;
+use tracing::*;
 
 // use ndarray_stats::histogram::{HistogramExt, strategies::Auto, Bins, Edges, Grid, GridBuilder};
 // use ordered_float;
@@ -132,7 +133,6 @@ impl AppWrapper{
 
 impl eframe::App for AppWrapper{
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        dbg!("entering frame");
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::both()
                 .auto_shrink([false; 2])
@@ -362,9 +362,11 @@ impl Custom3d{
         let worker = ProgressFuture::new(|job, progress, interrupt|{
             match job{
                 RecalculateJob { path, tracking_params, channel } => {
-                    RecalculateResult::from(
+                    let out = RecalculateResult::from(
                         gpu_tracking::execute_gpu::execute_file(&path, channel, tracking_params, 0, None, Some(interrupt), Some(progress))
-                    )
+                    );
+                    error!("cloned finished");
+                    out
                 }
             }
         });
@@ -644,14 +646,14 @@ impl InputState{
         match self.style{
             Style::Trackpy => {
                 output.push_str("batch(\n\t");
-                ignore_result(write!(output, "{},\n\t", self.path));
+                ignore_result(write!(output, "r\"{}\",\n\t", self.path));
                 self.diameter.parse::<u32>().ok().map(|val| write!(output, "{},\n\t", val));
                 self.separation.parse::<u32>().ok().map(|val| write!(output, "separation = {},\n\t", val));
                 if !self.filter_close { write!(output, "filter_close = False,\n\t").unwrap() };
             },
             Style::Log => {
                 output.push_str("LoG(\n\t");
-                ignore_result(write!(output, "{},\n\t", self.path));
+                ignore_result(write!(output, "r\"{}\",\n\t", self.path));
                 self.min_radius.parse::<f32>().ok().map(|val| write!(output, "{},\n\t", val));
                 self.max_radius.parse::<f32>().ok().map(|val| write!(output, "{},\n\t", val));
                 self.n_radii.parse::<usize>().ok().map(|val| write!(output, "n_radii = {},\n\t", val));
@@ -870,9 +872,11 @@ impl Custom3d {
         let worker = ProgressFuture::new(|job, progress, interrupt|{
             match job{
                 RecalculateJob { path, tracking_params, channel } => {
-                    RecalculateResult::from(
-                        gpu_tracking::execute_gpu::execute_file(&path, channel, tracking_params.clone(), 0, None, Some(interrupt), Some(progress))
-                    )
+                    let out = RecalculateResult::from(
+                        gpu_tracking::execute_gpu::execute_file(&path, channel, tracking_params, 0, None, Some(interrupt), Some(progress))
+                    );
+                    error!("orig finished");
+                    out
                 }
             }
         });
@@ -1810,6 +1814,7 @@ impl Custom3d {
     }
 
     fn recalculate(&mut self) -> anyhow::Result<()>{
+        // dbg!("entering recalc");
         match &self.mode{
             DataMode::Off => {
                 self.result_status = ResultStatus::Processing;
