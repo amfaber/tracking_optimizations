@@ -1,7 +1,7 @@
 #![allow(warnings)]
 use std::{fs::File, path::PathBuf, sync::atomic::AtomicUsize};
 
-use ndarray::{Array, ArrayView2, Array2};
+use ndarray::{Array, ArrayView2, Array2, Axis};
 use pyo3::{prelude::*, types::{PyDict, IntoPyDict}, pyclass::IterNextOutput};
 use numpy::{IntoPyArray, PyReadonlyArray3, PyReadonlyArray2, PyArray2, PyArray1, PyArray3};
 use ::gpu_tracking::{my_dtype, linking::SubsetterType,
@@ -10,8 +10,7 @@ use ::gpu_tracking::{my_dtype, linking::SubsetterType,
     error::{Error, Result}, progressfuture::{ProgressFuture, ScopedProgressFuture, PollResult}};
 use gpu_tracking_app;
 use gpu_tracking_macros::gen_python_functions;
-use indicatif;
-
+use tiff::encoder::*;
 
 
 trait ToPyErr{
@@ -30,7 +29,8 @@ impl ToPyErr for Error{
 			},
 
             Error::ThreadError |
-            Error::PolledAfterTermination => {
+            Error::PolledAfterTermination |
+            Error::TiffWrite => {
 				pyo3::exceptions::PyBaseException::new_err(self.to_string())
             },
 			
@@ -345,6 +345,22 @@ fn gpu_tracking(_py: Python, m: &PyModule) -> PyResult<()> {
                 Box::new(|cc| Box::new(gpu_tracking_app::custom3d_wgpu::AppWrapper::new(cc).unwrap())),
             )
         });
+    }
+
+    #[pyfn(m)]
+    #[pyo3(name = "to_tiff")]
+    fn to_tiff<'py>(py: Python<'py>, path: &str, pyarr: PyReadonlyArray3<my_dtype>) -> PyResult<()>{
+        let file = std::fs::File::create(path)?;
+        let writer = std::io::BufWriter::new(file);
+        let mut encoder = TiffEncoder::new(writer).map_err(|_| Error::TiffWrite.pyerr())?;
+        let arr = pyarr.as_array();
+        let arr = arr.mapv(|ele| ele as u16);
+        let iter = arr.axis_iter(Axis(0));
+        for image in iter{
+            let slice = image.as_slice().unwrap();
+            encoder.write_image::<colortype::Gray16>(image.shape()[0] as u32, image.shape()[1] as u32, slice).map_err(|_| Error::TiffWrite.pyerr())?;
+        }
+        Ok(())
     }
     
     Ok(())

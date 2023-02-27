@@ -88,7 +88,10 @@ accepted dimensions: (Nx2) or (Nx3). received: {:?}", dims)]
 	Interrupted,
 
 	#[error("Future polled after termination")]
-	PolledAfterTermination
+	PolledAfterTermination,
+
+	#[error("Tiff write error")]
+	TiffWrite,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

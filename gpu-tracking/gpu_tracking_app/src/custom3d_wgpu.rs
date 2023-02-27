@@ -2242,7 +2242,7 @@ impl Custom3d {
             if let Some(start) = self.zoom_box_start{
                 let pos = rect.clamp(pos);
                 let this_rect = normalize_rect(egui::Rect::from_two_pos(start, pos));
-                ui.painter_at(rect).rect_stroke(this_rect, 0.0, (1., self.circle_color));
+                ui.painter_at(rect).rect_stroke(this_rect, 0.0, (1., self.circle_color.to_opaque()));
                 if response.drag_released() {
                     let mut this_asp = this_rect.max - this_rect.min;
                     if this_asp.x != 0.0 && this_asp.y != 0.0{
